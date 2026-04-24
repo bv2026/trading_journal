@@ -212,6 +212,29 @@ def run_ingest() -> str:
     return output.strip()
 
 
+@mcp.tool()
+def launch_dashboard() -> str:
+    """
+    Launch the Streamlit dashboard in the background and open it in the
+    default browser at http://localhost:8501.
+    """
+    import webbrowser
+
+    app = ROOT / "dashboard" / "app.py"
+    if not app.exists():
+        return "Error: dashboard/app.py not found."
+
+    subprocess.Popen(
+        [sys.executable, "-m", "streamlit", "run", str(app),
+         "--server.headless", "true"],
+        cwd=str(ROOT),
+        creationflags=subprocess.DETACHED_PROCESS if sys.platform == "win32" else 0,
+    )
+
+    webbrowser.open("http://localhost:8501")
+    return "Dashboard launched at http://localhost:8501"
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
