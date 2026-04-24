@@ -82,20 +82,30 @@ def _sum(d: pd.DataFrame, cat, sub=None) -> float:
 
 
 def _metrics(d: pd.DataFrame) -> dict:
-    cf   = d[d["category"] == "cash_flow"]
-    ext  = cf[cf["subcategory"] != "internal_transfer"]
-    crypto = d[d["category"] == "crypto_flow"]
+    cf  = d[d["category"] == "cash_flow"]
+    ext = cf[cf["subcategory"] != "internal_transfer"]
+
+    # Bank/USD crypto_flow subcategories count toward net cash
+    _BANK_SUBS = {"usd_deposit", "usd_withdrawal", "bank_purchase"}
+    crypto     = d[d["category"] == "crypto_flow"]
+    bank_crypto = crypto[crypto["subcategory"].isin(_BANK_SUBS)]
+
+    # External wallet transfers (crypto_received / crypto_sent) shown separately
+    wallet = crypto[~crypto["subcategory"].isin(_BANK_SUBS)]
+
     return {
-        "deposits":       float(ext[ext["amount"] > 0]["amount"].sum()),
-        "withdrawals":    float(ext[ext["amount"] < 0]["amount"].sum()),
-        "net_cash":       float(ext["amount"].sum()),
-        "crypto_in":      float(crypto[crypto["amount"] > 0]["amount"].sum()),
-        "crypto_out":     float(crypto[crypto["amount"] < 0]["amount"].sum()),
-        "net_crypto":     float(crypto["amount"].sum()),
-        "dividends":      float(d[d["category"] == "dividend"]["amount"].sum()),
-        "rewards":        float(d[d["category"] == "reward"]["amount"].sum()),
-        "margin_int":     float(d[d["category"] == "margin_interest"]["amount"].sum()),
-        "fees":           float(d[d["category"] == "fee"]["amount"].sum()),
+        "deposits":    float(ext[ext["amount"] > 0]["amount"].sum())
+                       + float(bank_crypto[bank_crypto["amount"] > 0]["amount"].sum()),
+        "withdrawals": float(ext[ext["amount"] < 0]["amount"].sum())
+                       + float(bank_crypto[bank_crypto["amount"] < 0]["amount"].sum()),
+        "net_cash":    float(ext["amount"].sum()) + float(bank_crypto["amount"].sum()),
+        "crypto_in":   float(wallet[wallet["amount"] > 0]["amount"].sum()),
+        "crypto_out":  float(wallet[wallet["amount"] < 0]["amount"].sum()),
+        "net_crypto":  float(wallet["amount"].sum()),
+        "dividends":   float(d[d["category"] == "dividend"]["amount"].sum()),
+        "rewards":     float(d[d["category"] == "reward"]["amount"].sum()),
+        "margin_int":  float(d[d["category"] == "margin_interest"]["amount"].sum()),
+        "fees":        float(d[d["category"] == "fee"]["amount"].sum()),
     }
 
 
