@@ -572,225 +572,228 @@ with tab_pos:
                    "Place `TRADEPOSITIONS.xlsx` in the `activity/` folder and refresh.")
         st.stop()
 
-    # ── Split MARGIN rows from real positions ──────────────────────────────────
+    # ── Split MARGIN rows and coerce numerics ──────────────────────────────────
     margin_df = pos_all[pos_all["Ticker"] == "MARGIN"].copy()
     pos = pos_all[pos_all["Ticker"] != "MARGIN"].copy()
 
-    # Ensure numeric types
-    for col in ["PRICE", "Shares", "Cost_Basis", "COST", "MARKET VALUE", "totalReturn",
-                "IV_Rank", "PERF_YTD", "ATR_pct"]:
+    for col in ["PRICE", "Shares", "Cost_Basis", "COST", "MARKET VALUE",
+                "totalReturn", "IV_Rank", "PERF_YTD", "ATR_pct"]:
         if col in pos.columns:
             pos[col] = pd.to_numeric(pos[col], errors="coerce")
+    margin_df["MARKET VALUE"] = pd.to_numeric(
+        margin_df["MARKET VALUE"], errors="coerce"
+    )
 
-    total_margin = float(margin_df["MARKET VALUE"].sum()) if not margin_df.empty else 0.0
+    # ── fmt helpers (positions-specific) ──────────────────────────────────────
+    _pos_fmt = {
+        "PRICE":        "${:.2f}",
+        "Cost_Basis":   "${:.4f}",
+        "COST":         "${:,.2f}",
+        "MARKET VALUE": "${:,.2f}",
+        "totalReturn":  "${:+,.2f}",
+        "Return_%":     "{:+.2f}%",
+        "PERF_YTD":     "{:.2%}",
+        "ATR_pct":      "{:.2%}",
+        "IV_Rank":      "{:.2%}",
+        "Shares":       "{:,.4f}",
+    }
 
-    # ── Sidebar filters for positions ─────────────────────────────────────────
-    with st.sidebar:
-        st.divider()
-        st.markdown("**Positions filters**")
-        pos_accounts = sorted(pos["Account"].unique())
-        sel_accts = st.multiselect("Position accounts", pos_accounts,
-                                   default=pos_accounts, key="pos_acct")
-        pos_types = sorted(pos["TYPE"].unique())
-        sel_types = st.multiselect("Position type", pos_types,
-                                   default=pos_types, key="pos_type")
-        pos_sectors = sorted(pos["sector"].unique())
-        sel_sectors = st.multiselect("Sector", pos_sectors,
-                                     default=pos_sectors, key="pos_sector")
+    # ── 1. ACCOUNT SUMMARY TABLE ───────────────────────────────────────────────
+    # Positions side: MV, Cost, P&L
+    pos_by_acct = (
+        pos.groupby("Account")
+           .agg(Positions  =("Ticker",       "count"),
+                Market_Value=("MARKET VALUE", "sum"),
+                Total_Cost  =("COST",         "sum"),
+                PnL         =("totalReturn",  "sum"))
+           .reset_index()
+    )
 
-    pf = pos[
-        pos["Account"].isin(sel_accts) &
-        pos["TYPE"].isin(sel_types) &
-        pos["sector"].isin(sel_sectors)
-    ].copy()
+    # Margin per account (already negative in the Excel)
+    margin_by_acct = (
+        margin_df.groupby("Account")["MARKET VALUE"]
+                 .sum()
+                 .reset_index()
+                 .rename(columns={"MARKET VALUE": "Margin"})
+    )
 
-    if pf.empty:
-        st.info("No positions match the current filter.")
-        st.stop()
+    # Fees & Dividends from the transaction DB — all-time, no date filter
+    fees_by_acct = (
+        df_all[df_all["category"] == "fee"]
+        .groupby("account_id")["amount"].sum()
+        .reset_index()
+        .rename(columns={"account_id": "Account", "amount": "Fees"})
+    )
+    div_by_acct = (
+        df_all[df_all["category"] == "dividend"]
+        .groupby("account_id")["amount"].sum()
+        .reset_index()
+        .rename(columns={"account_id": "Account", "amount": "Dividends"})
+    )
 
-    # ── Portfolio KPIs ─────────────────────────────────────────────────────────
-    total_mv   = pf["MARKET VALUE"].sum()
-    total_cost = pf["COST"].sum()
-    total_pnl  = pf["totalReturn"].sum()
-    total_ret_pct = (total_pnl / total_cost * 100) if total_cost else 0.0
+    acct_tbl = (
+        pos_by_acct
+        .merge(margin_by_acct, on="Account", how="left")
+        .merge(fees_by_acct,   on="Account", how="left")
+        .merge(div_by_acct,    on="Account", how="left")
+    )
+    acct_tbl["Margin"]    = acct_tbl["Margin"].fillna(0)
+    acct_tbl["Fees"]      = acct_tbl["Fees"].fillna(0)
+    acct_tbl["Dividends"] = acct_tbl["Dividends"].fillna(0)
+    acct_tbl["Return_%"]  = (
+        acct_tbl["PnL"] / acct_tbl["Total_Cost"] * 100
+    ).round(2)
+    acct_tbl = acct_tbl.sort_values("Market_Value", ascending=False)
 
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("Market Value",    f"${total_mv:,.0f}")
-    k2.metric("Total Cost",      f"${total_cost:,.0f}")
-    k3.metric("Unrealized P&L",  f"${total_pnl:+,.0f}",
-              delta=f"{total_ret_pct:+.2f}%")
-    k4.metric("# Positions",     f"{len(pf)}")
-    k5.metric("Margin Borrowed", f"${abs(total_margin):,.0f}",
-              delta=f"${total_margin:+,.0f}", delta_color="inverse")
+    # Totals row
+    _t = {
+        "Account":      "TOTAL",
+        "Positions":    int(acct_tbl["Positions"].sum()),
+        "Market_Value": acct_tbl["Market_Value"].sum(),
+        "Total_Cost":   acct_tbl["Total_Cost"].sum(),
+        "PnL":          acct_tbl["PnL"].sum(),
+        "Margin":       acct_tbl["Margin"].sum(),
+        "Fees":         acct_tbl["Fees"].sum(),
+        "Dividends":    acct_tbl["Dividends"].sum(),
+    }
+    _t["Return_%"] = (_t["PnL"] / _t["Total_Cost"] * 100) if _t["Total_Cost"] else 0
+    acct_tbl = pd.concat(
+        [acct_tbl, pd.DataFrame([_t])], ignore_index=True
+    )
+
+    disp_cols = ["Account", "Positions", "Market_Value", "Total_Cost",
+                 "PnL", "Return_%", "Margin", "Fees", "Dividends"]
+    acct_fmt = {
+        "Market_Value": "${:,.2f}",
+        "Total_Cost":   "${:,.2f}",
+        "PnL":          "${:+,.2f}",
+        "Return_%":     "{:+.2f}%",
+        "Margin":       "${:,.2f}",
+        "Fees":         "${:,.2f}",
+        "Dividends":    "${:,.2f}",
+    }
+
+    st.subheader("Account Summary")
+    st.dataframe(
+        acct_tbl[disp_cols].style
+            .format(acct_fmt)
+            .map(_colour_cell, subset=["PnL", "Return_%", "Fees", "Dividends"]),
+        use_container_width=True,
+        hide_index=True,
+    )
 
     st.divider()
 
-    # ── Allocation charts ──────────────────────────────────────────────────────
+    # ── 2. SECTOR ALLOCATION ───────────────────────────────────────────────────
+    total_mv = pos["MARKET VALUE"].sum()
+
     col_l, col_r = st.columns(2)
 
     with col_l:
         st.subheader("Sector Allocation")
         sec_grp = (
-            pf.groupby("sector")["MARKET VALUE"].sum()
-              .sort_values(ascending=False)
-              .reset_index()
+            pos.groupby("sector")["MARKET VALUE"].sum()
+               .sort_values(ascending=False)
+               .reset_index()
         )
-        fig_sec = px.pie(sec_grp, values="MARKET VALUE", names="sector",
-                         hole=0.4,
-                         color_discrete_sequence=px.colors.qualitative.Safe)
-        fig_sec.update_traces(textposition="inside",
-                              textinfo="percent+label",
-                              hovertemplate="%{label}<br>$%{value:,.0f}<br>%{percent}")
+        fig_sec = px.pie(
+            sec_grp, values="MARKET VALUE", names="sector",
+            hole=0.4, color_discrete_sequence=px.colors.qualitative.Safe,
+        )
+        fig_sec.update_traces(
+            textposition="inside", textinfo="percent+label",
+            hovertemplate="%{label}<br>$%{value:,.0f}<br>%{percent}",
+        )
         fig_sec.update_layout(showlegend=False, margin=dict(t=10, b=10))
         st.plotly_chart(fig_sec, use_container_width=True)
 
     with col_r:
         st.subheader("Account Allocation")
         acct_grp = (
-            pf.groupby("Account")["MARKET VALUE"].sum()
-              .sort_values(ascending=False)
-              .reset_index()
+            pos.groupby("Account")["MARKET VALUE"].sum()
+               .sort_values(ascending=False)
+               .reset_index()
         )
-        fig_acct = px.pie(acct_grp, values="MARKET VALUE", names="Account",
-                          hole=0.4,
-                          color_discrete_sequence=ACCOUNT_COLOURS)
-        fig_acct.update_traces(textposition="inside",
-                               textinfo="percent+label",
-                               hovertemplate="%{label}<br>$%{value:,.0f}<br>%{percent}")
+        fig_acct = px.pie(
+            acct_grp, values="MARKET VALUE", names="Account",
+            hole=0.4, color_discrete_sequence=ACCOUNT_COLOURS,
+        )
+        fig_acct.update_traces(
+            textposition="inside", textinfo="percent+label",
+            hovertemplate="%{label}<br>$%{value:,.0f}<br>%{percent}",
+        )
         fig_acct.update_layout(showlegend=False, margin=dict(t=10, b=10))
         st.plotly_chart(fig_acct, use_container_width=True)
 
-    # ── P&L charts ─────────────────────────────────────────────────────────────
-    col_l2, col_r2 = st.columns(2)
-
-    with col_l2:
-        st.subheader("Unrealized P&L by Sector")
-        sec_pnl = (
-            pf.groupby("sector")["totalReturn"].sum()
-              .reset_index()
-              .sort_values("totalReturn")
-        )
-        sec_pnl["colour"] = sec_pnl["totalReturn"].apply(
-            lambda v: "Positive" if v >= 0 else "Negative"
-        )
-        fig_spnl = px.bar(sec_pnl, x="totalReturn", y="sector",
-                          orientation="h", color="colour",
-                          color_discrete_map={"Positive": C_GREEN, "Negative": C_RED},
-                          labels={"totalReturn": "P&L ($)", "sector": ""})
-        fig_spnl.update_layout(showlegend=False, margin=dict(t=10))
-        st.plotly_chart(fig_spnl, use_container_width=True)
-
-    with col_r2:
-        st.subheader("Unrealized P&L by Account")
-        acct_pnl = (
-            pf.groupby("Account")["totalReturn"].sum()
-              .reset_index()
-              .sort_values("totalReturn")
-        )
-        acct_pnl["colour"] = acct_pnl["totalReturn"].apply(
-            lambda v: "Positive" if v >= 0 else "Negative"
-        )
-        fig_apnl = px.bar(acct_pnl, x="totalReturn", y="Account",
-                          orientation="h", color="colour",
-                          color_discrete_map={"Positive": C_GREEN, "Negative": C_RED},
-                          labels={"totalReturn": "P&L ($)", "Account": ""})
-        fig_apnl.update_layout(showlegend=False, margin=dict(t=10))
-        st.plotly_chart(fig_apnl, use_container_width=True)
-
-    st.divider()
-
-    # ── Position type breakdown table ──────────────────────────────────────────
-    st.subheader("Breakdown by Type")
-    type_tbl = (
-        pf.groupby("TYPE")
-          .agg(
-              Positions=("Ticker", "count"),
-              Market_Value=("MARKET VALUE", "sum"),
-              Total_Cost=("COST", "sum"),
-              PnL=("totalReturn", "sum"),
-          )
-          .reset_index()
-          .sort_values("Market_Value", ascending=False)
-    )
-    type_tbl["Return_%"] = (type_tbl["PnL"] / type_tbl["Total_Cost"] * 100).round(2)
-    st.dataframe(
-        type_tbl.style
-            .format({"Market_Value": "${:,.2f}", "Total_Cost": "${:,.2f}",
-                     "PnL": "${:+,.2f}", "Return_%": "{:+.2f}%"})
-            .map(_colour_cell, subset=["PnL", "Return_%"]),
-        use_container_width=True, hide_index=True,
-    )
-
-    st.divider()
-
-    # ── Sector detail table ────────────────────────────────────────────────────
-    st.subheader("Sector Summary")
+    # Sector summary table
     sec_tbl = (
-        pf.groupby("sector")
-          .agg(
-              Positions=("Ticker", "count"),
-              Market_Value=("MARKET VALUE", "sum"),
-              Total_Cost=("COST", "sum"),
-              PnL=("totalReturn", "sum"),
-          )
-          .reset_index()
-          .sort_values("Market_Value", ascending=False)
+        pos.groupby("sector")
+           .agg(Positions   =("Ticker",       "count"),
+                Market_Value=("MARKET VALUE", "sum"),
+                Total_Cost  =("COST",         "sum"),
+                PnL         =("totalReturn",  "sum"))
+           .reset_index()
+           .sort_values("Market_Value", ascending=False)
     )
     sec_tbl["Alloc_%"]  = (sec_tbl["Market_Value"] / total_mv * 100).round(2)
     sec_tbl["Return_%"] = (sec_tbl["PnL"] / sec_tbl["Total_Cost"] * 100).round(2)
+
+    st.subheader("Sector Summary")
     st.dataframe(
         sec_tbl.style
             .format({"Market_Value": "${:,.2f}", "Total_Cost": "${:,.2f}",
                      "PnL": "${:+,.2f}", "Alloc_%": "{:.2f}%", "Return_%": "{:+.2f}%"})
             .map(_colour_cell, subset=["PnL", "Return_%"]),
-        use_container_width=True, hide_index=True,
+        use_container_width=True,
+        hide_index=True,
     )
 
     st.divider()
 
-    # ── Full positions table ───────────────────────────────────────────────────
-    st.subheader(f"All Positions ({len(pf)})")
+    # ── 3. POSITIONS BY ACCOUNT ────────────────────────────────────────────────
+    st.subheader("Positions by Account")
 
-    # Sort and prepare display columns
-    show_cols = ["Account", "Ticker", "Name", "TYPE", "sector", "Shares",
-                 "PRICE", "Cost_Basis", "COST", "MARKET VALUE", "totalReturn",
-                 "IV_Rank", "PERF_YTD", "ATR_pct"]
-    show_cols = [c for c in show_cols if c in pf.columns]
+    # Column order for per-account tables (skip Account col — redundant)
+    _pos_cols = ["Ticker", "Name", "TYPE", "sector", "Shares",
+                 "PRICE", "Cost_Basis", "COST", "MARKET VALUE",
+                 "totalReturn", "Return_%", "PERF_YTD", "IV_Rank", "ATR_pct"]
 
-    pf_display = pf[show_cols].sort_values(
-        ["Account", "MARKET VALUE"], ascending=[True, False]
-    ).reset_index(drop=True)
-
-    pf_display["Return_%"] = (
-        pf_display["totalReturn"] / pf_display["COST"] * 100
-    ).round(2)
-
-    money_pos = ["COST", "MARKET VALUE", "totalReturn", "Cost_Basis"]
-    pct_pos   = ["PERF_YTD", "ATR_pct", "IV_Rank"]
-
-    fmt_dict = {
-        "PRICE":         "${:.2f}",
-        "Cost_Basis":    "${:.4f}",
-        "COST":          "${:,.2f}",
-        "MARKET VALUE":  "${:,.2f}",
-        "totalReturn":   "${:+,.2f}",
-        "Return_%":      "{:+.2f}%",
-        "PERF_YTD":      "{:.2%}",
-        "ATR_pct":       "{:.2%}",
-        "IV_Rank":       "{:.2%}",
-        "Shares":        "{:,.4f}",
-    }
-    fmt_dict = {k: v for k, v in fmt_dict.items() if k in pf_display.columns}
-
-    st.dataframe(
-        pf_display.style
-            .format(fmt_dict)
-            .map(_colour_cell, subset=["totalReturn", "Return_%"]),
-        use_container_width=True, hide_index=True,
+    # Iterate accounts in descending MV order (same as summary table, excl TOTAL)
+    acct_order = (
+        acct_tbl[acct_tbl["Account"] != "TOTAL"]
+        .sort_values("Market_Value", ascending=False)["Account"]
+        .tolist()
     )
 
-    st.download_button(
-        "⬇ Download Positions CSV",
-        pf_display.to_csv(index=False).encode(),
-        "positions.csv", "text/csv",
-    )
+    for acct in acct_order:
+        acct_pos = pos[pos["Account"] == acct].copy()
+        if acct_pos.empty:
+            continue
+
+        acct_mv  = acct_pos["MARKET VALUE"].sum()
+        acct_pnl = acct_pos["totalReturn"].sum()
+        acct_ret = acct_pnl / acct_pos["COST"].sum() * 100 if acct_pos["COST"].sum() else 0
+        acct_margin = float(
+            margin_df[margin_df["Account"] == acct]["MARKET VALUE"].sum()
+        )
+        label = (
+            f"**{acct}** — {len(acct_pos)} positions · "
+            f"MV ${acct_mv:,.0f} · "
+            f"P&L ${acct_pnl:+,.0f} ({acct_ret:+.1f}%) · "
+            f"Margin ${abs(acct_margin):,.0f}"
+        )
+        with st.expander(label, expanded=False):
+            acct_pos["Return_%"] = (
+                acct_pos["totalReturn"] / acct_pos["COST"] * 100
+            ).round(2)
+            show = [c for c in _pos_cols if c in acct_pos.columns]
+            fmt  = {k: v for k, v in _pos_fmt.items() if k in show}
+            st.dataframe(
+                acct_pos[show]
+                    .sort_values("MARKET VALUE", ascending=False)
+                    .reset_index(drop=True)
+                    .style.format(fmt)
+                    .map(_colour_cell, subset=["totalReturn", "Return_%"]),
+                use_container_width=True,
+                hide_index=True,
+            )
