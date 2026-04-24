@@ -1,20 +1,47 @@
 """
 Coinbase transaction CSV parser.
-Cash flow logic mirrors C:\\work\\trading-activity\\src\\reports.py exactly:
-  - USD Deposits/Withdrawals  → crypto_flow / usd_deposit|usd_withdrawal
-  - Buy/Sell USDC             → crypto_flow / usdc_purchased|usdc_sold  (USD ↔ USDC)
-  - Send/Receive              → crypto_flow / crypto_sent|crypto_received
-  - Portfolio Transfer        → skipped (internal Coinbase movement)
-  - Staking/Rewards           → reward / <subcategory>
-  - Fees from Buy/Sell trades → fee / trading_fee
+
+Cash flow classification logic
+───────────────────────────────
+External cash flows (real money moving between bank/PayPal and Coinbase):
+
+  Deposit                    → crypto_flow / usd_deposit       (+)
+  Withdrawal / Admin Debit   → crypto_flow / usd_withdrawal    (−)
+  Buy/Adv.Buy funded by bank → crypto_flow / bank_purchase     (+)
+    Detection: Notes field contains a bank name or "PayPal".
+    Rationale: "Bought 3500 USDC using UMB" or "Bought BTC using
+    JPMORGAN CHASE BANK" means real money left your bank account.
+  Receive (external wallet)  → crypto_flow / crypto_received   (+)
+  Send    (external wallet)  → crypto_flow / crypto_sent       (−)
+
+Internal flows — skipped for cash flow purposes:
+  Buy / Convert using "Cash (USD)"  — spending existing Coinbase USD balance
+  Advanced trades on *-USDC pairs   — trading with existing USDC on platform
+  Convert (USDC → other crypto)     — internal rebalancing
+  All Sell transactions              — proceeds stay on Coinbase as USD balance
+  Portfolio Transfer                 — internal Coinbase movement
+  Retail Staking Transfer/Unstaking  — internal staking bookkeeping
+  Futures types                      — excluded per user request
+
+Other tracked items:
+  Staking Income / Reward Income / etc. → reward / <subcategory>
+  Fees on all Buy/Sell trades            → fee / trading_fee
 """
+
+import re
 import pandas as pd
 from .utils import parse_amount, make_id
 
-_TRADE_TYPES = {
-    "Buy", "Sell",
-    "Advanced Trade Buy", "Advanced Trade Sell",
-    "Convert",
+# Transaction types treated as trades (check Notes for bank funding)
+_BUY_TYPES = {
+    "Buy",
+    "Advanced Trade Buy",
+    "Convert",           # USDC→crypto: internal, but check Notes just in case
+}
+
+_SELL_TYPES = {
+    "Sell",
+    "Advanced Trade Sell",
 }
 
 _REWARD_MAP = {
@@ -27,14 +54,39 @@ _REWARD_MAP = {
 }
 
 _SKIP = {
-    "Portfolio Transfer",          # internal Coinbase movement, not external cash
-    "Retail Staking Transfer",     # moves staked crypto, not new income
+    "Portfolio Transfer",
+    "Retail Staking Transfer",
     "Retail Unstaking Transfer",
     "Cfm Funding",
     "Derivatives Settlement",
+    "FCM Futures USDC Sell",
     "FCM Futures USDC Sell Additional Encumberment",
     "FCM Futures USDC Sell Additional Encumberment Rollup",
 }
+
+# Notes patterns that indicate real bank/PayPal money (not existing Coinbase balance)
+_BANK_RE = re.compile(
+    r"using\s+.*(bank|credit union|huntington|jpmorgan|chase|wells fargo|"
+    r"umb|citibank|national bank|paypal)",
+    re.IGNORECASE,
+)
+
+# Notes patterns that indicate purely internal Coinbase balance usage
+_INTERNAL_RE = re.compile(
+    r"using\s+cash\s+\(usd\)|"      # existing USD balance
+    r"using\s+usdc|"                  # existing USDC balance
+    r"\bon\s+\w+-usdc\b|"            # advanced trade on *-USDC pair
+    r"\bon\s+\w+-usd\b|"             # advanced trade on *-USD pair
+    r"converted\s+\d",               # Convert transaction
+    re.IGNORECASE,
+)
+
+
+def _is_bank_funded(notes: str) -> bool:
+    """Return True if the Notes field indicates the purchase was funded from a bank/PayPal."""
+    if _INTERNAL_RE.search(notes):
+        return False
+    return bool(_BANK_RE.search(notes))
 
 
 def parse(filepath: str, account_id: str = "COINBASE") -> list[dict]:
@@ -78,7 +130,9 @@ def parse(filepath: str, account_id: str = "COINBASE") -> list[dict]:
 
         txn_id = str(row.get("ID", "")).strip()
         notes  = str(row.get("Notes", "")).strip()
-        desc   = f"{txn_type}: {notes}" if notes and notes != "nan" else txn_type
+        if notes == "nan":
+            notes = ""
+        desc = f"{txn_type}: {notes}" if notes else txn_type
 
         def _rec(category, subcategory, amount, currency=None):
             return {
@@ -95,20 +149,14 @@ def parse(filepath: str, account_id: str = "COINBASE") -> list[dict]:
                 "source_file": filepath,
             }
 
-        # ── Trades (Buy / Sell / Advanced Trade / Convert) ────────────────
-        if txn_type in _TRADE_TYPES:
-            is_buy  = "Buy"  in txn_type or txn_type == "Convert"
-            is_sell = "Sell" in txn_type
+        # ── Buy transactions ───────────────────────────────────────────────
+        if txn_type in _BUY_TYPES:
+            # Only capture as cash inflow if funded directly from bank/PayPal.
+            # Purchases using existing Coinbase USD/USDC balance are internal.
+            if _is_bank_funded(notes):
+                records.append(_rec("crypto_flow", "bank_purchase", +abs(total_amt), "USD"))
 
-            # USDC buys/sells = real USD ↔ USDC cash flow
-            # Use abs() then sign-by-direction, mirroring the existing report
-            if asset == "USDC":
-                if is_buy:
-                    records.append(_rec("crypto_flow", "usdc_purchased", -abs(total_amt), "USD"))
-                elif is_sell:
-                    records.append(_rec("crypto_flow", "usdc_sold", abs(total_amt), "USD"))
-
-            # Capture fees from ALL buy/sell trades
+            # Capture fees regardless of funding source
             if fee_amt != 0:
                 records.append({
                     "id":          make_id(account_id, filepath, f"{idx}_fee"),
@@ -124,26 +172,44 @@ def parse(filepath: str, account_id: str = "COINBASE") -> list[dict]:
                 })
             continue
 
-        # ── Rewards & staking ─────────────────────────────────────────────
+        # ── Sell transactions — internal (proceeds stay on Coinbase) ───────
+        if txn_type in _SELL_TYPES:
+            if fee_amt != 0:
+                records.append({
+                    "id":          make_id(account_id, filepath, f"{idx}_fee"),
+                    "account_id":  account_id,
+                    "date":        date,
+                    "category":    "fee",
+                    "subcategory": "trading_fee",
+                    "amount":      -abs(fee_amt),
+                    "currency":    "USD",
+                    "symbol":      asset,
+                    "description": f"Fee: {txn_type} {asset}",
+                    "source_file": filepath,
+                })
+            continue
+
+        # ── Rewards & staking ──────────────────────────────────────────────
         if txn_type in _REWARD_MAP:
             records.append(_rec("reward", _REWARD_MAP[txn_type], total_amt))
             continue
 
-        # ── Explicit deposits / withdrawals ───────────────────────────────
+        # ── Direct deposits / withdrawals ──────────────────────────────────
         if txn_type == "Deposit":
-            records.append(_rec("crypto_flow", "usd_deposit",    +abs(total_amt), "USD"))
+            records.append(_rec("crypto_flow", "usd_deposit", +abs(total_amt), "USD"))
             continue
 
         if txn_type in ("Withdrawal", "Admin Debit"):
             records.append(_rec("crypto_flow", "usd_withdrawal", -abs(total_amt), "USD"))
             continue
 
+        # ── External wallet transfers ──────────────────────────────────────
         if txn_type == "Receive":
             records.append(_rec("crypto_flow", "crypto_received", +abs(total_amt), "USD"))
             continue
 
         if txn_type == "Send":
-            records.append(_rec("crypto_flow", "crypto_sent",    -abs(total_amt), "USD"))
+            records.append(_rec("crypto_flow", "crypto_sent", -abs(total_amt), "USD"))
             continue
 
     return records

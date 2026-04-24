@@ -230,15 +230,14 @@ with tab_acct:
         total_out = float(crypto_df[crypto_df["amount"] < 0]["amount"].sum())
         net       = total_in + total_out
 
-        INFLOW_SUBS  = ["usd_deposit",    "usdc_sold",      "crypto_received"]
-        OUTFLOW_SUBS = ["usd_withdrawal",  "usdc_purchased", "crypto_sent"]
+        INFLOW_SUBS  = ["usd_deposit", "bank_purchase", "crypto_received"]
+        OUTFLOW_SUBS = ["usd_withdrawal", "crypto_sent"]
         LABELS = {
-            "usd_deposit":    "USD Deposited",
-            "usdc_sold":      "USDC Sold → USD",
-            "crypto_received":"Crypto Received",
+            "usd_deposit":    "USD Deposited (direct)",
+            "bank_purchase":  "Bought Crypto via Bank / PayPal",
+            "crypto_received":"Crypto Received (external wallet)",
             "usd_withdrawal": "USD Withdrawn",
-            "usdc_purchased": "USDC Purchased",
-            "crypto_sent":    "Crypto Sent",
+            "crypto_sent":    "Crypto Sent (external wallet)",
         }
 
         col_in, col_out, col_net = st.columns(3)
