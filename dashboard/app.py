@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Portfolio Journal — Streamlit dashboard.
 Run: streamlit run dashboard/app.py
 """
