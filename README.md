@@ -52,6 +52,37 @@ trading-journal/
 └── README.md
 ```
 
+## Example prompts (Claude Desktop)
+
+Once the MCP server is registered you can ask Claude questions directly in chat.
+
+**Portfolio overview**
+> *"Give me a summary of my entire portfolio"*
+> *"What is my all-time net income across all accounts?"*
+> *"How much have I paid in margin interest over the years?"*
+
+**Year-over-year analysis**
+> *"Show me dividends year by year"*
+> *"Which year had the highest net income?"*  
+> *"How did 2024 compare to 2023 for fees and margin interest?"*
+
+**Per-account drilldown**
+> *"How is Fidelity performing vs Robinhood?"*
+> *"Which account generates the most dividends?"*
+> *"Show me a breakdown of all accounts for 2024"*
+
+**Transactions**
+> *"Show me all Coinbase staking rewards"*
+> *"List my largest dividends in 2024"*
+> *"Find all margin interest charges for RH-BV"*
+> *"Show me recent withdrawals across all accounts"*
+
+**Data management**
+> *"Ingest the latest files"*
+> *"Launch the dashboard"*
+
+---
+
 ## Setup
 
 ```bash
