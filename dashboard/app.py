@@ -186,7 +186,7 @@ with tab_acct:
         row = {
             "Account":         acct,
             "Broker":          df[df["account_id"] == acct]["broker"].iloc[0],
-            "Net Cash":        am["net_cash"] + am["net_crypto"],
+            "Net Cash":        am["net_cash"],
             "Dividends":       am["dividends"],
             "Rewards":         am["rewards"],
             "Margin Interest": am["margin_int"],
@@ -202,7 +202,7 @@ with tab_acct:
     st.divider()
 
     # ── Net Cash Flow by Account × Year ───────────────────────────────────────
-    def _net_cash(m): return m["net_cash"] + m["net_crypto"]
+    def _net_cash(m): return m["net_cash"]
     pv_cash = _pivot(df_acct, _net_cash, "Net Cash Flow")
     _show_pivot(pv_cash, "Net Cash Flow by Account & Year")
 
