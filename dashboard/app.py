@@ -188,12 +188,45 @@ st.title("Portfolio Journal")
 st.caption(f"{len(df):,} transactions · {start_d} → {end_d} · "
            f"{len(accounts)} account(s)")
 
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Net Cash Flow",       _fmt(m_all["net_cash"]))
-c2.metric("Dividends & Rewards", f"${m_all['dividends'] + m_all['rewards']:,.2f}")
-c3.metric("Margin Interest",     _fmt(m_all["margin_int"]))
-c4.metric("Fees",                _fmt(m_all["fees"]))
-c5.metric("Net Income",          _fmt(_net_income(m_all)))
+# ── Net Worth banner ───────────────────────────────────────────────────────────
+_pos_hdr = _load_positions()
+if not _pos_hdr.empty:
+    _pos_hdr_clean  = _pos_hdr[_pos_hdr["Ticker"] != "MARGIN"].copy()
+    _margin_hdr     = _pos_hdr[_pos_hdr["Ticker"] == "MARGIN"].copy()
+    _pos_hdr_clean["MARKET VALUE"] = pd.to_numeric(
+        _pos_hdr_clean["MARKET VALUE"], errors="coerce"
+    )
+    _margin_hdr["MARKET VALUE"] = pd.to_numeric(
+        _margin_hdr["MARKET VALUE"], errors="coerce"
+    )
+    _total_mv     = _pos_hdr_clean["MARKET VALUE"].sum()
+    _total_margin = abs(_margin_hdr["MARKET VALUE"].sum())
+    _net_worth    = _total_mv - _total_margin
+
+    nw1, nw2, nw3 = st.columns(3)
+    nw1.metric("Net Worth",      f"${_net_worth:,.0f}")
+    nw2.metric("Market Value",   f"${_total_mv:,.0f}")
+    nw3.metric("Margin Borrowed",f"${_total_margin:,.0f}", delta=f"-${_total_margin:,.0f}",
+               delta_color="inverse")
+
+# ── Summary table (replaces individual metric widgets) ─────────────────────────
+_kpi_row = {
+    "Net Cash Flow":     m_all["net_cash"],
+    "Dividends":         m_all["dividends"],
+    "Rewards":           m_all["rewards"],
+    "Div + Rewards":     m_all["dividends"] + m_all["rewards"],
+    "Margin Interest":   m_all["margin_int"],
+    "Fees":              m_all["fees"],
+    "Net Income":        _net_income(m_all),
+}
+_kpi_df = pd.DataFrame([_kpi_row])
+st.dataframe(
+    _kpi_df.style
+        .format({c: "${:,.2f}" for c in _kpi_df.columns})
+        .map(_colour_cell),
+    use_container_width=True,
+    hide_index=True,
+)
 
 st.divider()
 
