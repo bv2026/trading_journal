@@ -12,6 +12,59 @@ import plotly.express as px
 import plotly.graph_objects as go
 from src.db import DB_PATH, load_transactions
 
+# ── Positions file path ─────────────────────────────────────────────────────────
+POSITIONS_FILE = Path(__file__).parent.parent / "activity" / "TRADEPOSITIONS.xlsx"
+
+# Sheet → account ID mapping (skip TLOG-RECONCILE)
+_SHEET_ACCOUNT = {
+    "SCWB":     "SCHWAB",
+    "TRDER":    "TRADIER",
+    "TRDSTN":   "TS",
+    "RH-KD":    "RH-KD",
+    "RH-BV":    "RH-BV",
+    "WBULL":    "WEBULL",
+    "FIDELITY": "FIDELITY",
+}
+
+_SKIP_COLS = {"Unnamed", "MS FORM"}  # prefixes to drop
+
+
+@st.cache_data(ttl=300)
+def _load_positions() -> pd.DataFrame:
+    """Load all position sheets from TRADEPOSITIONS.xlsx into one DataFrame."""
+    if not POSITIONS_FILE.exists():
+        return pd.DataFrame()
+    frames = []
+    for sheet, acct in _SHEET_ACCOUNT.items():
+        try:
+            df_ = pd.read_excel(POSITIONS_FILE, sheet_name=sheet)
+            # Drop helper/unnamed columns
+            keep = [c for c in df_.columns
+                    if not any(str(c).startswith(p) for p in _SKIP_COLS)]
+            df_ = df_[keep].copy()
+            # Standardise column names
+            df_.rename(columns={
+                "ATR %":    "ATR_pct",
+                "IV RANK":  "IV_Rank",
+                "PERF YTD": "PERF_YTD",
+                "Sh/Contr": "Shares",
+                "COST BASIS": "Cost_Basis",
+            }, inplace=True)
+            # Ensure Ticker is a string and drop blank rows
+            df_["Ticker"] = df_["Ticker"].astype(str).str.strip()
+            df_ = df_[df_["Ticker"] != "nan"]
+            df_["Account"] = acct
+            frames.append(df_)
+        except Exception:
+            pass
+    if not frames:
+        return pd.DataFrame()
+    pos = pd.concat(frames, ignore_index=True)
+    pos["sector"] = pos["sector"].fillna("Unknown")
+    pos["industry"] = pos["industry"].fillna("Unknown")
+    pos["TYPE"] = pos["TYPE"].fillna("Unknown")
+    return pos
+
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Portfolio Journal", page_icon="📊", layout="wide")
 
@@ -144,8 +197,8 @@ c5.metric("Net Income",          _fmt(_net_income(m_all)))
 st.divider()
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
-tab_acct, tab_yearly, tab_monthly, tab_txns = st.tabs([
-    "By Account", "Yearly Summary", "Monthly Trends", "Transactions"
+tab_acct, tab_yearly, tab_monthly, tab_txns, tab_pos = st.tabs([
+    "By Account", "Yearly Summary", "Monthly Trends", "Transactions", "Positions"
 ])
 
 
@@ -508,3 +561,236 @@ with tab_txns:
     st.download_button("⬇ Download CSV",
                        txn[display_cols].to_csv(index=False).encode(),
                        "transactions.csv", "text/csv")
+
+
+# ═══ TAB 5 — Positions ═════════════════════════════════════════════════════════
+with tab_pos:
+    pos_all = _load_positions()
+
+    if pos_all.empty:
+        st.warning(f"Positions file not found at `{POSITIONS_FILE}`.  "
+                   "Place `TRADEPOSITIONS.xlsx` in the `activity/` folder and refresh.")
+        st.stop()
+
+    # ── Split MARGIN rows from real positions ──────────────────────────────────
+    margin_df = pos_all[pos_all["Ticker"] == "MARGIN"].copy()
+    pos = pos_all[pos_all["Ticker"] != "MARGIN"].copy()
+
+    # Ensure numeric types
+    for col in ["PRICE", "Shares", "Cost_Basis", "COST", "MARKET VALUE", "totalReturn",
+                "IV_Rank", "PERF_YTD", "ATR_pct"]:
+        if col in pos.columns:
+            pos[col] = pd.to_numeric(pos[col], errors="coerce")
+
+    total_margin = float(margin_df["MARKET VALUE"].sum()) if not margin_df.empty else 0.0
+
+    # ── Sidebar filters for positions ─────────────────────────────────────────
+    with st.sidebar:
+        st.divider()
+        st.markdown("**Positions filters**")
+        pos_accounts = sorted(pos["Account"].unique())
+        sel_accts = st.multiselect("Position accounts", pos_accounts,
+                                   default=pos_accounts, key="pos_acct")
+        pos_types = sorted(pos["TYPE"].unique())
+        sel_types = st.multiselect("Position type", pos_types,
+                                   default=pos_types, key="pos_type")
+        pos_sectors = sorted(pos["sector"].unique())
+        sel_sectors = st.multiselect("Sector", pos_sectors,
+                                     default=pos_sectors, key="pos_sector")
+
+    pf = pos[
+        pos["Account"].isin(sel_accts) &
+        pos["TYPE"].isin(sel_types) &
+        pos["sector"].isin(sel_sectors)
+    ].copy()
+
+    if pf.empty:
+        st.info("No positions match the current filter.")
+        st.stop()
+
+    # ── Portfolio KPIs ─────────────────────────────────────────────────────────
+    total_mv   = pf["MARKET VALUE"].sum()
+    total_cost = pf["COST"].sum()
+    total_pnl  = pf["totalReturn"].sum()
+    total_ret_pct = (total_pnl / total_cost * 100) if total_cost else 0.0
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Market Value",    f"${total_mv:,.0f}")
+    k2.metric("Total Cost",      f"${total_cost:,.0f}")
+    k3.metric("Unrealized P&L",  f"${total_pnl:+,.0f}",
+              delta=f"{total_ret_pct:+.2f}%")
+    k4.metric("# Positions",     f"{len(pf)}")
+    k5.metric("Margin Borrowed", f"${abs(total_margin):,.0f}",
+              delta=f"${total_margin:+,.0f}", delta_color="inverse")
+
+    st.divider()
+
+    # ── Allocation charts ──────────────────────────────────────────────────────
+    col_l, col_r = st.columns(2)
+
+    with col_l:
+        st.subheader("Sector Allocation")
+        sec_grp = (
+            pf.groupby("sector")["MARKET VALUE"].sum()
+              .sort_values(ascending=False)
+              .reset_index()
+        )
+        fig_sec = px.pie(sec_grp, values="MARKET VALUE", names="sector",
+                         hole=0.4,
+                         color_discrete_sequence=px.colors.qualitative.Safe)
+        fig_sec.update_traces(textposition="inside",
+                              textinfo="percent+label",
+                              hovertemplate="%{label}<br>$%{value:,.0f}<br>%{percent}")
+        fig_sec.update_layout(showlegend=False, margin=dict(t=10, b=10))
+        st.plotly_chart(fig_sec, use_container_width=True)
+
+    with col_r:
+        st.subheader("Account Allocation")
+        acct_grp = (
+            pf.groupby("Account")["MARKET VALUE"].sum()
+              .sort_values(ascending=False)
+              .reset_index()
+        )
+        fig_acct = px.pie(acct_grp, values="MARKET VALUE", names="Account",
+                          hole=0.4,
+                          color_discrete_sequence=ACCOUNT_COLOURS)
+        fig_acct.update_traces(textposition="inside",
+                               textinfo="percent+label",
+                               hovertemplate="%{label}<br>$%{value:,.0f}<br>%{percent}")
+        fig_acct.update_layout(showlegend=False, margin=dict(t=10, b=10))
+        st.plotly_chart(fig_acct, use_container_width=True)
+
+    # ── P&L charts ─────────────────────────────────────────────────────────────
+    col_l2, col_r2 = st.columns(2)
+
+    with col_l2:
+        st.subheader("Unrealized P&L by Sector")
+        sec_pnl = (
+            pf.groupby("sector")["totalReturn"].sum()
+              .reset_index()
+              .sort_values("totalReturn")
+        )
+        sec_pnl["colour"] = sec_pnl["totalReturn"].apply(
+            lambda v: "Positive" if v >= 0 else "Negative"
+        )
+        fig_spnl = px.bar(sec_pnl, x="totalReturn", y="sector",
+                          orientation="h", color="colour",
+                          color_discrete_map={"Positive": C_GREEN, "Negative": C_RED},
+                          labels={"totalReturn": "P&L ($)", "sector": ""})
+        fig_spnl.update_layout(showlegend=False, margin=dict(t=10))
+        st.plotly_chart(fig_spnl, use_container_width=True)
+
+    with col_r2:
+        st.subheader("Unrealized P&L by Account")
+        acct_pnl = (
+            pf.groupby("Account")["totalReturn"].sum()
+              .reset_index()
+              .sort_values("totalReturn")
+        )
+        acct_pnl["colour"] = acct_pnl["totalReturn"].apply(
+            lambda v: "Positive" if v >= 0 else "Negative"
+        )
+        fig_apnl = px.bar(acct_pnl, x="totalReturn", y="Account",
+                          orientation="h", color="colour",
+                          color_discrete_map={"Positive": C_GREEN, "Negative": C_RED},
+                          labels={"totalReturn": "P&L ($)", "Account": ""})
+        fig_apnl.update_layout(showlegend=False, margin=dict(t=10))
+        st.plotly_chart(fig_apnl, use_container_width=True)
+
+    st.divider()
+
+    # ── Position type breakdown table ──────────────────────────────────────────
+    st.subheader("Breakdown by Type")
+    type_tbl = (
+        pf.groupby("TYPE")
+          .agg(
+              Positions=("Ticker", "count"),
+              Market_Value=("MARKET VALUE", "sum"),
+              Total_Cost=("COST", "sum"),
+              PnL=("totalReturn", "sum"),
+          )
+          .reset_index()
+          .sort_values("Market_Value", ascending=False)
+    )
+    type_tbl["Return_%"] = (type_tbl["PnL"] / type_tbl["Total_Cost"] * 100).round(2)
+    st.dataframe(
+        type_tbl.style
+            .format({"Market_Value": "${:,.2f}", "Total_Cost": "${:,.2f}",
+                     "PnL": "${:+,.2f}", "Return_%": "{:+.2f}%"})
+            .map(_colour_cell, subset=["PnL", "Return_%"]),
+        use_container_width=True, hide_index=True,
+    )
+
+    st.divider()
+
+    # ── Sector detail table ────────────────────────────────────────────────────
+    st.subheader("Sector Summary")
+    sec_tbl = (
+        pf.groupby("sector")
+          .agg(
+              Positions=("Ticker", "count"),
+              Market_Value=("MARKET VALUE", "sum"),
+              Total_Cost=("COST", "sum"),
+              PnL=("totalReturn", "sum"),
+          )
+          .reset_index()
+          .sort_values("Market_Value", ascending=False)
+    )
+    sec_tbl["Alloc_%"]  = (sec_tbl["Market_Value"] / total_mv * 100).round(2)
+    sec_tbl["Return_%"] = (sec_tbl["PnL"] / sec_tbl["Total_Cost"] * 100).round(2)
+    st.dataframe(
+        sec_tbl.style
+            .format({"Market_Value": "${:,.2f}", "Total_Cost": "${:,.2f}",
+                     "PnL": "${:+,.2f}", "Alloc_%": "{:.2f}%", "Return_%": "{:+.2f}%"})
+            .map(_colour_cell, subset=["PnL", "Return_%"]),
+        use_container_width=True, hide_index=True,
+    )
+
+    st.divider()
+
+    # ── Full positions table ───────────────────────────────────────────────────
+    st.subheader(f"All Positions ({len(pf)})")
+
+    # Sort and prepare display columns
+    show_cols = ["Account", "Ticker", "Name", "TYPE", "sector", "Shares",
+                 "PRICE", "Cost_Basis", "COST", "MARKET VALUE", "totalReturn",
+                 "IV_Rank", "PERF_YTD", "ATR_pct"]
+    show_cols = [c for c in show_cols if c in pf.columns]
+
+    pf_display = pf[show_cols].sort_values(
+        ["Account", "MARKET VALUE"], ascending=[True, False]
+    ).reset_index(drop=True)
+
+    pf_display["Return_%"] = (
+        pf_display["totalReturn"] / pf_display["COST"] * 100
+    ).round(2)
+
+    money_pos = ["COST", "MARKET VALUE", "totalReturn", "Cost_Basis"]
+    pct_pos   = ["PERF_YTD", "ATR_pct", "IV_Rank"]
+
+    fmt_dict = {
+        "PRICE":         "${:.2f}",
+        "Cost_Basis":    "${:.4f}",
+        "COST":          "${:,.2f}",
+        "MARKET VALUE":  "${:,.2f}",
+        "totalReturn":   "${:+,.2f}",
+        "Return_%":      "{:+.2f}%",
+        "PERF_YTD":      "{:.2%}",
+        "ATR_pct":       "{:.2%}",
+        "IV_Rank":       "{:.2%}",
+        "Shares":        "{:,.4f}",
+    }
+    fmt_dict = {k: v for k, v in fmt_dict.items() if k in pf_display.columns}
+
+    st.dataframe(
+        pf_display.style
+            .format(fmt_dict)
+            .map(_colour_cell, subset=["totalReturn", "Return_%"]),
+        use_container_width=True, hide_index=True,
+    )
+
+    st.download_button(
+        "⬇ Download Positions CSV",
+        pf_display.to_csv(index=False).encode(),
+        "positions.csv", "text/csv",
+    )
