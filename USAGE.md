@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Python 3.11+
-- Dependencies installed (`pip install -r requirements.txt`)
+- Dependencies installed (`pip install -r requirements.txt`), including `mcp>=1.0.0`
 
 ---
 
@@ -138,7 +138,58 @@ Only years from **2020 onwards** are ingested. To change this cutoff, edit
 
 ---
 
-## 7. Category reference
+## 7. MCP Server (ask Claude questions outside of code)
+
+The MCP server exposes the journal database as tools that Claude can call
+from Claude Desktop or any MCP-compatible client — no code context needed.
+
+### Available tools
+
+| Tool | Description |
+|------|-------------|
+| `get_portfolio_summary` | Overall KPIs with optional year/account filter |
+| `get_yearly_summary` | Year-over-year breakdown table |
+| `get_account_summary` | Per-account breakdown table |
+| `get_transactions` | Filterable transaction log (category, account, year, search) |
+| `run_ingest` | Re-load all broker CSVs into the database |
+
+### Register with Claude Desktop
+
+1. Open (or create) `%APPDATA%\Claude\claude_desktop_config.json`
+2. Add the following entry under `mcpServers`:
+
+```json
+{
+  "mcpServers": {
+    "trading-journal": {
+      "command": "C:\\Users\\vsbra\\AppData\\Local\\Programs\\Python\\Python314\\python.exe",
+      "args": ["C:\\work\\trading-journal\\mcp_server.py"],
+      "cwd": "C:\\work\\trading-journal"
+    }
+  }
+}
+```
+
+3. Restart Claude Desktop.
+
+### Example prompts
+
+- *"What were my total dividends in 2024?"*
+- *"Compare my net cash flow year over year"*
+- *"Show me all Coinbase staking rewards"*
+- *"What's my net income across all accounts?"*
+- *"Ingest the latest CSV files"* → triggers `run_ingest`
+
+### Updating data via Claude
+
+Drop updated CSVs into `activity/` and ask Claude:
+> *"Please ingest the latest files"*
+
+Claude will call `run_ingest()` and confirm the record counts.
+
+---
+
+## 8. Category reference
 
 | Category | Subcategories | Sign |
 |----------|--------------|------|
