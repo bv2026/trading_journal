@@ -1,36 +1,55 @@
 # Trading Journal
 
-A personal portfolio tracker that consolidates activity across multiple brokerage accounts into a single SQLite database and Streamlit dashboard.
+A personal portfolio tracker that consolidates brokerage activity and live
+positions across 8 accounts into a single SQLite database and Streamlit
+dashboard.
 
 ## Accounts supported
 
-| Account ID | Broker       | Type       |
-|------------|--------------|------------|
-| RH-BV      | Robinhood    | Investment |
-| RH-KD      | Robinhood    | Investment |
+| Account ID | Broker       | Type              |
+|------------|--------------|-------------------|
+| RH-BV      | Robinhood    | Investment        |
+| RH-KD      | Robinhood    | Investment        |
 | WEBULL     | Webull       | Investment + Cash |
-| TS         | TradeStation | Investment |
-| SCHWAB     | Schwab       | Investment |
-| TRADIER    | Tradier      | Investment |
-| COINBASE   | Coinbase     | Crypto     |
-| FIDELITY   | Fidelity     | Investment |
+| TS         | TradeStation | Investment        |
+| SCHWAB     | Schwab       | Investment        |
+| TRADIER    | Tradier      | Investment        |
+| COINBASE   | Coinbase     | Crypto            |
+| FIDELITY   | Fidelity     | Investment        |
 
 ## What it tracks
 
-- **Cash Flow** — deposits and withdrawals
+**Transaction history** (stored in SQLite, ingested from broker CSVs):
+- **Cash Flow** — deposits and withdrawals per account
 - **Dividends** — cash, reinvested, manufactured, non-qualified
 - **Rewards** — staking, interest, securities lending, platform rewards
 - **Margin Interest** — monthly charges across all margin accounts
 - **Fees** — trading fees, subscription fees, clearing fees
-- **Crypto Flow** — Coinbase USD/USDC deposits, withdrawals, sends and receives
+- **Crypto Flow** — Coinbase USD deposits/withdrawals, bank-funded buys, external wallet transfers
 
-Positions and unrealised P&L are out of scope.
+**Live positions** (read directly from `activity/TRADEPOSITIONS.xlsx` on each load):
+- Market value, cost basis, unrealized P&L, return %
+- Sector and industry classification
+- IV Rank, YTD performance, ATR %
+- Margin borrowed per account
+- Net worth = total market value − total margin
+
+## Dashboard
+
+The dashboard has four tabs:
+
+| Tab | Contents |
+|-----|----------|
+| **Portfolio** | Net worth banner · unified account summary · sector allocation pies · positions by account · sector summary · yearly pivots · crypto flow |
+| **Yearly Summary** | Year-over-year table · income/cost charts |
+| **Monthly Trends** | Monthly income, costs, cash flow, and cumulative charts |
+| **Transactions** | Filterable/searchable transaction log with CSV export |
 
 ## Project structure
 
 ```
 trading-journal/
-├── activity/               Broker CSV exports (gitignored)
+├── activity/               Broker CSV exports + TRADEPOSITIONS.xlsx (gitignored)
 ├── data/                   SQLite database (gitignored)
 │   └── journal.db
 ├── src/
@@ -45,25 +64,32 @@ trading-journal/
 │       ├── coinbase.py
 │       └── fidelity.py     Yearly summary parser (2020+)
 ├── dashboard/
-│   └── app.py              Streamlit dashboard
+│   └── app.py              Streamlit dashboard (4 tabs)
+├── mcp_server.py           FastMCP server for Claude Desktop integration
 ├── ingest.py               Load all CSVs → journal.db
 ├── schema.sql              Table definitions
 ├── requirements.txt
-└── README.md
+├── README.md
+└── USAGE.md                Full usage guide
 ```
 
 ## Example prompts (Claude Desktop)
 
 Once the MCP server is registered you can ask Claude questions directly in chat.
 
+**Net worth & positions**
+> *"What is my net worth today?"*
+> *"Show me my portfolio summary"*
+> *"What are my Technology positions in Schwab?"*
+> *"Show me unrealized P&L by sector"*
+
 **Portfolio overview**
-> *"Give me a summary of my entire portfolio"*
 > *"What is my all-time net income across all accounts?"*
 > *"How much have I paid in margin interest over the years?"*
 
 **Year-over-year analysis**
 > *"Show me dividends year by year"*
-> *"Which year had the highest net income?"*  
+> *"Which year had the highest net income?"*
 > *"How did 2024 compare to 2023 for fees and margin interest?"*
 
 **Per-account drilldown**
@@ -95,19 +121,19 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Usage
-
-See [USAGE.md](USAGE.md) for full details.
-
-**Quick start:**
+## Quick start
 
 ```bash
 # 1. Drop broker CSV exports into activity/
-# 2. Ingest
+# 2. Place TRADEPOSITIONS.xlsx into activity/
+# 3. Ingest transactions
 python ingest.py
 
-# 3. Launch dashboard
+# 4. Launch dashboard
 streamlit run dashboard/app.py
 ```
 
 Dashboard runs at `http://localhost:8501`.
+
+See [USAGE.md](USAGE.md) for full details on file formats, MCP setup, and
+adding new accounts.

@@ -30,40 +30,60 @@ _SHEET_ACCOUNT = {
 _SKIP_COLS = {"Unnamed", "MS FORM"}  # prefixes to drop
 
 
+_REQUIRED_POS_COLS = {"Ticker", "COST", "MARKET VALUE", "totalReturn"}
+
+
 @st.cache_data(ttl=300)
 def _load_positions() -> pd.DataFrame:
-    """Load all position sheets from TRADEPOSITIONS.xlsx into one DataFrame."""
+    """Load all position sheets from TRADEPOSITIONS.xlsx into one DataFrame.
+
+    Returns an empty DataFrame if the file is absent or no sheets load
+    successfully.  Sheet-level errors are logged to stderr so they appear
+    in the Streamlit server log without crashing the dashboard.
+    """
+    import logging
+
     if not POSITIONS_FILE.exists():
         return pd.DataFrame()
-    frames = []
+
+    frames: list[pd.DataFrame] = []
     for sheet, acct in _SHEET_ACCOUNT.items():
         try:
             df_ = pd.read_excel(POSITIONS_FILE, sheet_name=sheet)
-            # Drop helper/unnamed columns
+            # Drop helper / unnamed columns
             keep = [c for c in df_.columns
                     if not any(str(c).startswith(p) for p in _SKIP_COLS)]
             df_ = df_[keep].copy()
             # Standardise column names
             df_.rename(columns={
-                "ATR %":    "ATR_pct",
-                "IV RANK":  "IV_Rank",
-                "PERF YTD": "PERF_YTD",
-                "Sh/Contr": "Shares",
+                "ATR %":      "ATR_pct",
+                "IV RANK":    "IV_Rank",
+                "PERF YTD":   "PERF_YTD",
+                "Sh/Contr":   "Shares",
                 "COST BASIS": "Cost_Basis",
             }, inplace=True)
-            # Ensure Ticker is a string and drop blank rows
+            # Validate required columns are present
+            missing = _REQUIRED_POS_COLS - set(df_.columns)
+            if missing:
+                logging.warning(
+                    "TRADEPOSITIONS %s: skipping — missing columns %s", sheet, missing
+                )
+                continue
+            # Drop blank / NaN ticker rows
             df_["Ticker"] = df_["Ticker"].astype(str).str.strip()
-            df_ = df_[df_["Ticker"] != "nan"]
+            df_ = df_[df_["Ticker"].str.upper() != "NAN"]
             df_["Account"] = acct
             frames.append(df_)
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.warning("TRADEPOSITIONS %s: failed to load — %s", sheet, exc)
+
     if not frames:
         return pd.DataFrame()
+
     pos = pd.concat(frames, ignore_index=True)
-    pos["sector"] = pos["sector"].fillna("Unknown")
-    pos["industry"] = pos["industry"].fillna("Unknown")
-    pos["TYPE"] = pos["TYPE"].fillna("Unknown")
+    pos["sector"]   = pos["sector"].fillna("Unknown")   if "sector"   in pos.columns else "Unknown"
+    pos["industry"] = pos["industry"].fillna("Unknown") if "industry" in pos.columns else "Unknown"
+    pos["TYPE"]     = pos["TYPE"].fillna("Unknown")     if "TYPE"     in pos.columns else "Unknown"
     return pos
 
 # ── Page config ────────────────────────────────────────────────────────────────
@@ -89,7 +109,7 @@ def _load() -> pd.DataFrame:
 df_all = _load()
 
 if df_all.empty:
-    st.error("No data found — run  `python ingest.py`  first.")
+    st.error("No data found — run `python ingest.py` first.")
     st.stop()
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
@@ -106,6 +126,8 @@ with st.sidebar:
 
     all_accounts = sorted(df_all["account_id"].unique())
     accounts = st.multiselect("Accounts", all_accounts, default=all_accounts)
+    if not accounts:
+        accounts = all_accounts  # fall back to all when nothing selected
 
     show_internal = st.checkbox("Include internal transfers", value=False)
 
@@ -173,13 +195,19 @@ def _fmt(v: float, parens: bool = False) -> str:
     return f"${v:+,.2f}" if v != 0 else "$0.00"
 
 
-def _colour_cell(v: float) -> str:
-    return "color: #16a34a" if v >= 0 else "color: #dc2626"
+def _colour_cell(v) -> str:
+    """Green for non-negative, red for negative. Safe for strings/NaN."""
+    try:
+        return "color: #16a34a" if float(v) >= 0 else "color: #dc2626"
+    except (TypeError, ValueError):
+        return ""
 
 
 def _style_table(df_: pd.DataFrame, money_cols: list[str]) -> object:
-    fmt = {c: "${:,.2f}" for c in money_cols}
-    return df_.style.format(fmt).map(_colour_cell, subset=money_cols)
+    """Format money columns and colour-code them; silently ignores missing cols."""
+    existing = [c for c in money_cols if c in df_.columns]
+    fmt = {c: "${:,.2f}" for c in existing}
+    return df_.style.format(fmt).map(_colour_cell, subset=existing)
 
 
 # ── Header KPIs ────────────────────────────────────────────────────────────────
@@ -189,25 +217,28 @@ st.caption(f"{len(df):,} transactions · {start_d} → {end_d} · "
            f"{len(accounts)} account(s)")
 
 # ── Net Worth banner ───────────────────────────────────────────────────────────
-_pos_hdr = _load_positions()
-if not _pos_hdr.empty:
-    _pos_hdr_clean  = _pos_hdr[_pos_hdr["Ticker"] != "MARGIN"].copy()
-    _margin_hdr     = _pos_hdr[_pos_hdr["Ticker"] == "MARGIN"].copy()
-    _pos_hdr_clean["MARKET VALUE"] = pd.to_numeric(
-        _pos_hdr_clean["MARKET VALUE"], errors="coerce"
-    )
-    _margin_hdr["MARKET VALUE"] = pd.to_numeric(
-        _margin_hdr["MARKET VALUE"], errors="coerce"
-    )
-    _total_mv     = _pos_hdr_clean["MARKET VALUE"].sum()
-    _total_margin = abs(_margin_hdr["MARKET VALUE"].sum())
-    _net_worth    = _total_mv - _total_margin
+try:
+    _pos_hdr = _load_positions()
+    if not _pos_hdr.empty and "MARKET VALUE" in _pos_hdr.columns:
+        _pos_hdr_clean = _pos_hdr[_pos_hdr["Ticker"] != "MARGIN"].copy()
+        _margin_hdr    = _pos_hdr[_pos_hdr["Ticker"] == "MARGIN"].copy()
+        _pos_hdr_clean["MARKET VALUE"] = pd.to_numeric(
+            _pos_hdr_clean["MARKET VALUE"], errors="coerce"
+        )
+        _margin_hdr["MARKET VALUE"] = pd.to_numeric(
+            _margin_hdr["MARKET VALUE"], errors="coerce"
+        )
+        _total_mv     = float(_pos_hdr_clean["MARKET VALUE"].sum())
+        _total_margin = abs(float(_margin_hdr["MARKET VALUE"].sum()))
+        _net_worth    = _total_mv - _total_margin
 
-    nw1, nw2, nw3 = st.columns(3)
-    nw1.metric("Net Worth",      f"${_net_worth:,.0f}")
-    nw2.metric("Market Value",   f"${_total_mv:,.0f}")
-    nw3.metric("Margin Borrowed",f"${_total_margin:,.0f}", delta=f"-${_total_margin:,.0f}",
-               delta_color="inverse")
+        nw1, nw2, nw3 = st.columns(3)
+        nw1.metric("Net Worth",       f"${_net_worth:,.0f}")
+        nw2.metric("Market Value",    f"${_total_mv:,.0f}")
+        nw3.metric("Margin Borrowed", f"${_total_margin:,.0f}",
+                   delta=f"-${_total_margin:,.0f}", delta_color="inverse")
+except Exception:
+    pass  # Net worth banner is best-effort; failures must not crash the page
 
 # ── Summary table (replaces individual metric widgets) ─────────────────────────
 _kpi_row = {
@@ -223,7 +254,7 @@ _kpi_df = pd.DataFrame([_kpi_row])
 st.dataframe(
     _kpi_df.style
         .format({c: "${:,.2f}" for c in _kpi_df.columns})
-        .map(_colour_cell),
+        .map(_colour_cell, subset=list(_kpi_df.columns)),
     use_container_width=True,
     hide_index=True,
 )
@@ -443,9 +474,10 @@ with tab_portfolio:
                 f"Margin ${abs(acct_margin):,.0f}"
             )
             with st.expander(label, expanded=False):
+                _cost_safe = acct_pos["COST"].replace(0, float("nan"))
                 acct_pos["Return_%"] = (
-                    acct_pos["totalReturn"] / acct_pos["COST"] * 100
-                ).round(2)
+                    acct_pos["totalReturn"] / _cost_safe * 100
+                ).fillna(0).round(2)
                 show = [c for c in _pos_cols if c in acct_pos.columns]
                 fmt  = {k: v for k, v in _pos_fmt.items() if k in show}
                 st.dataframe(
