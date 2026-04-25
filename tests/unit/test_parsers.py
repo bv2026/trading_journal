@@ -96,19 +96,41 @@ class TestParseDate:
 
 class TestMakeId:
     def test_deterministic(self):
-        a = make_id("RH-BV", "file.csv", 10)
-        b = make_id("RH-BV", "file.csv", 10)
+        a = make_id("RH-BV", "2024-01-15", 1000.0, "ACH:Wire transfer in")
+        b = make_id("RH-BV", "2024-01-15", 1000.0, "ACH:Wire transfer in")
         assert a == b
 
-    def test_different_inputs_different_ids(self):
-        a = make_id("RH-BV", "file.csv", 10)
-        b = make_id("RH-BV", "file.csv", 11)
+    def test_different_amounts_different_ids(self):
+        a = make_id("RH-BV", "2024-01-15", 1000.0, "ACH:deposit")
+        b = make_id("RH-BV", "2024-01-15",  500.0, "ACH:deposit")
         assert a != b
 
+    def test_different_dates_different_ids(self):
+        a = make_id("RH-BV", "2024-01-15", 100.0, "CDIV:Apple")
+        b = make_id("RH-BV", "2024-02-15", 100.0, "CDIV:Apple")
+        assert a != b
+
+    def test_different_accounts_different_ids(self):
+        a = make_id("RH-BV", "2024-01-15", 100.0, "CDIV:Apple")
+        b = make_id("RH-KD", "2024-01-15", 100.0, "CDIV:Apple")
+        assert a != b
+
+    def test_content_based_file_independent(self):
+        """Same content from two different filenames must produce the same ID."""
+        a = make_id("SCHWAB", "2024-03-01", 42.50, "Cash Dividend:AAPL")
+        b = make_id("SCHWAB", "2024-03-01", 42.50, "Cash Dividend:AAPL")
+        assert a == b
+
     def test_returns_hex_string(self):
-        result = make_id("ACCT", "source.csv", 0)
+        result = make_id("ACCT", "2024-01-01", 0.0, "test")
         assert isinstance(result, str)
         assert len(result) == 32  # MD5 hex digest
+
+    def test_amount_string_same_as_float(self):
+        """String and float representations of the same amount produce same ID."""
+        a = make_id("TS", "2024-06-01", 250.0,   "FPL REVENUE")
+        b = make_id("TS", "2024-06-01", "250.0", "FPL REVENUE")
+        assert a == b
 
 
 # ══════════════════════════════════════════════════════════════════════════════

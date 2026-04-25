@@ -48,7 +48,7 @@ def parse(filepath: str, account_id: str = "SCHWAB") -> list[dict]:
         desc = str(row.get("Description", "")).strip()
 
         records.append({
-            "id":          make_id(account_id, filepath, idx),
+            "id":          make_id(account_id, date, amount, f"{action}:{desc}"),
             "account_id":  account_id,
             "date":        date,
             "category":    category,
@@ -64,7 +64,7 @@ def parse(filepath: str, account_id: str = "SCHWAB") -> list[dict]:
         fees = parse_amount(row.get("Fees & Comm", ""))
         if fees != 0:
             records.append({
-                "id":          make_id(account_id, filepath, f"{idx}_fee"),
+                "id":          make_id(account_id, date, -abs(fees), f"commission:{desc}"),
                 "account_id":  account_id,
                 "date":        date,
                 "category":    "fee",

@@ -56,7 +56,7 @@ def parse(filepath: str, account_id: str = "TRADIER") -> list[dict]:
         symbol = str(row.get("Symbol", "")).strip().strip('"')
 
         records.append({
-            "id":          make_id(account_id, filepath, idx),
+            "id":          make_id(account_id, date, amount, desc),
             "account_id":  account_id,
             "date":        date,
             "category":    category,

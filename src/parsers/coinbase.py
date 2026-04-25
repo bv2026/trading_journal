@@ -158,8 +158,10 @@ def parse(filepath: str, account_id: str = "COINBASE") -> list[dict]:
 
             # Capture fees regardless of funding source
             if fee_amt != 0:
+                fee_id = (f"{txn_id}_fee" if txn_id and txn_id != "nan"
+                          else make_id(account_id, date, -abs(fee_amt), f"fee:{txn_type}:{asset}"))
                 records.append({
-                    "id":          make_id(account_id, filepath, f"{idx}_fee"),
+                    "id":          fee_id,
                     "account_id":  account_id,
                     "date":        date,
                     "category":    "fee",
@@ -175,8 +177,10 @@ def parse(filepath: str, account_id: str = "COINBASE") -> list[dict]:
         # ── Sell transactions — internal (proceeds stay on Coinbase) ───────
         if txn_type in _SELL_TYPES:
             if fee_amt != 0:
+                fee_id = (f"{txn_id}_fee" if txn_id and txn_id != "nan"
+                          else make_id(account_id, date, -abs(fee_amt), f"fee:{txn_type}:{asset}"))
                 records.append({
-                    "id":          make_id(account_id, filepath, f"{idx}_fee"),
+                    "id":          fee_id,
                     "account_id":  account_id,
                     "date":        date,
                     "category":    "fee",

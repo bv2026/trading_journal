@@ -41,6 +41,23 @@ def parse_date(val) -> str | None:
         return None
 
 
-def make_id(account_id: str, source_file: str, row_idx: int) -> str:
-    key = f"{account_id}|{source_file}|{row_idx}"
+def make_id(account_id: str, date: str, amount: float | str, note: str = "") -> str:
+    """Stable content-based transaction ID.
+
+    Keyed on (account_id, date, amount, note) so the same transaction always
+    produces the same hash regardless of which CSV file it came from or what
+    row it sits on.  This enables incremental ingest: re-downloading only the
+    last N days of activity and running ingest.py will add only genuinely new
+    records without duplicating anything already in the database.
+
+    *note* should be discriminating enough to distinguish two transactions on
+    the same day with the same dollar amount (e.g. include the description or
+    transaction type).  For brokers that supply a native stable ID (Coinbase),
+    pass that ID directly as the record's ``id`` field instead of calling this.
+    """
+    try:
+        amt_str = f"{float(amount):.4f}"
+    except (TypeError, ValueError):
+        amt_str = str(amount)
+    key = f"{account_id}|{date}|{amt_str}|{note[:120]}"
     return hashlib.md5(key.encode()).hexdigest()

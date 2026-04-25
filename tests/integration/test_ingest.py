@@ -17,7 +17,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import src.db as db_module
-from src.db import init_db, upsert_accounts, clear_transactions, insert_transactions, load_transactions
+from src.db import init_db, upsert_accounts, clear_transactions, insert_transactions, load_transactions, delete_by_account
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -129,23 +129,50 @@ class TestDbLayer:
         assert count == 0
 
     def test_duplicate_id_ignored(self, initialised_db):
-        """insert_transactions with a duplicate id must not raise."""
+        """insert_transactions with a duplicate id must silently skip the second insert."""
         upsert_accounts(_ACCOUNTS)
         rec = {"id": "dup", "account_id": "RH-BV", "date": "2024-01-10",
                "category": "cash_flow", "subcategory": "deposit", "amount": 100.0,
                "currency": "USD", "symbol": None, "description": "A",
                "source_file": "test.csv"}
-        insert_transactions([rec])
-        # Inserting again should not raise (to_sql with if_exists='append'
-        # can raise on PK conflict; the ingest deduplicates upstream, but
-        # the DB itself should handle it gracefully via the PRIMARY KEY constraint)
-        try:
-            insert_transactions([rec])
-        except Exception:
-            pass  # acceptable — dedup is the caller's responsibility
+        first  = insert_transactions([rec])
+        second = insert_transactions([rec])
+        assert first  == 1
+        assert second == 0   # INSERT OR IGNORE — nothing inserted the second time
         with sqlite3.connect(initialised_db) as conn:
             count = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
-        assert count == 1  # still only one row
+        assert count == 1
+
+    def test_insert_returns_inserted_count(self, initialised_db):
+        """insert_transactions returns number of rows actually written."""
+        upsert_accounts(_ACCOUNTS)
+        recs = [
+            {"id": f"r{i}", "account_id": "RH-BV", "date": "2024-01-10",
+             "category": "cash_flow", "subcategory": "deposit", "amount": float(i),
+             "currency": "USD", "symbol": None, "description": f"rec {i}",
+             "source_file": "test.csv"}
+            for i in range(5)
+        ]
+        n = insert_transactions(recs)
+        assert n == 5
+
+    def test_delete_by_account(self, initialised_db):
+        """delete_by_account removes only that account's records."""
+        upsert_accounts(_ACCOUNTS)
+        insert_transactions([
+            {"id": "a1", "account_id": "RH-BV",    "date": "2024-01-10",
+             "category": "cash_flow", "subcategory": "deposit", "amount": 100.0,
+             "currency": "USD", "symbol": None, "description": "A", "source_file": "x"},
+            {"id": "b1", "account_id": "COINBASE", "date": "2024-01-10",
+             "category": "crypto_flow", "subcategory": "usd_deposit", "amount": 200.0,
+             "currency": "USD", "symbol": None, "description": "B", "source_file": "y"},
+        ])
+        delete_by_account("COINBASE")
+        with sqlite3.connect(initialised_db) as conn:
+            rows = conn.execute("SELECT account_id FROM transactions").fetchall()
+        ids = [r[0] for r in rows]
+        assert "COINBASE" not in ids
+        assert "RH-BV" in ids
 
 
 # ── Full pipeline integration ─────────────────────────────────────────────────

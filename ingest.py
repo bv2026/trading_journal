@@ -1,9 +1,24 @@
 """
-Ingest all broker CSV files into data/journal.db.
-Run: python ingest.py
-Re-running is safe — all transactions are cleared and re-inserted each time.
+Ingest broker CSV files into data/journal.db.
+
+Default (incremental):
+    python ingest.py
+    Only new records are added; existing ones are left untouched.
+    Drop only the latest CSV export from each broker — no need to re-download
+    full history every time.
+
+Full rebuild:
+    python ingest.py --reset
+    Clears all transactions and reloads from every CSV currently in activity/.
+    Use this once after first setup or whenever you want a clean slate.
+
+Special cases:
+    Fidelity — yearly summary file is always refreshed (current-year figures
+    change as the year progresses), regardless of --reset.
 """
 import sys
+import argparse
+import inspect
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -24,62 +39,81 @@ ACCOUNTS = [
     {"account_id": "FIDELITY", "broker": "fidelity",     "account_type": "investment", "holder": None},
 ]
 
+# Accounts whose CSVs are yearly summaries rather than running transaction logs.
+# These are always fully refreshed so mid-year updates are picked up.
+ALWAYS_REFRESH = {"FIDELITY"}
+
 PARSERS = [
-    (robinhood.parse,       ACTIVITY / "robinhood-inv-bv.csv",  "RH-BV"),
-    (robinhood.parse,       ACTIVITY / "robinhood-inv-kd.csv",  "RH-KD"),
-    (webull.parse_inv,      ACTIVITY / "WEBULL-inv.csv",        "WEBULL"),
-    (webull.parse_cash,     ACTIVITY / "WEBULL-cash.csv",       "WEBULL"),
-    (tradestation.parse,    ACTIVITY / "tdstation-cash.csv",    "TS"),
-    (schwab.parse,          ACTIVITY / "schwab.csv",            "SCHWAB"),
-    (tradier.parse,         ACTIVITY / "tradier.csv",           "TRADIER"),
-    (coinbase.parse,        ACTIVITY / "coinbase-main.csv",     "COINBASE"),
-    (fidelity.parse,        ACTIVITY / "fidelity_Investment_income_balance.csv", "FIDELITY"),
+    (robinhood.parse,       ACTIVITY / "robinhood-inv-bv.csv",                          "RH-BV"),
+    (robinhood.parse,       ACTIVITY / "robinhood-inv-kd.csv",                          "RH-KD"),
+    (webull.parse_inv,      ACTIVITY / "WEBULL-inv.csv",                                "WEBULL"),
+    (webull.parse_cash,     ACTIVITY / "WEBULL-cash.csv",                               "WEBULL"),
+    (tradestation.parse,    ACTIVITY / "tdstation-cash.csv",                            "TS"),
+    (schwab.parse,          ACTIVITY / "schwab.csv",                                    "SCHWAB"),
+    (tradier.parse,         ACTIVITY / "tradier.csv",                                   "TRADIER"),
+    (coinbase.parse,        ACTIVITY / "coinbase-main.csv",                             "COINBASE"),
+    (fidelity.parse,        ACTIVITY / "fidelity_Investment_income_balance.csv",        "FIDELITY"),
 ]
 
 
-def run():
+def run(reset: bool = False) -> None:
     print("Initializing database …")
     db.init_db()
-
-    print("Clearing existing transactions …")
-    db.clear_transactions()
-
-    print("Upserting accounts …")
     db.upsert_accounts(ACCOUNTS)
 
-    all_records: list[dict] = []
+    if reset:
+        print("--reset: clearing all existing transactions …")
+        db.clear_transactions()
+
+    total_new = 0
+    total_skipped = 0
 
     for parse_fn, path, acct in PARSERS:
         if not path.exists():
             print(f"  SKIP  {acct}: file not found ({path.name})")
             continue
+
         try:
-            # parse_inv / parse_cash take only filepath; robinhood/schwab/etc. take filepath + account_id
-            import inspect
             sig = inspect.signature(parse_fn)
-            if len(sig.parameters) >= 2:
-                recs = parse_fn(str(path), acct)
-            else:
-                recs = parse_fn(str(path))
-            print(f"  OK    {acct}: {len(recs):>5} records")
-            all_records.extend(recs)
+            recs = parse_fn(str(path), acct) if len(sig.parameters) >= 2 else parse_fn(str(path))
         except Exception as exc:
             print(f"  ERROR {acct}: {exc}")
+            continue
 
-    # Deduplicate by id (same row re-parsed should produce same id)
-    seen: set[str] = set()
-    unique = []
-    for r in all_records:
-        if r["id"] not in seen:
-            seen.add(r["id"])
-            unique.append(r)
+        # Fidelity is a yearly summary whose current-year row changes over time.
+        # Always delete and re-insert so updated figures are picked up.
+        if acct in ALWAYS_REFRESH and not reset:
+            db.delete_by_account(acct)
 
-    dupes = len(all_records) - len(unique)
-    print(f"\nTotal: {len(unique)} records ({dupes} duplicates removed)")
+        # Deduplicate within the parsed batch (e.g. two Webull files for same account)
+        seen_in_batch: set[str] = set()
+        unique_recs = []
+        for r in recs:
+            if r["id"] not in seen_in_batch:
+                seen_in_batch.add(r["id"])
+                unique_recs.append(r)
 
-    db.insert_transactions(unique)
-    print("Ingest complete.")
+        inserted = db.insert_transactions(unique_recs)
+        skipped  = len(unique_recs) - inserted
+        total_new     += inserted
+        total_skipped += skipped
+
+        status = f"{inserted:>5} new"
+        if skipped:
+            status += f"  ({skipped} already in DB)"
+        print(f"  OK    {acct}: {status}")
+
+    print(f"\nDone — {total_new} new records added, {total_skipped} already existed.")
+    if total_skipped and not reset:
+        print("Tip: run with --reset to do a full rebuild from all CSV files.")
 
 
 if __name__ == "__main__":
-    run()
+    parser = argparse.ArgumentParser(description="Ingest broker CSVs into journal.db")
+    parser.add_argument(
+        "--reset", action="store_true",
+        help="Clear all transactions and reload from scratch (use after first setup "
+             "or when switching from an older version of this tool).",
+    )
+    args = parser.parse_args()
+    run(reset=args.reset)

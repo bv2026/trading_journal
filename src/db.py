@@ -33,17 +33,42 @@ def clear_transactions():
         conn.commit()
 
 
-def insert_transactions(records: list[dict]):
+def insert_transactions(records: list[dict]) -> int:
+    """Insert records, silently skipping any whose id already exists.
+
+    Returns the number of rows actually inserted.
+    """
     if not records:
-        return
+        return 0
     df = pd.DataFrame(records)
     required = ["id", "account_id", "date", "category", "subcategory",
                 "amount", "currency", "symbol", "description", "source_file"]
     for col in required:
         if col not in df.columns:
             df[col] = None
+    rows = (
+        df[required]
+        .where(pd.notna(df[required]), None)
+        .to_dict(orient="records")
+    )
     with get_conn() as conn:
-        df[required].to_sql("transactions", conn, if_exists="append", index=False)
+        cursor = conn.executemany(
+            "INSERT OR IGNORE INTO transactions "
+            "(id, account_id, date, category, subcategory, amount, "
+            " currency, symbol, description, source_file) "
+            "VALUES (:id, :account_id, :date, :category, :subcategory, :amount, "
+            "        :currency, :symbol, :description, :source_file)",
+            rows,
+        )
+        conn.commit()
+        return cursor.rowcount
+
+
+def delete_by_account(account_id: str) -> None:
+    """Delete all transactions for a given account (used for yearly-summary refresh)."""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM transactions WHERE account_id = ?", (account_id,))
+        conn.commit()
 
 
 def load_transactions() -> pd.DataFrame:

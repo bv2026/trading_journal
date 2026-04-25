@@ -50,7 +50,7 @@ def parse(filepath: str, account_id: str) -> list[dict]:
         desc = str(row.get("Description", "")).replace("\n", " ").strip()
 
         records.append({
-            "id":          make_id(account_id, filepath, idx),
+            "id":          make_id(account_id, date, amount, f"{code}:{desc}"),
             "account_id":  account_id,
             "date":        date,
             "category":    category,

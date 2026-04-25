@@ -10,7 +10,7 @@ def _row_to_record(row, idx: int, account_id: str, filepath: str) -> dict | None
         return None
     desc = str(row.get("DESCRIPTION", "")).strip()
     return {
-        "id":          make_id(account_id, filepath, idx),
+        "id":          make_id(account_id, date, amount, desc),
         "account_id":  account_id,
         "date":        date,
         "amount":      amount,

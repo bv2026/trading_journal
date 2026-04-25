@@ -111,9 +111,9 @@ def parse(filepath: str, account_id: str = "FIDELITY") -> list[dict]:
 
         def _rec(category: str, subcategory: str, amount: float) -> dict:
             return {
-                # Stable ID: same year + subcategory always yields the same hash,
-                # so re-ingesting an updated CSV replaces rather than duplicates.
-                "id":          make_id(account_id, filepath, f"{yr}_{subcategory}"),
+                # Stable ID: keyed on year + subcategory so the same annual
+                # summary row always hashes to the same value regardless of filename.
+                "id":          make_id(account_id, str(yr), 0, subcategory),
                 "account_id":  account_id,
                 "date":        date,
                 "category":    category,
