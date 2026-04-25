@@ -560,13 +560,11 @@ with tab_breakdown:
         st.subheader(title)
         st.dataframe(style_table(pv, yr_cols), use_container_width=True, hide_index=True)
 
-    _show_pivot(_pivot(df_acct, lambda m: m["net_cash"]),   "Net Cash Flow by Account")
+    _show_pivot(_pivot(df_acct, lambda m: m["net_cash"]),                "Net Cash Flow by Account")
     st.divider()
-    _show_pivot(_pivot(df_acct, lambda m: m["dividends"]),  "Dividends by Account")
+    _show_pivot(_pivot(df_acct, lambda m: m["dividends"] + m["rewards"]), "Div + Rewards by Account")
     st.divider()
-    _show_pivot(_pivot(df_acct, lambda m: m["rewards"]),    "Rewards by Account")
-    st.divider()
-    _show_pivot(_pivot(df_acct, lambda m: m["margin_int"]), "Margin Interest by Account")
+    _show_pivot(_pivot(df_acct, lambda m: m["margin_int"]),               "Margin Interest by Account")
     st.divider()
     _show_pivot(_pivot(df_acct, lambda m: m["fees"]),       "Fees by Account")
 
