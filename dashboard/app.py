@@ -564,9 +564,7 @@ with tab_breakdown:
     st.divider()
     _show_pivot(_pivot(df_acct, lambda m: m["dividends"] + m["rewards"]), "Div + Rewards by Account")
     st.divider()
-    _show_pivot(_pivot(df_acct, lambda m: m["margin_int"]),               "Margin Interest by Account")
-    st.divider()
-    _show_pivot(_pivot(df_acct, lambda m: m["fees"]),       "Fees by Account")
+    _show_pivot(_pivot(df_acct, lambda m: m["margin_int"] + m["fees"]),   "Margin + Fees by Account")
 
     # ── Crypto Flow ────────────────────────────────────────────────────────────
     crypto_df = df[df["category"] == "crypto_flow"]
