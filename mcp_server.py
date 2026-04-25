@@ -307,20 +307,33 @@ def get_performance(account_id: str | None = None) -> str:
     # Also load live current values for accuracy
     try:
         all_pos = load_all_positions()
+        is_margin = all_pos["Ticker"].str.upper() == "MARGIN"
         live_mv = (
-            all_pos[all_pos["Ticker"].str.upper() != "MARGIN"]
+            all_pos[~is_margin]
             .groupby("Account")["MARKET VALUE"]
             .sum()
             .reset_index()
             .rename(columns={"Account": "account_id", "MARKET VALUE": "current_live"})
         )
         live_mv["current_live"] = pd.to_numeric(live_mv["current_live"], errors="coerce")
+        margin_mv = (
+            all_pos[is_margin]
+            .groupby("Account")["MARKET VALUE"]
+            .sum()
+            .abs()
+            .reset_index()
+            .rename(columns={"Account": "account_id", "MARKET VALUE": "margin_live"})
+        )
         snap = snap.merge(live_mv, on="account_id", how="left")
+        snap = snap.merge(margin_mv, on="account_id", how="left")
         snap["current_value"] = snap["current_live"].combine_first(
             pd.to_numeric(snap["current_value"], errors="coerce")
         )
+        snap["margin_live"] = pd.to_numeric(snap["margin_live"], errors="coerce").fillna(0)
+        snap["net_value"] = snap["current_value"] - snap["margin_live"]
     except Exception:
         snap["current_value"] = pd.to_numeric(snap.get("current_value", pd.Series(dtype=float)), errors="coerce")
+        snap["net_value"] = snap["current_value"]
 
     def _pct(cur, prior):
         try:
@@ -334,30 +347,30 @@ def get_performance(account_id: str | None = None) -> str:
 
     rows = []
     for _, r in snap.iterrows():
-        cur = r.get("current_value")
+        net = r.get("net_value")
         rows.append({
             "account_id":  r["account_id"],
-            "current_value": round(float(cur), 2) if pd.notna(cur) else None,
+            "current_value": round(float(net), 2) if pd.notna(net) else None,
             "returns": {
-                "1w":  _pct(cur, r.get("value_1w")),
-                "1m":  _pct(cur, r.get("value_1m")),
-                "3m":  _pct(cur, r.get("value_3m")),
-                "ytd": _pct(cur, r.get("value_ytd_start")),
-                "1y":  _pct(cur, r.get("value_1y")),
+                "1w":  _pct(net, r.get("value_1w")),
+                "1m":  _pct(net, r.get("value_1m")),
+                "3m":  _pct(net, r.get("value_3m")),
+                "ytd": _pct(net, r.get("value_ytd_start")),
+                "1y":  _pct(net, r.get("value_1y")),
             },
         })
 
     # Portfolio total row
-    valid_cur = pd.to_numeric(snap.get("current_value", pd.Series(dtype=float)), errors="coerce")
-    tot_cur = float(valid_cur.fillna(0).sum())
+    valid_net = pd.to_numeric(snap.get("net_value", pd.Series(dtype=float)), errors="coerce")
+    tot_net = float(valid_net.fillna(0).sum())
 
     def _tot_pct(col):
         prior = pd.to_numeric(snap.get(col, pd.Series(dtype=float)), errors="coerce").dropna().sum()
-        return _pct(tot_cur, prior) if prior else None
+        return _pct(tot_net, prior) if prior else None
 
     rows.append({
         "account_id": "TOTAL",
-        "current_value": round(tot_cur, 2),
+        "current_value": round(tot_net, 2),
         "returns": {
             "1w":  _tot_pct("value_1w"),
             "1m":  _tot_pct("value_1m"),

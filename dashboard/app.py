@@ -811,8 +811,8 @@ with tab_perf:
             return float("nan") if pd.isna(prior) else cur - prior
 
         # ── TOTAL row values ───────────────────────────────────────────────────
-        _tot_cur   = _perf["current_value"].sum()
-        _tot_margin = _perf["margin"].sum()
+        _perf["net_value"] = _perf["current_value"] - _perf["margin"]
+        _tot_net   = _perf["net_value"].sum()
 
         def _tot_prior(col):
             _valid = _perf[col].dropna()
@@ -823,29 +823,27 @@ with tab_perf:
 
         _sum_rows = []
         for _, _r in _perf.iterrows():
-            _cur  = _r["current_value"]
+            _net  = _r["net_value"]
             _1w   = _r.get("value_1w", float("nan"))
             _sum_rows.append({
                 "Account":       _r["account_id"],
-                "Current Value": _cur,
-                "Margin":        _r["margin"],
+                "Current Value": _net,
                 "1W Ago":        _1w,
-                "$ Change":      _chg(_cur, _1w),
-                "% Change":      _ret(_cur, _1w),
+                "$ Change":      _chg(_net, _1w),
+                "% Change":      _ret(_net, _1w),
             })
 
         _t1w = _tot_prior("value_1w")
         _sum_rows.append({
             "Account":       "TOTAL",
-            "Current Value": _tot_cur,
-            "Margin":        _tot_margin,
+            "Current Value": _tot_net,
             "1W Ago":        _t1w,
-            "$ Change":      _chg(_tot_cur, _t1w),
-            "% Change":      _ret(_tot_cur, _t1w),
+            "$ Change":      _chg(_tot_net, _t1w),
+            "% Change":      _ret(_tot_net, _t1w),
         })
 
         _sum_df = pd.DataFrame(_sum_rows)
-        _sum_money = ["Current Value", "Margin", "1W Ago", "$ Change"]
+        _sum_money = ["Current Value", "1W Ago", "$ Change"]
         _sum_fmt   = {c: "${:,.0f}" for c in _sum_money}
         _sum_fmt["% Change"] = "{:+.2f}%"
 
@@ -868,23 +866,23 @@ with tab_perf:
 
         _ret_rows = []
         for _, _r in _perf.iterrows():
-            _cur = _r["current_value"]
+            _net = _r["net_value"]
             _ret_rows.append({
                 "Account": _r["account_id"],
-                "1-Week":  _ret(_cur, _r.get("value_1w",       float("nan"))),
-                "1-Month": _ret(_cur, _r.get("value_1m",       float("nan"))),
-                "3-Month": _ret(_cur, _r.get("value_3m",       float("nan"))),
-                "YTD":     _ret(_cur, _r.get("value_ytd_start",float("nan"))),
-                "1-Year":  _ret(_cur, _r.get("value_1y",       float("nan"))),
+                "1-Week":  _ret(_net, _r.get("value_1w",       float("nan"))),
+                "1-Month": _ret(_net, _r.get("value_1m",       float("nan"))),
+                "3-Month": _ret(_net, _r.get("value_3m",       float("nan"))),
+                "YTD":     _ret(_net, _r.get("value_ytd_start",float("nan"))),
+                "1-Year":  _ret(_net, _r.get("value_1y",       float("nan"))),
             })
 
         _ret_rows.append({
             "Account": "TOTAL",
-            "1-Week":  _ret(_tot_cur, _tot_prior("value_1w")),
-            "1-Month": _ret(_tot_cur, _tot_prior("value_1m")),
-            "3-Month": _ret(_tot_cur, _tot_prior("value_3m")),
-            "YTD":     _ret(_tot_cur, _tot_prior("value_ytd_start")),
-            "1-Year":  _ret(_tot_cur, _tot_prior("value_1y")),
+            "1-Week":  _ret(_tot_net, _tot_prior("value_1w")),
+            "1-Month": _ret(_tot_net, _tot_prior("value_1m")),
+            "3-Month": _ret(_tot_net, _tot_prior("value_3m")),
+            "YTD":     _ret(_tot_net, _tot_prior("value_ytd_start")),
+            "1-Year":  _ret(_tot_net, _tot_prior("value_1y")),
         })
 
         _ret_df   = pd.DataFrame(_ret_rows)
