@@ -10,6 +10,12 @@ from pathlib import Path
 
 import pandas as pd
 
+try:
+    import yfinance as yf
+    _YF_AVAILABLE = True
+except ImportError:
+    _YF_AVAILABLE = False
+
 # ---------------------------------------------------------------------------
 # Sheet → account-ID mapping (TLOG-RECONCILE is intentionally excluded)
 # ---------------------------------------------------------------------------
@@ -113,8 +119,9 @@ def load_positions(filepath: Path) -> pd.DataFrame:
                 continue
 
             # Drop blank / NaN ticker rows
-            df_["Ticker"] = df_["Ticker"].astype(str).str.strip()
-            df_ = df_[df_["Ticker"].str.upper() != "NAN"]
+            # .fillna("") first: pandas 3+ astype(str) keeps NA as pd.NA not "nan"
+            df_["Ticker"] = df_["Ticker"].fillna("").astype(str).str.strip()
+            df_ = df_[~df_["Ticker"].str.upper().isin(["NAN", ""])]
             df_["Account"] = acct
             frames.append(df_)
 
@@ -134,14 +141,6 @@ def load_positions(filepath: Path) -> pd.DataFrame:
     # Apply sector overrides — ticker-level first, then fund-family name patterns.
     if "sector" in pos.columns:
         name_col = pos.get("Name", pd.Series("", index=pos.index)).fillna("")
-
-        def _resolve_sector(ticker: str, name: str, sector: str) -> str:
-            if ticker in SECTOR_OVERRIDES:
-                return SECTOR_OVERRIDES[ticker]
-            if _INCOME_ETF_NAME_RE.search(str(name)):
-                return "Income ETF"
-            return sector
-
         pos["sector"] = [
             _resolve_sector(t, n, s)
             for t, n, s in zip(pos["Ticker"], name_col, pos["sector"])
@@ -153,6 +152,104 @@ def load_positions(filepath: Path) -> pd.DataFrame:
             pos[col] = pd.to_numeric(pos[col], errors="coerce")
 
     return pos
+
+
+def _fetch_live_prices(tickers: list[str]) -> dict[str, float]:
+    """Fetch last closing prices via yfinance for a list of tickers.
+
+    Returns a dict {ticker: price}. Missing prices are omitted so callers
+    can decide how to handle them (NaN MARKET VALUE).
+    """
+    if not tickers or not _YF_AVAILABLE:
+        return {}
+    try:
+        data = yf.download(
+            tickers, period="5d", progress=False, auto_adjust=True, threads=True
+        )
+        if data.empty:
+            return {}
+        closes = data["Close"] if "Close" in data.columns else data
+        # yfinance returns a Series for a single ticker, DataFrame for multiple
+        if isinstance(closes, pd.Series):
+            last = closes.dropna()
+            return {tickers[0]: float(last.iloc[-1])} if not last.empty else {}
+        last_row = closes.ffill().iloc[-1]
+        return {
+            str(t): float(v)
+            for t, v in last_row.items()
+            if not pd.isna(v)
+        }
+    except Exception as exc:
+        logging.warning("yfinance price fetch failed: %s", exc)
+        return {}
+
+
+def load_positions_from_db() -> pd.DataFrame:
+    """Load positions from the DB, fetch live prices, and compute derived columns.
+
+    Returns a DataFrame with the same columns as *load_positions* so callers
+    (dashboard, MCP server) can use either source transparently.
+
+    Derived columns computed at runtime:
+      PRICE        — latest closing price from yfinance
+      COST         — Shares × Cost_Basis
+      MARKET VALUE — Shares × PRICE
+      totalReturn  — MARKET VALUE − COST
+    """
+    # Import here to avoid circular dependency at module level.
+    from src.db import load_positions_db  # noqa: PLC0415
+
+    pos = load_positions_db()
+    if pos.empty:
+        return pd.DataFrame()
+
+    # Fill text nullable columns
+    for col in ("sector", "industry", "TYPE"):
+        if col in pos.columns:
+            pos[col] = pos[col].fillna("Unknown")
+
+    # Apply sector overrides (same logic as load_positions)
+    if "sector" in pos.columns:
+        name_col = pos.get("Name", pd.Series("", index=pos.index)).fillna("")
+
+        pos["sector"] = [
+            _resolve_sector(t, n, s)
+            for t, n, s in zip(pos["Ticker"], name_col, pos["sector"])
+        ]
+
+    # Coerce numeric columns from DB
+    for col in ("Shares", "Cost_Basis", "IV_Rank", "PERF_YTD", "ATR_pct"):
+        if col in pos.columns:
+            pos[col] = pd.to_numeric(pos[col], errors="coerce")
+
+    # Separate MARGIN rows — their "price" is meaningless; cost_basis holds the balance.
+    is_margin = pos["Ticker"].str.upper() == "MARGIN"
+
+    # Fetch live prices for real positions only
+    real_tickers = pos.loc[~is_margin, "Ticker"].dropna().unique().tolist()
+    prices = _fetch_live_prices(real_tickers)
+    pos["PRICE"] = pos["Ticker"].map(prices)
+
+    # Compute derived columns for real positions
+    pos["COST"]         = pos["Shares"] * pos["Cost_Basis"]
+    pos["MARKET VALUE"] = pos["Shares"] * pos["PRICE"]
+    pos["totalReturn"]  = pos["MARKET VALUE"] - pos["COST"]
+
+    # MARGIN rows: MARKET VALUE = cost_basis (the raw balance stored at ingest time)
+    pos.loc[is_margin, "MARKET VALUE"] = pos.loc[is_margin, "Cost_Basis"]
+    pos.loc[is_margin, "COST"]         = 0.0
+    pos.loc[is_margin, "totalReturn"]  = 0.0
+
+    return pos
+
+
+def _resolve_sector(ticker: str, name: str, sector: str) -> str:
+    """Return the corrected sector for a position row."""
+    if ticker in SECTOR_OVERRIDES:
+        return SECTOR_OVERRIDES[ticker]
+    if _INCOME_ETF_NAME_RE.search(str(name)):
+        return "Income ETF"
+    return sector
 
 
 def compute_net_worth(positions_df: pd.DataFrame) -> dict[str, float]:

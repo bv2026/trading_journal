@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from src import db
 from src.parsers import robinhood, webull, tradestation, schwab, tradier, coinbase, fidelity
+from src.parsers import positions_csv
 
 ACTIVITY = Path(__file__).parent / "activity"
 
@@ -53,6 +54,17 @@ PARSERS = [
     (tradier.parse,         ACTIVITY / "tradier.csv",                                   "TRADIER"),
     (coinbase.parse,        ACTIVITY / "coinbase-main.csv",                             "COINBASE"),
     (fidelity.parse,        ACTIVITY / "fidelity_Investment_income_balance.csv",        "FIDELITY"),
+]
+
+# Per-account positions CSVs — always fully replaced on each ingest.
+POSITION_FILES = [
+    (ACTIVITY / "positions-scwb.csv",     "SCHWAB"),
+    (ACTIVITY / "positions-trader.csv",   "TRADIER"),
+    (ACTIVITY / "positions-tradestn.csv", "TS"),
+    (ACTIVITY / "positions-rh-bv.csv",    "RH-BV"),
+    (ACTIVITY / "positions-rh-kd.csv",    "RH-KD"),
+    (ACTIVITY / "positions-webull.csv",   "WEBULL"),
+    (ACTIVITY / "positions-fidelity.csv", "FIDELITY"),
 ]
 
 
@@ -106,6 +118,25 @@ def run(reset: bool = False) -> None:
     print(f"\nDone — {total_new} new records added, {total_skipped} already existed.")
     if total_skipped and not reset:
         print("Tip: run with --reset to do a full rebuild from all CSV files.")
+
+    # ── Positions CSVs (always fully replaced per account) ────────────────────
+    pos_total = 0
+    for path, acct in POSITION_FILES:
+        if not path.exists():
+            continue
+        try:
+            recs = positions_csv.parse(str(path), acct)
+        except Exception as exc:
+            print(f"  ERROR positions {acct}: {exc}")
+            continue
+
+        db.delete_positions_by_account(acct)
+        written = db.insert_positions(recs)
+        pos_total += written
+        print(f"  OK    positions {acct}: {written} rows")
+
+    if pos_total:
+        print(f"\nPositions — {pos_total} rows written across accounts.")
 
 
 if __name__ == "__main__":

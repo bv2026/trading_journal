@@ -10,7 +10,7 @@ Tools:
   get_yearly_summary     — year-over-year breakdown table
   get_account_summary    — per-account breakdown table
   get_transactions       — filterable transaction log
-  get_positions          — current positions from TRADEPOSITIONS.xlsx
+  get_positions          — current positions from DB with live prices
   run_ingest             — re-load all broker CSVs into the database
   launch_dashboard       — start the Streamlit dashboard
 """
@@ -28,11 +28,9 @@ import pandas as pd
 from mcp.server.fastmcp import FastMCP
 from src.db import DB_PATH, load_transactions
 from src.metrics import compute_metrics, net_income as _net_income
-from src.positions import load_positions
+from src.positions import load_positions_from_db
 
 mcp = FastMCP("trading-journal")
-
-POSITIONS_FILE = ROOT / "activity" / "TRADEPOSITIONS.xlsx"
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -184,23 +182,18 @@ def get_positions(account_id: str | None = None,
                   sector: str | None = None,
                   position_type: str | None = None) -> str:
     """
-    Return current portfolio positions from TRADEPOSITIONS.xlsx.
+    Return current portfolio positions from the database with live prices.
     Includes market value, cost, unrealized P&L, sector, and type.
 
     Args:
         account_id:    Filter by account (e.g. "SCHWAB", "RH-BV", "TRADIER").
-        sector:        Filter by sector (e.g. "Technology", "Financial").
+        sector:        Filter by sector (e.g. "Technology", "Income ETF").
         position_type: Filter by type (e.g. "Stock", "ETF", "Option").
     """
-    if not POSITIONS_FILE.exists():
-        return f"TRADEPOSITIONS.xlsx not found at {POSITIONS_FILE}"
-
-    all_pos = load_positions(POSITIONS_FILE)
-    if all_pos.empty:
-        return "No position data loaded."
-
-    margin = all_pos[all_pos["Ticker"] == "MARGIN"].copy()
-    pos    = all_pos[all_pos["Ticker"] != "MARGIN"].copy()
+    pos = load_positions_from_db()
+    if pos.empty:
+        return ("No positions in database. Run ingest after adding "
+                "positions-{account}.csv files to the activity/ folder.")
 
     # Apply filters
     if account_id:
@@ -214,31 +207,32 @@ def get_positions(account_id: str | None = None,
         return "No positions match the given filters."
 
     # Portfolio-level summary
-    total_mv     = float(pos["MARKET VALUE"].sum())
-    total_cost   = float(pos["COST"].sum())
-    total_pnl    = float(pos["totalReturn"].sum())
-    total_margin = abs(float(margin["MARKET VALUE"].sum())) if not margin.empty else 0.0
+    total_mv   = float(pos["MARKET VALUE"].sum())
+    total_cost = float(pos["COST"].sum())
+    total_pnl  = float(pos["totalReturn"].sum())
 
     summary = {
-        "total_market_value":    round(total_mv, 2),
-        "total_cost":            round(total_cost, 2),
-        "unrealized_pnl":        round(total_pnl, 2),
-        "total_return_pct":      round(total_pnl / total_cost * 100, 2) if total_cost else 0,
-        "total_margin_borrowed": round(total_margin, 2),
-        "position_count":        len(pos),
+        "total_market_value": round(total_mv, 2),
+        "total_cost":         round(total_cost, 2),
+        "unrealized_pnl":     round(total_pnl, 2),
+        "total_return_pct":   round(total_pnl / total_cost * 100, 2) if total_cost else 0,
+        "position_count":     len(pos),
     }
 
     # Sector breakdown
-    sec = (
-        pos.groupby("sector")
-           .agg(count=("Ticker", "count"),
-                market_value=("MARKET VALUE", "sum"),
-                pnl=("totalReturn", "sum"))
-           .sort_values("market_value", ascending=False)
-           .reset_index()
-    )
-    sec["alloc_pct"] = (sec["market_value"] / total_mv * 100).round(2)
-    sec = sec.round(2).to_dict(orient="records")
+    if "sector" in pos.columns and total_mv:
+        sec = (
+            pos.groupby("sector")
+               .agg(count=("Ticker", "count"),
+                    market_value=("MARKET VALUE", "sum"),
+                    pnl=("totalReturn", "sum"))
+               .sort_values("market_value", ascending=False)
+               .reset_index()
+        )
+        sec["alloc_pct"] = (sec["market_value"] / total_mv * 100).round(2)
+        sec = sec.round(2).to_dict(orient="records")
+    else:
+        sec = []
 
     # Individual positions
     want_cols = ["Account", "Ticker", "Name", "TYPE", "sector",

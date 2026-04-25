@@ -13,16 +13,12 @@ import plotly.express as px
 import plotly.graph_objects as go
 from src.db import DB_PATH, load_transactions
 from src.metrics import compute_metrics, net_income as _net_income_fn, colour_cell, style_table, _bold_last_row
-from src.positions import load_positions, compute_net_worth
-
-# ── Positions file path ─────────────────────────────────────────────────────────
-POSITIONS_FILE = Path(__file__).parent.parent / "activity" / "TRADEPOSITIONS.xlsx"
-
+from src.positions import load_positions_from_db, compute_net_worth
 
 @st.cache_data(ttl=300)
 def _load_positions() -> pd.DataFrame:
-    """Streamlit-cached wrapper around src.positions.load_positions."""
-    return load_positions(POSITIONS_FILE)
+    """Load positions from DB with live prices via yfinance (cached 5 min)."""
+    return load_positions_from_db()
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Portfolio Journal", page_icon="📊", layout="wide")
@@ -98,18 +94,11 @@ st.caption(f"{len(df):,} transactions · {start_d} → {end_d} · "
 try:
     _pos_hdr = _load_positions()
     if not _pos_hdr.empty and "MARKET VALUE" in _pos_hdr.columns:
-        _pos_hdr_clean = _pos_hdr[_pos_hdr["Ticker"] != "MARGIN"].copy()
-        _margin_hdr    = _pos_hdr[_pos_hdr["Ticker"] == "MARGIN"].copy()
-        _pos_hdr_clean["MARKET VALUE"] = pd.to_numeric(
-            _pos_hdr_clean["MARKET VALUE"], errors="coerce"
-        )
-        _margin_hdr["MARKET VALUE"] = pd.to_numeric(
-            _margin_hdr["MARKET VALUE"], errors="coerce"
-        )
-        _total_mv     = float(_pos_hdr_clean["MARKET VALUE"].sum())
-        _total_margin = abs(float(_margin_hdr["MARKET VALUE"].sum()))
-        _net_worth    = _total_mv - _total_margin
-
+        _is_margin_hdr = _pos_hdr["Ticker"].str.upper() == "MARGIN"
+        _mv_hdr        = pd.to_numeric(_pos_hdr["MARKET VALUE"], errors="coerce")
+        _total_mv      = float(_mv_hdr[~_is_margin_hdr].sum())
+        _total_margin  = abs(float(_mv_hdr[_is_margin_hdr].sum()))
+        _net_worth     = _total_mv - _total_margin
         nw1, nw2, nw3 = st.columns(3)
         nw1.metric("Net Worth",       f"${_net_worth:,.0f}")
         nw2.metric("Market Value",    f"${_total_mv:,.0f}")
@@ -153,8 +142,9 @@ with tab_portfolio:
     has_positions = not pos_all.empty
 
     if has_positions:
-        margin_df = pos_all[pos_all["Ticker"] == "MARGIN"].copy()
-        pos = pos_all[pos_all["Ticker"] != "MARGIN"].copy()
+        _is_margin = pos_all["Ticker"].str.upper() == "MARGIN"
+        margin_df  = pos_all[_is_margin].copy()
+        pos        = pos_all[~_is_margin].copy()
         for col in ["PRICE", "Shares", "Cost_Basis", "COST", "MARKET VALUE",
                     "totalReturn", "IV_Rank", "PERF_YTD", "ATR_pct"]:
             if col in pos.columns:
@@ -198,14 +188,14 @@ with tab_portfolio:
     if has_positions:
         summary = (
             summary
-            .merge(pos_by_acct,    left_on="Account", right_on="Account", how="left")
+            .merge(pos_by_acct,    on="Account", how="left")
             .merge(margin_by_acct, on="Account", how="left")
         )
         summary["Positions"]    = summary["Positions"].fillna(0).astype(int)
         summary["Market_Value"] = summary["Market_Value"].fillna(0)
         summary["Total_Cost"]   = summary["Total_Cost"].fillna(0)
         summary["PnL"]          = summary["PnL"].fillna(0)
-        summary["Margin"]       = summary["Margin"].fillna(0)
+        summary["Margin"]       = summary["Margin"].fillna(0).abs()
         summary["Return_%"]     = (
             summary["PnL"] / summary["Total_Cost"].replace(0, float("nan")) * 100
         ).fillna(0).round(2)
@@ -343,14 +333,14 @@ with tab_portfolio:
             acct_pnl = acct_pos["totalReturn"].sum()
             acct_ret = (acct_pnl / acct_pos["COST"].sum() * 100
                         if acct_pos["COST"].sum() else 0)
-            acct_margin = float(
+            acct_margin = abs(float(
                 margin_df[margin_df["Account"] == acct]["MARKET VALUE"].sum()
-            )
+            ))
             label = (
                 f"**{acct}** — {len(acct_pos)} positions · "
                 f"MV ${acct_mv:,.0f} · "
                 f"P&L ${acct_pnl:+,.0f} ({acct_ret:+.1f}%) · "
-                f"Margin ${abs(acct_margin):,.0f}"
+                f"Margin ${acct_margin:,.0f}"
             )
             with st.expander(label, expanded=False):
                 _cost_safe = acct_pos["COST"].replace(0, float("nan"))
@@ -634,10 +624,9 @@ with tab_breakdown:
 with tab_positions:
     pos_raw = _load_positions()
     if pos_raw.empty:
-        st.info("No positions file found — add activity/TRADEPOSITIONS.xlsx to enable this view.")
+        st.info("No positions data — run ingest after adding positions-{account}.csv files to activity/.")
     else:
-        # Exclude margin rows; numeric coerce
-        _pos = pos_raw[pos_raw["Ticker"] != "MARGIN"].copy()
+        _pos = pos_raw[pos_raw["Ticker"].str.upper() != "MARGIN"].copy()
         for _c in ["COST", "MARKET VALUE", "totalReturn"]:
             _pos[_c] = pd.to_numeric(_pos[_c], errors="coerce")
 

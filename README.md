@@ -27,7 +27,7 @@ dashboard.
 - **Fees** — trading fees, subscription fees, clearing fees
 - **Crypto Flow** — Coinbase USD deposits/withdrawals, bank-funded buys, external wallet transfers
 
-**Live positions** (read directly from `activity/TRADEPOSITIONS.xlsx` on each load):
+**Live positions** (ingested from per-account CSVs; live prices fetched from yfinance at load time):
 - Market value, cost basis, unrealized P&L, return %
 - Sector and industry classification
 - IV Rank, YTD performance, ATR %
@@ -36,26 +36,30 @@ dashboard.
 
 ## Dashboard
 
-The dashboard has four tabs:
+The dashboard has five tabs:
 
 | Tab | Contents |
 |-----|----------|
 | **Portfolio** | Net worth banner · unified account summary · sector allocation pies · positions by account · sector summary · yearly pivots · crypto flow |
 | **Yearly Summary** | Year-over-year table · income/cost charts |
-| **Monthly Trends** | Monthly income, costs, cash flow, and cumulative charts |
+| **By Account** | Previous Year / Current Year / ALL pivot tables per account |
+| **Positions** | Holdings by symbol — Market Value, Cost, P&L, Sector, Return %, Dividends |
 | **Transactions** | Filterable/searchable transaction log with CSV export |
 
 ## Project structure
 
 ```
 trading-journal/
-├── activity/               Broker CSV exports + TRADEPOSITIONS.xlsx (gitignored)
+├── activity/               Broker CSV exports + positions-*.csv (gitignored)
 ├── data/                   SQLite database (gitignored)
 │   └── journal.db
 ├── src/
-│   ├── db.py               Database helpers (init, upsert, load)
+│   ├── db.py               Database helpers (init, upsert, load; transactions + positions)
+│   ├── metrics.py          compute_metrics, style helpers
+│   ├── positions.py        load_positions_from_db, sector overrides, yfinance price fetch
 │   └── parsers/
 │       ├── utils.py        Shared utilities (parse_amount, parse_date, make_id)
+│       ├── positions_csv.py  Per-account positions CSV parser
 │       ├── robinhood.py
 │       ├── webull.py
 │       ├── tradestation.py
@@ -64,10 +68,10 @@ trading-journal/
 │       ├── coinbase.py
 │       └── fidelity.py     Yearly summary parser (2020+)
 ├── dashboard/
-│   └── app.py              Streamlit dashboard (4 tabs)
+│   └── app.py              Streamlit dashboard (5 tabs)
 ├── mcp_server.py           FastMCP server for Claude Desktop integration
-├── ingest.py               Load all CSVs → journal.db
-├── schema.sql              Table definitions
+├── ingest.py               Load all CSVs → journal.db (transactions + positions)
+├── schema.sql              Table definitions (accounts, transactions, positions)
 ├── requirements.txt
 ├── README.md
 └── USAGE.md                Full usage guide
@@ -125,8 +129,8 @@ pip install -r requirements.txt
 
 ```bash
 # 1. Drop broker CSV exports into activity/
-# 2. Place TRADEPOSITIONS.xlsx into activity/
-# 3. Ingest transactions
+# 2. Drop positions-{account}.csv files into activity/ (see USAGE.md)
+# 3. Ingest transactions + positions
 python ingest.py
 
 # 4. Launch dashboard
