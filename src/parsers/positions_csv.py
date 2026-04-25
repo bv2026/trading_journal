@@ -85,23 +85,29 @@ def parse(filepath: str, account_id: str) -> list[dict]:
             df[col] = df[col].apply(_clean_value)
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # For MARGIN rows capture MARKET VALUE → Cost_Basis BEFORE dropping it.
-    # MARGIN has no shares/cost_basis; its market value IS the margin balance.
-    # Cost_Basis is already float dtype here, so the float assignment is safe.
-    if "MARKET VALUE" in df.columns:
-        margin_mask = df["Ticker"].str.upper() == "MARGIN"
-        if margin_mask.any():
+    # Capture margin balance → Cost_Basis on the MARGIN row.
+    # New format: dedicated MARGIN column (preferred).
+    # Legacy fallback: MARKET VALUE column (dropped afterward as a runtime col).
+    margin_mask = df["Ticker"].str.upper() == "MARGIN"
+    if margin_mask.any():
+        if "MARGIN" in df.columns:
+            balance_col = df.loc[margin_mask, "MARGIN"]
+        elif "MARKET VALUE" in df.columns:
+            balance_col = df.loc[margin_mask, "MARKET VALUE"]
+        else:
+            balance_col = None
+
+        if balance_col is not None:
             mv_vals = pd.to_numeric(
-                df.loc[margin_mask, "MARKET VALUE"].apply(_clean_value),
-                errors="coerce",
+                balance_col.apply(_clean_value), errors="coerce"
             )
             if "Cost_Basis" not in df.columns:
-                df["Cost_Basis"] = pd.array([float("nan")] * len(df),
-                                            dtype="Float64")
+                df["Cost_Basis"] = pd.array([float("nan")] * len(df), dtype="Float64")
             df.loc[margin_mask, "Cost_Basis"] = mv_vals.values
 
-    # Drop runtime-computed columns (PRICE, COST, MARKET VALUE, totalReturn)
-    for col in _RUNTIME_COLS:
+    # Drop runtime-computed columns and the MARGIN sentinel column
+    _drop = _RUNTIME_COLS | {"MARGIN"}
+    for col in _drop:
         if col in df.columns:
             df.drop(columns=[col], inplace=True)
 
