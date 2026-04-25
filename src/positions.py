@@ -40,6 +40,7 @@ COL_RENAME: dict[str, str] = {
 
 # Ticker-level sector overrides — highest priority, survive Excel replacements.
 SECTOR_OVERRIDES: dict[str, str] = {
+    # Income ETFs not caught by name-pattern (abbreviated/non-standard names)
     "CHPY": "Income ETF",
     "NVII": "Income ETF",
     "NVIT": "Income ETF",
@@ -49,6 +50,18 @@ SECTOR_OVERRIDES: dict[str, str] = {
     "QDTY": "Income ETF",
     "RDTY": "Income ETF",
     "QLDY": "Income ETF",
+    # Broad-market & bond ETFs miscategorized as Financial in Excel
+    "BND": "Fixed Income",
+    "VTI": "Broad Market",
+    "VEA": "International",
+    "VWO": "International",
+    "DBC": "Commodities",
+    # Sector ETFs miscategorized as Financial in Excel
+    "XLE":  "Energy",
+    "IYW":  "Technology",
+    "SMH":  "Technology",
+    "USD":  "Technology",
+    "SHLD": "Industrials",
 }
 
 # Name-pattern overrides — catch entire fund families automatically so new
