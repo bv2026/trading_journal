@@ -12,79 +12,17 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from src.db import DB_PATH, load_transactions
+from src.metrics import compute_metrics, net_income as _net_income_fn, colour_cell, style_table
+from src.positions import load_positions, compute_net_worth
 
 # ── Positions file path ─────────────────────────────────────────────────────────
 POSITIONS_FILE = Path(__file__).parent.parent / "activity" / "TRADEPOSITIONS.xlsx"
 
-# Sheet → account ID mapping (skip TLOG-RECONCILE)
-_SHEET_ACCOUNT = {
-    "SCWB":     "SCHWAB",
-    "TRDER":    "TRADIER",
-    "TRDSTN":   "TS",
-    "RH-KD":    "RH-KD",
-    "RH-BV":    "RH-BV",
-    "WBULL":    "WEBULL",
-    "FIDELITY": "FIDELITY",
-}
-
-_SKIP_COLS = {"Unnamed", "MS FORM"}  # prefixes to drop
-
-
-_REQUIRED_POS_COLS = {"Ticker", "COST", "MARKET VALUE", "totalReturn"}
-
 
 @st.cache_data(ttl=300)
 def _load_positions() -> pd.DataFrame:
-    """Load all position sheets from TRADEPOSITIONS.xlsx into one DataFrame.
-
-    Returns an empty DataFrame if the file is absent or no sheets load
-    successfully.  Sheet-level errors are logged to stderr so they appear
-    in the Streamlit server log without crashing the dashboard.
-    """
-    import logging
-
-    if not POSITIONS_FILE.exists():
-        return pd.DataFrame()
-
-    frames: list[pd.DataFrame] = []
-    for sheet, acct in _SHEET_ACCOUNT.items():
-        try:
-            df_ = pd.read_excel(POSITIONS_FILE, sheet_name=sheet)
-            # Drop helper / unnamed columns
-            keep = [c for c in df_.columns
-                    if not any(str(c).startswith(p) for p in _SKIP_COLS)]
-            df_ = df_[keep].copy()
-            # Standardise column names
-            df_.rename(columns={
-                "ATR %":      "ATR_pct",
-                "IV RANK":    "IV_Rank",
-                "PERF YTD":   "PERF_YTD",
-                "Sh/Contr":   "Shares",
-                "COST BASIS": "Cost_Basis",
-            }, inplace=True)
-            # Validate required columns are present
-            missing = _REQUIRED_POS_COLS - set(df_.columns)
-            if missing:
-                logging.warning(
-                    "TRADEPOSITIONS %s: skipping — missing columns %s", sheet, missing
-                )
-                continue
-            # Drop blank / NaN ticker rows
-            df_["Ticker"] = df_["Ticker"].astype(str).str.strip()
-            df_ = df_[df_["Ticker"].str.upper() != "NAN"]
-            df_["Account"] = acct
-            frames.append(df_)
-        except Exception as exc:
-            logging.warning("TRADEPOSITIONS %s: failed to load — %s", sheet, exc)
-
-    if not frames:
-        return pd.DataFrame()
-
-    pos = pd.concat(frames, ignore_index=True)
-    pos["sector"]   = pos["sector"].fillna("Unknown")   if "sector"   in pos.columns else "Unknown"
-    pos["industry"] = pos["industry"].fillna("Unknown") if "industry" in pos.columns else "Unknown"
-    pos["TYPE"]     = pos["TYPE"].fillna("Unknown")     if "TYPE"     in pos.columns else "Unknown"
-    return pos
+    """Streamlit-cached wrapper around src.positions.load_positions."""
+    return load_positions(POSITIONS_FILE)
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Portfolio Journal", page_icon="📊", layout="wide")
@@ -149,69 +87,9 @@ if not show_internal:
     df = df[df["subcategory"] != "internal_transfer"]
 df = df[df["category"] != "other"]
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
-def _sum(d: pd.DataFrame, cat, sub=None) -> float:
-    m = d["category"] == cat
-    if sub:
-        m &= d["subcategory"] == sub
-    return float(d[m]["amount"].sum())
-
-
-def _metrics(d: pd.DataFrame) -> dict:
-    cf  = d[d["category"] == "cash_flow"]
-    ext = cf[cf["subcategory"] != "internal_transfer"]
-
-    # Bank/USD crypto_flow subcategories count toward net cash
-    _BANK_SUBS = {"usd_deposit", "usd_withdrawal", "bank_purchase"}
-    crypto     = d[d["category"] == "crypto_flow"]
-    bank_crypto = crypto[crypto["subcategory"].isin(_BANK_SUBS)]
-
-    # External wallet transfers (crypto_received / crypto_sent) shown separately
-    wallet = crypto[~crypto["subcategory"].isin(_BANK_SUBS)]
-
-    return {
-        "deposits":    float(ext[ext["amount"] > 0]["amount"].sum())
-                       + float(bank_crypto[bank_crypto["amount"] > 0]["amount"].sum()),
-        "withdrawals": float(ext[ext["amount"] < 0]["amount"].sum())
-                       + float(bank_crypto[bank_crypto["amount"] < 0]["amount"].sum()),
-        "net_cash":    float(ext["amount"].sum()) + float(bank_crypto["amount"].sum()),
-        "crypto_in":   float(wallet[wallet["amount"] > 0]["amount"].sum()),
-        "crypto_out":  float(wallet[wallet["amount"] < 0]["amount"].sum()),
-        "net_crypto":  float(wallet["amount"].sum()),
-        "dividends":   float(d[d["category"] == "dividend"]["amount"].sum()),
-        "rewards":     float(d[d["category"] == "reward"]["amount"].sum()),
-        "margin_int":  float(d[d["category"] == "margin_interest"]["amount"].sum()),
-        "fees":        float(d[d["category"] == "fee"]["amount"].sum()),
-    }
-
-
-def _net_income(m: dict) -> float:
-    return m["dividends"] + m["rewards"] + m["margin_int"] + m["fees"]
-
-
-def _fmt(v: float, parens: bool = False) -> str:
-    if parens and v < 0:
-        return f"(${abs(v):,.2f})"
-    return f"${v:+,.2f}" if v != 0 else "$0.00"
-
-
-def _colour_cell(v) -> str:
-    """Green for non-negative, red for negative. Safe for strings/NaN."""
-    try:
-        return "color: #16a34a" if float(v) >= 0 else "color: #dc2626"
-    except (TypeError, ValueError):
-        return ""
-
-
-def _style_table(df_: pd.DataFrame, money_cols: list[str]) -> object:
-    """Format money columns and colour-code them; silently ignores missing cols."""
-    existing = [c for c in money_cols if c in df_.columns]
-    fmt = {c: "${:,.2f}" for c in existing}
-    return df_.style.format(fmt).map(_colour_cell, subset=existing)
-
-
 # ── Header KPIs ────────────────────────────────────────────────────────────────
-m_all = _metrics(df)
+# Metric / styling helpers live in src.metrics (imported at top of file).
+m_all = compute_metrics(df)
 st.title("Portfolio Journal")
 st.caption(f"{len(df):,} transactions · {start_d} → {end_d} · "
            f"{len(accounts)} account(s)")
@@ -248,13 +126,13 @@ _kpi_row = {
     "Div + Rewards":     m_all["dividends"] + m_all["rewards"],
     "Margin Interest":   m_all["margin_int"],
     "Fees":              m_all["fees"],
-    "Net Income":        _net_income(m_all),
+    "Net Income":        _net_income_fn(m_all),
 }
 _kpi_df = pd.DataFrame([_kpi_row])
 st.dataframe(
     _kpi_df.style
         .format({c: "${:,.2f}" for c in _kpi_df.columns})
-        .map(_colour_cell, subset=list(_kpi_df.columns)),
+        .map(colour_cell, subset=list(_kpi_df.columns)),
     use_container_width=True,
     hide_index=True,
 )
@@ -304,7 +182,7 @@ with tab_portfolio:
         ad = df[df["account_id"] == acct]
         if ad.empty:
             continue
-        am = _metrics(ad)
+        am = compute_metrics(ad)
         tx_rows.append({
             "Account":      acct,
             "Broker":       ad["broker"].iloc[0],
@@ -313,7 +191,7 @@ with tab_portfolio:
             "Rewards":      am["rewards"],
             "Margin Int":   am["margin_int"],
             "Fees":         am["fees"],
-            "Net Income":   _net_income(am),
+            "Net Income":   _net_income_fn(am),
         })
     summary = pd.DataFrame(tx_rows).fillna(0)
 
@@ -383,7 +261,7 @@ with tab_portfolio:
     st.dataframe(
         summary[disp_cols].style
             .format(fmt_s)
-            .map(_colour_cell, subset=colour_cols_s),
+            .map(colour_cell, subset=colour_cols_s),
         use_container_width=True, hide_index=True,
     )
 
@@ -485,7 +363,7 @@ with tab_portfolio:
                         .sort_values("MARKET VALUE", ascending=False)
                         .reset_index(drop=True)
                         .style.format(fmt)
-                        .map(_colour_cell, subset=["totalReturn", "Return_%"]),
+                        .map(colour_cell, subset=["totalReturn", "Return_%"]),
                     use_container_width=True,
                     hide_index=True,
                 )
@@ -510,7 +388,7 @@ with tab_portfolio:
             sec_tbl.style
                 .format({"Market_Value": "${:,.2f}", "Total_Cost": "${:,.2f}",
                          "PnL": "${:+,.2f}", "Alloc_%": "{:.2f}%", "Return_%": "{:+.2f}%"})
-                .map(_colour_cell, subset=["PnL", "Return_%"]),
+                .map(colour_cell, subset=["PnL", "Return_%"]),
             use_container_width=True, hide_index=True,
         )
         st.divider()
@@ -525,21 +403,21 @@ with tab_portfolio:
         rows = {}
         for acct in [a for a in all_accounts if a in accounts]:
             ad = source[source["account_id"] == acct]
-            rows[acct] = {yr: metric_fn(_metrics(ad[ad["year"] == yr]))
+            rows[acct] = {yr: metric_fn(compute_metrics(ad[ad["year"] == yr]))
                           for yr in acct_years}
-            rows[acct]["ALL"] = metric_fn(_metrics(ad))
+            rows[acct]["ALL"] = metric_fn(compute_metrics(ad))
         pv = pd.DataFrame(rows).T.reset_index().rename(columns={"index": "Account"})
         totals = {"Account": "TOTAL"}
         for yr in acct_years:
-            totals[yr] = metric_fn(_metrics(source[source["year"] == yr]))
-        totals["ALL"] = metric_fn(_metrics(source))
+            totals[yr] = metric_fn(compute_metrics(source[source["year"] == yr]))
+        totals["ALL"] = metric_fn(compute_metrics(source))
         pv = pd.concat([pv, pd.DataFrame([totals])], ignore_index=True)
         return pv[["Account"] + acct_years + ["ALL"]]
 
     def _show_pivot(pv: pd.DataFrame, title: str):
         yr_cols = [c for c in pv.columns if c != "Account"]
         st.subheader(title)
-        st.dataframe(_style_table(pv, yr_cols), use_container_width=True, hide_index=True)
+        st.dataframe(style_table(pv, yr_cols), use_container_width=True, hide_index=True)
 
     _show_pivot(_pivot(df_acct, lambda m: m["net_cash"]),    "Net Cash Flow by Account & Year")
     st.divider()
@@ -608,7 +486,7 @@ with tab_yearly:
     yr_rows = []
     for yr in years:
         yd  = df[df["year"] == yr]
-        ym  = _metrics(yd)
+        ym  = compute_metrics(yd)
         yr_rows.append({
             "Year":            int(yr),
             "Deposits":        ym["deposits"],
@@ -619,11 +497,11 @@ with tab_yearly:
             "Div + Rewards":   ym["dividends"] + ym["rewards"],
             "Margin Interest": ym["margin_int"],
             "Fees":            ym["fees"],
-            "Net Income":      _net_income(ym),
+            "Net Income":      _net_income_fn(ym),
         })
 
     # Totals row
-    t = _metrics(df)
+    t = compute_metrics(df)
     yr_rows.append({
         "Year":            "ALL",
         "Deposits":        t["deposits"],
@@ -634,13 +512,13 @@ with tab_yearly:
         "Div + Rewards":   t["dividends"] + t["rewards"],
         "Margin Interest": t["margin_int"],
         "Fees":            t["fees"],
-        "Net Income":      _net_income(t),
+        "Net Income":      _net_income_fn(t),
     })
 
     yr_df = pd.DataFrame(yr_rows)
     yr_money = ["Deposits", "Withdrawals", "Net Cash", "Dividends", "Rewards",
                 "Div + Rewards", "Margin Interest", "Fees", "Net Income"]
-    st.dataframe(_style_table(yr_df, yr_money), use_container_width=True, hide_index=True)
+    st.dataframe(style_table(yr_df, yr_money), use_container_width=True, hide_index=True)
 
     st.divider()
 

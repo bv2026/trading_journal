@@ -27,8 +27,12 @@ sys.path.insert(0, str(ROOT))
 import pandas as pd
 from mcp.server.fastmcp import FastMCP
 from src.db import DB_PATH, load_transactions
+from src.metrics import compute_metrics, net_income as _net_income
+from src.positions import load_positions
 
 mcp = FastMCP("trading-journal")
+
+POSITIONS_FILE = ROOT / "activity" / "TRADEPOSITIONS.xlsx"
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -48,22 +52,7 @@ def _load(year: int | None = None,
     return df
 
 
-def _metrics(df: pd.DataFrame) -> dict:
-    cf     = df[df["category"] == "cash_flow"]
-    crypto = df[df["category"] == "crypto_flow"]
-    return {
-        "deposits":    float(cf[cf["amount"] > 0]["amount"].sum()),
-        "withdrawals": float(cf[cf["amount"] < 0]["amount"].sum()),
-        "net_cash":    float(cf["amount"].sum()) + float(crypto["amount"].sum()),
-        "dividends":   float(df[df["category"] == "dividend"]["amount"].sum()),
-        "rewards":     float(df[df["category"] == "reward"]["amount"].sum()),
-        "margin_int":  float(df[df["category"] == "margin_interest"]["amount"].sum()),
-        "fees":        float(df[df["category"] == "fee"]["amount"].sum()),
-    }
-
-
 def _fmt_metrics(m: dict, label: str = "") -> dict:
-    net_income = m["dividends"] + m["rewards"] + m["margin_int"] + m["fees"]
     return {
         "label":           label,
         "net_cash_flow":   round(m["net_cash"], 2),
@@ -71,7 +60,7 @@ def _fmt_metrics(m: dict, label: str = "") -> dict:
         "rewards":         round(m["rewards"], 2),
         "margin_interest": round(m["margin_int"], 2),
         "fees":            round(m["fees"], 2),
-        "net_income":      round(net_income, 2),
+        "net_income":      round(_net_income(m), 2),
     }
 
 
@@ -99,7 +88,7 @@ def get_portfolio_summary(year: int | None = None,
         label_parts.append(str(year))
     label = " · ".join(label_parts) if label_parts else "All accounts · All years"
 
-    result = _fmt_metrics(_metrics(df), label)
+    result = _fmt_metrics(compute_metrics(df), label)
     result["transaction_count"] = len(df)
     result["date_range"] = f"{df['date'].min().date()} → {df['date'].max().date()}"
     return json.dumps(result, indent=2)
@@ -120,8 +109,8 @@ def get_yearly_summary(account_id: str | None = None) -> str:
     df["year"] = df["date"].dt.year
     years = sorted(df["year"].dropna().unique().astype(int))
 
-    rows = [_fmt_metrics(_metrics(df[df["year"] == yr]), str(yr)) for yr in years]
-    rows.append(_fmt_metrics(_metrics(df), "TOTAL"))
+    rows = [_fmt_metrics(compute_metrics(df[df["year"] == yr]), str(yr)) for yr in years]
+    rows.append(_fmt_metrics(compute_metrics(df), "TOTAL"))
     return json.dumps(rows, indent=2)
 
 
@@ -140,12 +129,12 @@ def get_account_summary(year: int | None = None) -> str:
     accounts = sorted(df["account_id"].unique())
     rows = []
     for acct in accounts:
-        m = _fmt_metrics(_metrics(df[df["account_id"] == acct]), acct)
+        m = _fmt_metrics(compute_metrics(df[df["account_id"] == acct]), acct)
         broker = df[df["account_id"] == acct]["broker"].iloc[0]
         m["broker"] = broker
         rows.append(m)
 
-    rows.append(_fmt_metrics(_metrics(df), "TOTAL"))
+    rows.append(_fmt_metrics(compute_metrics(df), "TOTAL"))
     return json.dumps(rows, indent=2)
 
 
@@ -203,78 +192,40 @@ def get_positions(account_id: str | None = None,
         sector:        Filter by sector (e.g. "Technology", "Financial").
         position_type: Filter by type (e.g. "Stock", "ETF", "Option").
     """
-    positions_file = ROOT / "activity" / "TRADEPOSITIONS.xlsx"
-    if not positions_file.exists():
-        return f"TRADEPOSITIONS.xlsx not found at {positions_file}"
+    if not POSITIONS_FILE.exists():
+        return f"TRADEPOSITIONS.xlsx not found at {POSITIONS_FILE}"
 
-    _sheet_account = {
-        "SCWB":     "SCHWAB",
-        "TRDER":    "TRADIER",
-        "TRDSTN":   "TS",
-        "RH-KD":    "RH-KD",
-        "RH-BV":    "RH-BV",
-        "WBULL":    "WEBULL",
-        "FIDELITY": "FIDELITY",
-    }
-    _skip = {"Unnamed", "MS FORM"}
-
-    frames = []
-    for sheet, acct in _sheet_account.items():
-        try:
-            df_ = pd.read_excel(positions_file, sheet_name=sheet)
-            keep = [c for c in df_.columns
-                    if not any(str(c).startswith(p) for p in _skip)]
-            df_ = df_[keep].copy()
-            df_.rename(columns={
-                "ATR %": "ATR_pct", "IV RANK": "IV_Rank",
-                "PERF YTD": "PERF_YTD", "Sh/Contr": "Shares",
-                "COST BASIS": "Cost_Basis",
-            }, inplace=True)
-            df_["Ticker"] = df_["Ticker"].astype(str).str.strip()
-            df_ = df_[df_["Ticker"] != "nan"]
-            df_["Account"] = acct
-            frames.append(df_)
-        except Exception:
-            pass
-
-    if not frames:
+    all_pos = load_positions(POSITIONS_FILE)
+    if all_pos.empty:
         return "No position data loaded."
 
-    pos = pd.concat(frames, ignore_index=True)
-    margin = pos[pos["Ticker"] == "MARGIN"]
-    pos    = pos[pos["Ticker"] != "MARGIN"].copy()
-
-    for col in ["PRICE", "Shares", "Cost_Basis", "COST", "MARKET VALUE", "totalReturn"]:
-        if col in pos.columns:
-            pos[col] = pd.to_numeric(pos[col], errors="coerce")
-
-    pos["sector"] = pos["sector"].fillna("Unknown")
-    pos["TYPE"]   = pos["TYPE"].fillna("Unknown")
+    margin = all_pos[all_pos["Ticker"] == "MARGIN"].copy()
+    pos    = all_pos[all_pos["Ticker"] != "MARGIN"].copy()
 
     # Apply filters
     if account_id:
         pos = pos[pos["Account"].str.upper() == account_id.upper()]
     if sector:
         pos = pos[pos["sector"].str.lower() == sector.lower()]
-    if position_type:
+    if position_type and "TYPE" in pos.columns:
         pos = pos[pos["TYPE"].str.lower() == position_type.lower()]
 
     if pos.empty:
         return "No positions match the given filters."
 
     # Portfolio-level summary
-    total_mv   = pos["MARKET VALUE"].sum()
-    total_cost = pos["COST"].sum()
-    total_pnl  = pos["totalReturn"].sum()
-    total_margin = float(margin["MARKET VALUE"].sum()) if not margin.empty else 0.0
+    total_mv     = float(pos["MARKET VALUE"].sum())
+    total_cost   = float(pos["COST"].sum())
+    total_pnl    = float(pos["totalReturn"].sum())
+    total_margin = abs(float(margin["MARKET VALUE"].sum())) if not margin.empty else 0.0
 
     summary = {
-        "total_market_value":   round(total_mv, 2),
-        "total_cost":           round(total_cost, 2),
-        "unrealized_pnl":       round(total_pnl, 2),
-        "total_return_pct":     round(total_pnl / total_cost * 100, 2) if total_cost else 0,
+        "total_market_value":    round(total_mv, 2),
+        "total_cost":            round(total_cost, 2),
+        "unrealized_pnl":        round(total_pnl, 2),
+        "total_return_pct":      round(total_pnl / total_cost * 100, 2) if total_cost else 0,
         "total_margin_borrowed": round(total_margin, 2),
-        "position_count":       len(pos),
+        "position_count":        len(pos),
     }
 
     # Sector breakdown
@@ -290,16 +241,16 @@ def get_positions(account_id: str | None = None,
     sec = sec.round(2).to_dict(orient="records")
 
     # Individual positions
-    cols = ["Account", "Ticker", "Name", "TYPE", "sector",
-            "Shares", "PRICE", "Cost_Basis", "COST", "MARKET VALUE", "totalReturn",
-            "PERF_YTD", "IV_Rank"]
-    cols = [c for c in cols if c in pos.columns]
-    positions = pos[cols].round(4).to_dict(orient="records")
+    want_cols = ["Account", "Ticker", "Name", "TYPE", "sector",
+                 "Shares", "PRICE", "Cost_Basis", "COST", "MARKET VALUE", "totalReturn",
+                 "PERF_YTD", "IV_Rank"]
+    out_cols = [c for c in want_cols if c in pos.columns]
+    positions = pos[out_cols].round(4).to_dict(orient="records")
 
     return json.dumps({
-        "summary":    summary,
-        "by_sector":  sec,
-        "positions":  positions,
+        "summary":   summary,
+        "by_sector": sec,
+        "positions": positions,
     }, indent=2)
 
 
