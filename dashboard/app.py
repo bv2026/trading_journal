@@ -140,8 +140,8 @@ st.dataframe(
 st.divider()
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
-tab_portfolio, tab_yearly, tab_breakdown, tab_txns = st.tabs([
-    "Portfolio", "Yearly Summary", "By Account", "Transactions"
+tab_portfolio, tab_yearly, tab_breakdown, tab_positions, tab_txns = st.tabs([
+    "Portfolio", "Yearly Summary", "By Account", "Positions", "Transactions"
 ])
 
 
@@ -616,7 +616,76 @@ with tab_breakdown:
             st.metric("Net Cash",  f"${net:,.2f}", delta=f"${net:,.2f}")
 
 
-# ═══ TAB 4 — Transactions ══════════════════════════════════════════════════════
+# ═══ TAB 4 — Positions ════════════════════════════════════════════════════════
+with tab_positions:
+    pos_raw = _load_positions()
+    if pos_raw.empty:
+        st.info("No positions file found — add activity/TRADEPOSITIONS.xlsx to enable this view.")
+    else:
+        # Exclude margin rows; numeric coerce
+        _pos = pos_raw[pos_raw["Ticker"] != "MARGIN"].copy()
+        for _c in ["COST", "MARKET VALUE", "totalReturn"]:
+            _pos[_c] = pd.to_numeric(_pos[_c], errors="coerce")
+
+        # Aggregate by symbol (sum across accounts)
+        sym = (
+            _pos.groupby(["Ticker", "Name", "sector"])
+                .agg(
+                    Market_Value=("MARKET VALUE", "sum"),
+                    Total_Cost   =("COST",         "sum"),
+                    PnL          =("totalReturn",  "sum"),
+                )
+                .reset_index()
+                .sort_values("Market_Value", ascending=False)
+        )
+        sym["Return_%"] = (
+            sym["PnL"] / sym["Total_Cost"].replace(0, float("nan")) * 100
+        ).round(2)
+
+        # Lifetime dividends per symbol from the full DB (not date-filtered)
+        _divs = (
+            df_all[df_all["category"] == "dividend"]
+            .groupby("symbol")["amount"]
+            .sum()
+            .reset_index()
+            .rename(columns={"symbol": "Ticker", "amount": "Dividends"})
+        )
+        sym = sym.merge(_divs, on="Ticker", how="left")
+        sym["Dividends"] = sym["Dividends"].fillna(0)
+
+        # TOTAL footer row
+        _tot = {
+            "Ticker":       "TOTAL",
+            "Name":         "",
+            "sector":       "",
+            "Market_Value": sym["Market_Value"].sum(),
+            "Total_Cost":   sym["Total_Cost"].sum(),
+            "PnL":          sym["PnL"].sum(),
+            "Return_%":     (sym["PnL"].sum() / sym["Total_Cost"].sum() * 100
+                             if sym["Total_Cost"].sum() else 0),
+            "Dividends":    sym["Dividends"].sum(),
+        }
+        sym = pd.concat([sym, pd.DataFrame([_tot])], ignore_index=True)
+
+        _pos_cols  = ["Ticker", "Name", "sector", "Market_Value", "Total_Cost",
+                      "PnL", "Return_%", "Dividends"]
+        _money_p   = ["Market_Value", "Total_Cost", "PnL", "Dividends"]
+        _colour_p  = ["PnL", "Return_%"]
+        _fmt_p     = {c: "${:,.2f}" for c in _money_p}
+        _fmt_p["Return_%"] = "{:+.2f}%"
+
+        st.subheader(f"Positions by Symbol — {len(sym) - 1} holdings")
+        st.dataframe(
+            sym[_pos_cols].style
+                .format(_fmt_p)
+                .map(colour_cell, subset=_colour_p)
+                .apply(_bold_last_row, last_idx=sym.index[-1], axis=1),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+# ═══ TAB 5 — Transactions ══════════════════════════════════════════════════════
 with tab_txns:
     col1, col2, col3, col4 = st.columns([2, 2, 2, 3])
     with col1:
