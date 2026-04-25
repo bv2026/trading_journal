@@ -546,12 +546,12 @@ with tab_breakdown:
             ad = source[source["account_id"] == acct]
             rows[acct] = {yr: metric_fn(compute_metrics(ad[ad["year"] == yr]))
                           for yr in _pivot_years}
-            rows[acct]["ALL"] = metric_fn(compute_metrics(ad))
+            rows[acct]["ALL"] = metric_fn(compute_metrics(ad[ad["year"].isin(_pivot_years)]))
         pv = pd.DataFrame(rows).T.reset_index().rename(columns={"index": "Account"})
         totals = {"Account": "TOTAL"}
         for yr in _pivot_years:
             totals[yr] = metric_fn(compute_metrics(source[source["year"] == yr]))
-        totals["ALL"] = metric_fn(compute_metrics(source))
+        totals["ALL"] = metric_fn(compute_metrics(source[source["year"].isin(_pivot_years)]))
         pv = pd.concat([pv, pd.DataFrame([totals])], ignore_index=True)
         return pv[["Account"] + _pivot_years + ["ALL"]]
 
