@@ -667,36 +667,41 @@ with tab_positions:
         sym = sym.merge(_divs, on="Ticker", how="left")
         sym["Dividends"] = sym["Dividends"].fillna(0)
 
-        # TOTAL footer row
-        _tot = {
-            "Ticker":       "TOTAL",
-            "Name":         "",
-            "sector":       "",
-            "Market_Value": sym["Market_Value"].sum(),
-            "Total_Cost":   sym["Total_Cost"].sum(),
-            "PnL":          sym["PnL"].sum(),
-            "Return_%":     (sym["PnL"].sum() / sym["Total_Cost"].sum() * 100
-                             if sym["Total_Cost"].sum() else 0),
-            "Dividends":    sym["Dividends"].sum(),
-        }
-        sym = pd.concat([sym, pd.DataFrame([_tot])], ignore_index=True)
+        # Pre-compute totals before building the sortable table
+        _t_mv   = sym["Market_Value"].sum()
+        _t_cost = sym["Total_Cost"].sum()
+        _t_pnl  = sym["PnL"].sum()
+        _t_ret  = (_t_pnl / _t_cost * 100 if _t_cost else 0)
+        _t_div  = sym["Dividends"].sum()
 
-        _pos_cols  = ["Ticker", "Name", "sector", "Market_Value", "Total_Cost",
-                      "PnL", "Return_%", "Dividends"]
-        _money_p   = ["Market_Value", "Total_Cost", "PnL", "Dividends"]
-        _colour_p  = ["PnL", "Return_%"]
-        _fmt_p     = {c: "${:,.2f}" for c in _money_p}
+        _pos_cols = ["Ticker", "Name", "sector", "Market_Value", "Total_Cost",
+                     "PnL", "Return_%", "Dividends"]
+        _money_p  = ["Market_Value", "Total_Cost", "PnL", "Dividends"]
+        _colour_p = ["PnL", "Return_%"]
+        _fmt_p    = {c: "${:,.2f}" for c in _money_p}
         _fmt_p["Return_%"] = "{:+.2f}%"
 
-        st.subheader(f"Positions by Symbol — {len(sym) - 1} holdings")
+        st.subheader(f"Positions by Symbol — {len(sym)} holdings")
         st.dataframe(
             sym[_pos_cols].style
                 .format(_fmt_p)
-                .map(colour_cell, subset=_colour_p)
-                .apply(_bold_last_row, last_idx=sym.index[-1], axis=1),
+                .map(colour_cell, subset=_colour_p),
             use_container_width=True,
             hide_index=True,
         )
+
+        # Fixed footer — metrics never participate in table sorting
+        st.markdown(
+            "<hr style='margin:4px 0; border-color:#6b7280'>",
+            unsafe_allow_html=True,
+        )
+        fc1, fc2, fc3, fc4, fc5 = st.columns(5)
+        fc1.metric("Market Value", f"${_t_mv:,.0f}")
+        fc2.metric("Total Cost",   f"${_t_cost:,.0f}")
+        fc3.metric("P&L",          f"${_t_pnl:+,.0f}")
+        fc4.metric("Return",       f"{_t_ret:+.2f}%",
+                   delta=f"{_t_ret:+.2f}%", delta_color="normal")
+        fc5.metric("Dividends",    f"${_t_div:,.0f}")
 
 
 # ═══ TAB 5 — Transactions ══════════════════════════════════════════════════════
