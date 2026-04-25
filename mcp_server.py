@@ -255,18 +255,29 @@ def get_positions(account_id: str | None = None,
 
 
 @mcp.tool()
-def run_ingest() -> str:
+def run_ingest(reset: bool = False) -> str:
     """
-    Re-ingest all broker CSV files from the activity/ folder into the database.
-    Run this after dropping updated CSV exports into the activity/ folder.
-    Returns a summary of records loaded per account.
+    Ingest broker CSV files from the activity/ folder into the database.
+
+    By default runs incrementally — only new records are added, existing ones
+    are left untouched.  Drop only the latest CSV export from each broker and
+    call this; no need to re-download full history every time.
+
+    Args:
+        reset: If True, clears all existing transactions and reloads from
+               every CSV currently in activity/ (full rebuild).  Use once
+               after first setup or if you want a clean slate.
     """
     ingest_script = ROOT / "ingest.py"
     if not ingest_script.exists():
         return "Error: ingest.py not found."
 
+    cmd = [sys.executable, str(ingest_script)]
+    if reset:
+        cmd.append("--reset")
+
     result = subprocess.run(
-        [sys.executable, str(ingest_script)],
+        cmd,
         capture_output=True,
         text=True,
         cwd=str(ROOT),
