@@ -140,8 +140,8 @@ st.dataframe(
 st.divider()
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
-tab_portfolio, tab_yearly, tab_monthly, tab_txns = st.tabs([
-    "Portfolio", "Yearly Summary", "Monthly Trends", "Transactions"
+tab_portfolio, tab_yearly, tab_breakdown, tab_txns = st.tabs([
+    "Portfolio", "Yearly Summary", "By Account", "Transactions"
 ])
 
 
@@ -393,88 +393,6 @@ with tab_portfolio:
         )
         st.divider()
 
-    # ── 5. YEARLY PIVOTS ───────────────────────────────────────────────────────
-    df_acct = df.copy()
-    df_acct["year"] = df_acct["date"].dt.year
-    acct_years = sorted(df_acct["year"].dropna().unique().astype(int))
-
-    def _pivot(source: pd.DataFrame, metric_fn) -> pd.DataFrame:
-        """Build Account × Year pivot with an ALL column and a TOTAL row."""
-        rows = {}
-        for acct in [a for a in all_accounts if a in accounts]:
-            ad = source[source["account_id"] == acct]
-            rows[acct] = {yr: metric_fn(compute_metrics(ad[ad["year"] == yr]))
-                          for yr in acct_years}
-            rows[acct]["ALL"] = metric_fn(compute_metrics(ad))
-        pv = pd.DataFrame(rows).T.reset_index().rename(columns={"index": "Account"})
-        totals = {"Account": "TOTAL"}
-        for yr in acct_years:
-            totals[yr] = metric_fn(compute_metrics(source[source["year"] == yr]))
-        totals["ALL"] = metric_fn(compute_metrics(source))
-        pv = pd.concat([pv, pd.DataFrame([totals])], ignore_index=True)
-        return pv[["Account"] + acct_years + ["ALL"]]
-
-    def _show_pivot(pv: pd.DataFrame, title: str):
-        yr_cols = [c for c in pv.columns if c != "Account"]
-        st.subheader(title)
-        st.dataframe(style_table(pv, yr_cols), use_container_width=True, hide_index=True)
-
-    _show_pivot(_pivot(df_acct, lambda m: m["net_cash"]),    "Net Cash Flow by Account & Year")
-    st.divider()
-    _show_pivot(_pivot(df_acct, lambda m: m["dividends"]),   "Dividends by Account & Year")
-    st.divider()
-    _show_pivot(_pivot(df_acct, lambda m: m["rewards"]),     "Rewards by Account & Year")
-    st.divider()
-    _show_pivot(_pivot(df_acct, lambda m: m["margin_int"]),  "Margin Interest by Account & Year")
-    st.divider()
-    _show_pivot(_pivot(df_acct, lambda m: m["fees"]),        "Fees by Account & Year")
-
-    # ── 6. CRYPTO FLOW ─────────────────────────────────────────────────────────
-    crypto_df = df[df["category"] == "crypto_flow"]
-    if not crypto_df.empty:
-        st.divider()
-        st.subheader("Crypto Flow — Coinbase (external movements only)")
-        total_in  = float(crypto_df[crypto_df["amount"] > 0]["amount"].sum())
-        total_out = float(crypto_df[crypto_df["amount"] < 0]["amount"].sum())
-        net       = total_in + total_out
-        INFLOW_SUBS  = ["usd_deposit", "bank_purchase", "crypto_received"]
-        OUTFLOW_SUBS = ["usd_withdrawal", "crypto_sent"]
-        LABELS = {
-            "usd_deposit":     "USD Deposited (direct)",
-            "bank_purchase":   "Bought Crypto via Bank / PayPal",
-            "crypto_received": "Crypto Received (external wallet)",
-            "usd_withdrawal":  "USD Withdrawn",
-            "crypto_sent":     "Crypto Sent (external wallet)",
-        }
-        col_in, col_out, col_net = st.columns(3)
-        with col_in:
-            st.markdown("**Inflows**")
-            in_rows = []
-            for sub in INFLOW_SUBS:
-                v = float(crypto_df[crypto_df["subcategory"] == sub]["amount"].sum())
-                n = int((crypto_df["subcategory"] == sub).sum())
-                in_rows.append({"Type": LABELS[sub], "Amount": v, "Txns": n})
-            in_df = pd.DataFrame(in_rows)
-            in_df.loc[len(in_df)] = ["Total In", total_in, ""]
-            st.dataframe(in_df.style.format({"Amount": "${:,.2f}"}),
-                         use_container_width=True, hide_index=True)
-        with col_out:
-            st.markdown("**Outflows**")
-            out_rows = []
-            for sub in OUTFLOW_SUBS:
-                v = float(crypto_df[crypto_df["subcategory"] == sub]["amount"].sum())
-                n = int((crypto_df["subcategory"] == sub).sum())
-                out_rows.append({"Type": LABELS[sub], "Amount": v, "Txns": n})
-            out_df = pd.DataFrame(out_rows)
-            out_df.loc[len(out_df)] = ["Total Out", total_out, ""]
-            st.dataframe(out_df.style.format({"Amount": "${:,.2f}"}),
-                         use_container_width=True, hide_index=True)
-        with col_net:
-            st.markdown("**Net**")
-            st.metric("Total In",  f"${total_in:,.2f}")
-            st.metric("Total Out", f"${total_out:,.2f}")
-            st.metric("Net Cash",  f"${net:,.2f}", delta=f"${net:,.2f}")
-
 
 # ═══ TAB 2 — Yearly Summary ═══════════════════════════════════════════════════
 with tab_yearly:
@@ -608,58 +526,95 @@ with tab_yearly:
         )
 
 
-# ═══ TAB 3 — Monthly Trends ════════════════════════════════════════════════════
-with tab_monthly:
-    monthly = df.copy()
-    monthly["month"] = monthly["date"].dt.to_period("M").dt.to_timestamp()
+# ═══ TAB 3 — By Account ═══════════════════════════════════════════════════════
+with tab_breakdown:
+    import datetime as _dt
 
-    col1, col2 = st.columns(2)
+    _curr_yr = _dt.date.today().year
+    _prev_yr = _curr_yr - 1
 
-    with col1:
-        st.subheader("Dividends & Rewards by Month")
-        inc = monthly[monthly["category"].isin(["dividend", "reward"]) & (monthly["amount"] > 0)]
-        if not inc.empty:
-            agg = inc.groupby(["month", "account_id"])["amount"].sum().reset_index()
-            fig = px.bar(agg, x="month", y="amount", color="account_id",
-                         barmode="stack",
-                         labels={"amount": "USD", "month": "", "account_id": "Account"},
-                         color_discrete_sequence=ACCOUNT_COLOURS)
-            fig.update_layout(legend_title="Account", margin=dict(t=10))
-            st.plotly_chart(fig, use_container_width=True)
+    df_acct = df.copy()
+    df_acct["year"] = df_acct["date"].dt.year
+    _available = set(df_acct["year"].dropna().unique().astype(int))
+    # Show only prev-year and current-year columns, whichever exist in the data
+    _pivot_years = [y for y in [_prev_yr, _curr_yr] if y in _available]
 
-    with col2:
-        st.subheader("Costs by Month")
-        costs = monthly[monthly["category"].isin(["margin_interest", "fee"])]
-        if not costs.empty:
-            agg = costs.groupby(["month", "category"])["amount"].sum().abs().reset_index()
-            fig = px.bar(agg, x="month", y="amount", color="category",
-                         barmode="stack",
-                         labels={"amount": "USD", "month": "", "category": "Type"},
-                         color_discrete_map={"margin_interest": C_RED, "fee": C_ORANGE})
-            fig.update_layout(margin=dict(t=10))
-            st.plotly_chart(fig, use_container_width=True)
+    def _pivot(source: pd.DataFrame, metric_fn) -> pd.DataFrame:
+        """Build Account × (Prev Year | Curr Year | ALL) pivot with a TOTAL row."""
+        rows = {}
+        for acct in [a for a in all_accounts if a in accounts]:
+            ad = source[source["account_id"] == acct]
+            rows[acct] = {yr: metric_fn(compute_metrics(ad[ad["year"] == yr]))
+                          for yr in _pivot_years}
+            rows[acct]["ALL"] = metric_fn(compute_metrics(ad))
+        pv = pd.DataFrame(rows).T.reset_index().rename(columns={"index": "Account"})
+        totals = {"Account": "TOTAL"}
+        for yr in _pivot_years:
+            totals[yr] = metric_fn(compute_metrics(source[source["year"] == yr]))
+        totals["ALL"] = metric_fn(compute_metrics(source))
+        pv = pd.concat([pv, pd.DataFrame([totals])], ignore_index=True)
+        return pv[["Account"] + _pivot_years + ["ALL"]]
 
-    st.subheader("Net Cash Flow by Month")
-    cf = monthly[monthly["category"] == "cash_flow"]
-    if not cf.empty:
-        agg = cf.groupby("month")["amount"].sum().reset_index()
-        agg["dir"] = agg["amount"].apply(lambda x: "Net In" if x >= 0 else "Net Out")
-        fig = px.bar(agg, x="month", y="amount", color="dir",
-                     labels={"amount": "USD", "month": ""},
-                     color_discrete_map={"Net In": C_GREEN, "Net Out": C_RED})
-        fig.update_layout(showlegend=True, margin=dict(t=10))
-        st.plotly_chart(fig, use_container_width=True)
+    def _show_pivot(pv: pd.DataFrame, title: str):
+        yr_cols = [c for c in pv.columns if c != "Account"]
+        st.subheader(title)
+        st.dataframe(style_table(pv, yr_cols), use_container_width=True, hide_index=True)
 
-    st.subheader("Cumulative Income vs Costs")
-    inc_m  = monthly[monthly["category"].isin(["dividend", "reward"]) & (monthly["amount"] > 0)].groupby("month")["amount"].sum()
-    cost_m = monthly[monthly["category"].isin(["margin_interest", "fee"])].groupby("month")["amount"].sum().abs()
-    cum_df = pd.DataFrame({"Income": inc_m, "Costs": cost_m}).fillna(0).cumsum().reset_index()
-    if not cum_df.empty:
-        fig = px.line(cum_df, x="month", y=["Income", "Costs"],
-                      labels={"value": "USD", "month": "", "variable": ""},
-                      color_discrete_map={"Income": C_GREEN, "Costs": C_RED})
-        fig.update_layout(margin=dict(t=10))
-        st.plotly_chart(fig, use_container_width=True)
+    _show_pivot(_pivot(df_acct, lambda m: m["net_cash"]),   "Net Cash Flow by Account")
+    st.divider()
+    _show_pivot(_pivot(df_acct, lambda m: m["dividends"]),  "Dividends by Account")
+    st.divider()
+    _show_pivot(_pivot(df_acct, lambda m: m["rewards"]),    "Rewards by Account")
+    st.divider()
+    _show_pivot(_pivot(df_acct, lambda m: m["margin_int"]), "Margin Interest by Account")
+    st.divider()
+    _show_pivot(_pivot(df_acct, lambda m: m["fees"]),       "Fees by Account")
+
+    # ── Crypto Flow ────────────────────────────────────────────────────────────
+    crypto_df = df[df["category"] == "crypto_flow"]
+    if not crypto_df.empty:
+        st.divider()
+        st.subheader("Crypto Flow — Coinbase (external movements only)")
+        total_in  = float(crypto_df[crypto_df["amount"] > 0]["amount"].sum())
+        total_out = float(crypto_df[crypto_df["amount"] < 0]["amount"].sum())
+        net       = total_in + total_out
+        INFLOW_SUBS  = ["usd_deposit", "bank_purchase", "crypto_received"]
+        OUTFLOW_SUBS = ["usd_withdrawal", "crypto_sent"]
+        LABELS = {
+            "usd_deposit":     "USD Deposited (direct)",
+            "bank_purchase":   "Bought Crypto via Bank / PayPal",
+            "crypto_received": "Crypto Received (external wallet)",
+            "usd_withdrawal":  "USD Withdrawn",
+            "crypto_sent":     "Crypto Sent (external wallet)",
+        }
+        col_in, col_out, col_net = st.columns(3)
+        with col_in:
+            st.markdown("**Inflows**")
+            in_rows = []
+            for sub in INFLOW_SUBS:
+                v = float(crypto_df[crypto_df["subcategory"] == sub]["amount"].sum())
+                n = int((crypto_df["subcategory"] == sub).sum())
+                in_rows.append({"Type": LABELS[sub], "Amount": v, "Txns": n})
+            in_df = pd.DataFrame(in_rows)
+            in_df.loc[len(in_df)] = ["Total In", total_in, ""]
+            st.dataframe(in_df.style.format({"Amount": "${:,.2f}"}),
+                         use_container_width=True, hide_index=True)
+        with col_out:
+            st.markdown("**Outflows**")
+            out_rows = []
+            for sub in OUTFLOW_SUBS:
+                v = float(crypto_df[crypto_df["subcategory"] == sub]["amount"].sum())
+                n = int((crypto_df["subcategory"] == sub).sum())
+                out_rows.append({"Type": LABELS[sub], "Amount": v, "Txns": n})
+            out_df = pd.DataFrame(out_rows)
+            out_df.loc[len(out_df)] = ["Total Out", total_out, ""]
+            st.dataframe(out_df.style.format({"Amount": "${:,.2f}"}),
+                         use_container_width=True, hide_index=True)
+        with col_net:
+            st.markdown("**Net**")
+            st.metric("Total In",  f"${total_in:,.2f}")
+            st.metric("Total Out", f"${total_out:,.2f}")
+            st.metric("Net Cash",  f"${net:,.2f}", delta=f"${net:,.2f}")
 
 
 # ═══ TAB 4 — Transactions ══════════════════════════════════════════════════════
