@@ -200,3 +200,134 @@ class TestPositionsCsvParse:
         for acct in ("SCHWAB", "TRADIER", "RH-BV"):
             recs = parse(str(p), acct)
             assert all(r["account_id"] == acct for r in recs)
+
+    # ── stored_price tests ────────────────────────────────────────────────────
+
+    def test_price_captured_as_stored_price(self, tmp_path):
+        """PRICE column must be captured into stored_price, then dropped as a runtime col."""
+        p = _write_csv(tmp_path, _minimal_rows())  # PRICE = $150.00
+        recs = parse(str(p), "SCHWAB")
+        assert len(recs) == 1
+        assert recs[0]["stored_price"] == pytest.approx(150.0)
+        assert "PRICE" not in recs[0]
+
+    def test_stored_price_with_comma_formatting(self, tmp_path):
+        """$4,695.32 in PRICE must parse correctly into stored_price."""
+        rows = [{"Ticker": "PAXG", "Name": "PAXG",
+                 "PRICE": "$4,695.32",
+                 "Sh/Contr": 0.17556, "COST BASIS": "$4,661.18",
+                 "COST": "$819.00", "MARKET VALUE": "$824.00",
+                 "totalReturn": "$5.00",
+                 "sector": "CRYPTO", "industry": None,
+                 "IV RANK": None, "PERF YTD": None, "ATR %": None, "TYPE": "CRYPTO"}]
+        p = _write_csv(tmp_path, rows)
+        recs = parse(str(p), "COINBASE")
+        assert recs[0]["stored_price"] == pytest.approx(4695.32)
+
+    def test_margin_column_preferred_over_market_value(self, tmp_path):
+        """When both MARGIN and MARKET VALUE columns exist, MARGIN must be used for balance."""
+        rows = _minimal_rows() + [{
+            "Ticker": "MARGIN", "Name": "Margin Balance",
+            "PRICE": None,
+            "Sh/Contr": None, "COST BASIS": None,
+            "COST": None, "MARKET VALUE": "$(99,999.00)",  # decoy — should be ignored
+            "MARGIN": "$(25,000.00)",                       # real balance
+            "totalReturn": None,
+            "sector": None, "industry": None,
+            "IV RANK": None, "PERF YTD": None, "ATR %": None, "TYPE": None,
+        }]
+        p = _write_csv(tmp_path, rows)
+        recs = parse(str(p), "SCHWAB")
+        margin = [r for r in recs if r["ticker"] == "MARGIN"]
+        assert len(margin) == 1
+        assert margin[0]["cost_basis"] == pytest.approx(-25000.0)
+
+    def test_margin_column_fallback_when_no_margin_col(self, tmp_path):
+        """When no MARGIN column exists, MARKET VALUE must still be used as fallback."""
+        rows = _minimal_rows() + [{
+            "Ticker": "MARGIN", "Name": "Margin Balance",
+            "PRICE": None,
+            "Sh/Contr": None, "COST BASIS": None,
+            "COST": None, "MARKET VALUE": "$(25,000.00)",
+            "totalReturn": None,
+            "sector": None, "industry": None,
+            "IV RANK": None, "PERF YTD": None, "ATR %": None, "TYPE": None,
+        }]
+        p = _write_csv(tmp_path, rows)
+        recs = parse(str(p), "SCHWAB")
+        margin = [r for r in recs if r["ticker"] == "MARGIN"]
+        assert len(margin) == 1
+        assert margin[0]["cost_basis"] == pytest.approx(-25000.0)
+
+    def test_margin_row_stored_price_cleared(self, tmp_path):
+        """MARGIN row must have stored_price=None — its PRICE is meaningless."""
+        rows = _minimal_rows() + [{
+            "Ticker": "MARGIN", "Name": "Margin Balance",
+            "PRICE": "$1.00",                      # should be ignored / cleared
+            "Sh/Contr": None, "COST BASIS": None,
+            "COST": None, "MARKET VALUE": "$(25,000.00)",
+            "totalReturn": None,
+            "sector": None, "industry": None,
+            "IV RANK": None, "PERF YTD": None, "ATR %": None, "TYPE": None,
+        }]
+        p = _write_csv(tmp_path, rows)
+        recs = parse(str(p), "SCHWAB")
+        margin = [r for r in recs if r["ticker"] == "MARGIN"]
+        assert len(margin) == 1
+        assert margin[0]["stored_price"] is None
+
+    def test_no_price_column_stored_price_is_none(self, tmp_path):
+        """When CSV has no PRICE column, stored_price must be None (not crash)."""
+        rows = [{"Ticker": "AAPL", "Name": "Apple",
+                 "Sh/Contr": 10.0, "COST BASIS": "$150.00",
+                 "sector": "Technology", "industry": "Hardware",
+                 "IV RANK": None, "PERF YTD": None, "ATR %": None, "TYPE": "Stock"}]
+        p = _write_csv(tmp_path, rows)
+        recs = parse(str(p), "SCHWAB")
+        assert len(recs) == 1
+        assert recs[0]["stored_price"] is None
+
+    def test_coinbase_csv_format(self, tmp_path):
+        """Full Coinbase-style CSV: crypto tickers, MARGIN col, DERIVATIVES row."""
+        rows = [
+            {"Ticker": "BTC",  "Name": "BTC",  "PRICE": "$77,344.06",
+             "sector": "CRYPTO", "TYPE": "CRYPTO",
+             "Sh/Contr": 0.007022, "COST BASIS": "$71,717.25", "MARGIN": ""},
+            {"Ticker": "ETH",  "Name": "ETH",  "PRICE": "$2,307.22",
+             "sector": "CRYPTO", "TYPE": "CRYPTO",
+             "Sh/Contr": 0.305212, "COST BASIS": "$2,249.72", "MARGIN": ""},
+            {"Ticker": "USDC", "Name": "USDC", "PRICE": "$1.00",
+             "sector": "STABLECOIN", "TYPE": "CRYPTO",
+             "Sh/Contr": 18737.52, "COST BASIS": "$1.00", "MARGIN": ""},
+            {"Ticker": "DERIVATIVES", "Name": "DERIVATIVES", "PRICE": "$1.00",
+             "sector": "FUTURES", "TYPE": "FUTURES",
+             "Sh/Contr": 4882.51, "COST BASIS": "$1.00", "MARGIN": ""},
+            {"Ticker": "", "Name": "", "PRICE": "", "sector": "", "TYPE": "",
+             "Sh/Contr": "", "COST BASIS": "", "MARGIN": ""},  # blank row
+            {"Ticker": "MARGIN", "Name": "MARGIN", "PRICE": "",
+             "sector": "", "TYPE": "",
+             "Sh/Contr": "", "COST BASIS": "", "MARGIN": "($0.01)"},
+        ]
+        p = _write_csv(tmp_path, rows)
+        recs = parse(str(p), "COINBASE")
+
+        tickers = [r["ticker"] for r in recs]
+        assert "BTC" in tickers
+        assert "ETH" in tickers
+        assert "USDC" in tickers
+        assert "DERIVATIVES" in tickers
+        assert "" not in tickers          # blank row dropped
+
+        btc = next(r for r in recs if r["ticker"] == "BTC")
+        assert btc["stored_price"] == pytest.approx(77344.06)
+        assert btc["shares"]       == pytest.approx(0.007022)
+        assert btc["cost_basis"]   == pytest.approx(71717.25)
+
+        deriv = next(r for r in recs if r["ticker"] == "DERIVATIVES")
+        assert deriv["shares"]     == pytest.approx(4882.51)
+        assert deriv["cost_basis"] == pytest.approx(1.0)
+        assert deriv["stored_price"] == pytest.approx(1.0)
+
+        margin = next(r for r in recs if r["ticker"] == "MARGIN")
+        assert margin["cost_basis"]   == pytest.approx(-0.01)
+        assert margin["stored_price"] is None

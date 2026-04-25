@@ -25,8 +25,9 @@ _RUNTIME_COLS = {"PRICE", "COST", "MARKET VALUE", "totalReturn"}
 # After COL_RENAME, these are the numeric fields we coerce.
 _NUMERIC_FIELDS = ("Shares", "Cost_Basis", "IV_Rank", "PERF_YTD", "ATR_pct")
 
-# Matches $(1,234.56) or (1,234.56) — Excel's way of writing negative numbers.
-_PAREN_NEG_RE = re.compile(r"^\$?\(([0-9,\.]+)\)$")
+# Matches $(1,234.56) or ($1,234.56) or (1,234.56) — parenthetical negatives.
+# Dollar sign may appear before OR inside the parens depending on the exporter.
+_PAREN_NEG_RE = re.compile(r"^\$?\(\$?([0-9,\.]+)\)$")
 
 
 def _clean_value(v) -> str:

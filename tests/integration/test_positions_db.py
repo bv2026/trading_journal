@@ -213,6 +213,191 @@ class TestPositionsRoundTrip:
         assert set(pos["Account"]) == {"SCHWAB", "TRADIER"}
         assert set(pos["Ticker"])  == {"AAPL", "MSFT"}
 
+    def test_stored_price_round_trip(self, seeded_db):
+        """stored_price written to DB must come back in Stored_Price column."""
+        insert_positions([{
+            "account_id": "SCHWAB", "ticker": "AAPL", "name": "Apple",
+            "shares": 10.0, "cost_basis": 150.0, "stored_price": 178.50,
+            "sector": "Technology", "industry": None, "asset_type": None,
+            "iv_rank": None, "perf_ytd": None, "atr_pct": None,
+            "source_file": "test.csv",
+        }])
+        pos = load_positions_db()
+        assert pos.iloc[0]["Stored_Price"] == pytest.approx(178.50)
+
+    def test_stored_price_none_when_not_set(self, seeded_db):
+        """Rows without stored_price must have NaN (not crash) in Stored_Price."""
+        insert_positions([{
+            "account_id": "SCHWAB", "ticker": "AAPL", "name": "Apple",
+            "shares": 10.0, "cost_basis": 150.0,
+            "sector": "Technology", "industry": None, "asset_type": None,
+            "iv_rank": None, "perf_ytd": None, "atr_pct": None,
+            "source_file": "test.csv",
+        }])
+        pos = load_positions_db()
+        assert pd.isna(pos.iloc[0]["Stored_Price"])
+
+
+# ── Static price account tests ─────────────────────────────────────────────────
+
+@pytest.fixture()
+def static_seeded_db(tmp_db):
+    """DB with one live account (SCHWAB) and one static account (COINBASE)."""
+    init_db()
+    upsert_accounts([
+        {"account_id": "SCHWAB",   "broker": "schwab",   "account_type": "equity",
+         "account_group": "investment", "holder": None, "price_source": "live",   "active": 1},
+        {"account_id": "COINBASE", "broker": "coinbase", "account_type": "crypto",
+         "account_group": "investment", "holder": None, "price_source": "static", "active": 1},
+    ])
+    return tmp_db
+
+
+class TestStaticPriceAccounts:
+
+    def test_static_account_uses_stored_price_as_price(self, static_seeded_db, monkeypatch):
+        """price_source='static' rows must get PRICE = stored_price without calling yfinance."""
+        yf_calls = []
+
+        def _fake_prices(tickers):
+            yf_calls.extend(tickers)
+            return {t: 999.0 for t in tickers}  # would override stored_price if wrongly called
+
+        monkeypatch.setattr(positions_module, "_fetch_live_prices", _fake_prices)
+
+        insert_positions([{
+            "account_id": "COINBASE", "ticker": "BTC", "name": "Bitcoin",
+            "shares": 0.5, "cost_basis": 40000.0, "stored_price": 77344.0,
+            "sector": "CRYPTO", "industry": None, "asset_type": None,
+            "iv_rank": None, "perf_ytd": None, "atr_pct": None,
+            "source_file": "positions-coinbase.csv",
+        }])
+
+        pos = positions_module.load_positions_from_db()
+        btc = pos[pos["Ticker"] == "BTC"].iloc[0]
+
+        assert "BTC" not in yf_calls           # yfinance never asked for BTC
+        assert btc["PRICE"] == pytest.approx(77344.0)
+        assert btc["MARKET VALUE"] == pytest.approx(0.5 * 77344.0)
+
+    def test_live_account_still_uses_yfinance(self, static_seeded_db, monkeypatch):
+        """price_source='live' rows must still go through yfinance."""
+        yf_calls = []
+
+        def _fake_prices(tickers):
+            yf_calls.extend(tickers)
+            return {t: 200.0 for t in tickers}
+
+        monkeypatch.setattr(positions_module, "_fetch_live_prices", _fake_prices)
+
+        insert_positions([{
+            "account_id": "SCHWAB", "ticker": "AAPL", "name": "Apple",
+            "shares": 10.0, "cost_basis": 150.0, "stored_price": 178.0,
+            "sector": "Technology", "industry": None, "asset_type": None,
+            "iv_rank": None, "perf_ytd": None, "atr_pct": None,
+            "source_file": "positions-scwb.csv",
+        }])
+
+        pos = positions_module.load_positions_from_db()
+        aapl = pos[pos["Ticker"] == "AAPL"].iloc[0]
+
+        assert "AAPL" in yf_calls              # yfinance was called for AAPL
+        assert aapl["PRICE"] == pytest.approx(200.0)   # live price wins
+
+    def test_live_account_falls_back_to_stored_price(self, static_seeded_db, monkeypatch):
+        """When yfinance returns nothing for a live ticker, stored_price must be used."""
+        monkeypatch.setattr(positions_module, "_fetch_live_prices", lambda tickers: {})
+
+        insert_positions([{
+            "account_id": "SCHWAB", "ticker": "AAPL", "name": "Apple",
+            "shares": 10.0, "cost_basis": 150.0, "stored_price": 178.0,
+            "sector": "Technology", "industry": None, "asset_type": None,
+            "iv_rank": None, "perf_ytd": None, "atr_pct": None,
+            "source_file": "positions-scwb.csv",
+        }])
+
+        pos = positions_module.load_positions_from_db()
+        aapl = pos[pos["Ticker"] == "AAPL"].iloc[0]
+
+        assert aapl["PRICE"] == pytest.approx(178.0)   # stored_price fallback
+
+    def test_mixed_accounts_correct_price_source_per_row(self, static_seeded_db, monkeypatch):
+        """Live and static rows in same load must each use the right price source."""
+        monkeypatch.setattr(positions_module, "_fetch_live_prices",
+                            lambda tickers: {t: 200.0 for t in tickers})
+
+        insert_positions([
+            {"account_id": "SCHWAB",   "ticker": "AAPL", "name": "Apple",
+             "shares": 10.0, "cost_basis": 150.0, "stored_price": 178.0,
+             "sector": "Technology", "industry": None, "asset_type": None,
+             "iv_rank": None, "perf_ytd": None, "atr_pct": None,
+             "source_file": "positions-scwb.csv"},
+            {"account_id": "COINBASE", "ticker": "BTC", "name": "Bitcoin",
+             "shares": 0.5, "cost_basis": 40000.0, "stored_price": 77344.0,
+             "sector": "CRYPTO", "industry": None, "asset_type": None,
+             "iv_rank": None, "perf_ytd": None, "atr_pct": None,
+             "source_file": "positions-coinbase.csv"},
+        ])
+
+        pos = positions_module.load_positions_from_db()
+        aapl = pos[pos["Ticker"] == "AAPL"].iloc[0]
+        btc  = pos[pos["Ticker"] == "BTC"].iloc[0]
+
+        assert aapl["PRICE"] == pytest.approx(200.0)    # live yfinance price
+        assert btc["PRICE"]  == pytest.approx(77344.0)  # stored_price (static)
+
+    def test_load_positions_db_exposes_price_source_column(self, static_seeded_db):
+        """load_positions_db must include Price_Source so callers can route correctly."""
+        insert_positions([{
+            "account_id": "COINBASE", "ticker": "ETH", "name": "Ethereum",
+            "shares": 1.0, "cost_basis": 2000.0, "stored_price": 2300.0,
+            "sector": "CRYPTO", "industry": None, "asset_type": None,
+            "iv_rank": None, "perf_ytd": None, "atr_pct": None,
+            "source_file": "positions-coinbase.csv",
+        }])
+        pos = load_positions_db()
+        assert "Price_Source" in pos.columns
+        assert pos.iloc[0]["Price_Source"] == "static"
+
+    def test_coinbase_csv_to_db_pipeline(self, tmp_path, static_seeded_db, monkeypatch):
+        """End-to-end: Coinbase CSV → parse → insert → load_positions_from_db."""
+        monkeypatch.setattr(positions_module, "_fetch_live_prices", lambda tickers: {})
+
+        rows = [
+            {"Ticker": "BTC",  "Name": "BTC",  "PRICE": "$77,344.06",
+             "sector": "CRYPTO", "TYPE": "CRYPTO",
+             "Sh/Contr": 0.007022, "COST BASIS": "$71,717.25",
+             "COST": "$503.00", "MARKET VALUE": "$543.00", "totalReturn": "$40.00",
+             "MARGIN": "", "IV RANK": None, "PERF YTD": None, "ATR %": None},
+            {"Ticker": "DERIVATIVES", "Name": "DERIVATIVES", "PRICE": "$1.00",
+             "sector": "FUTURES", "TYPE": "FUTURES",
+             "Sh/Contr": 4882.51, "COST BASIS": "$1.00",
+             "COST": "$4882.51", "MARKET VALUE": "$4882.51", "totalReturn": "$0.00",
+             "MARGIN": "", "IV RANK": None, "PERF YTD": None, "ATR %": None},
+            {"Ticker": "MARGIN", "Name": "MARGIN", "PRICE": "",
+             "sector": "", "TYPE": "",
+             "Sh/Contr": None, "COST BASIS": None,
+             "COST": None, "MARKET VALUE": None, "totalReturn": None,
+             "MARGIN": "($0.01)", "IV RANK": None, "PERF YTD": None, "ATR %": None},
+        ]
+        csv_path = tmp_path / "positions-coinbase.csv"
+        pd.DataFrame(rows).to_csv(csv_path, index=False)
+
+        from src.parsers.positions_csv import parse as parse_csv
+        recs = parse_csv(str(csv_path), "COINBASE")
+        from src.db import delete_positions_by_account
+        delete_positions_by_account("COINBASE")
+        insert_positions(recs)
+
+        pos = positions_module.load_positions_from_db()
+
+        btc = pos[pos["Ticker"] == "BTC"].iloc[0]
+        assert btc["PRICE"]        == pytest.approx(77344.06)   # stored_price used
+        assert btc["MARKET VALUE"] == pytest.approx(0.007022 * 77344.06, rel=1e-4)
+
+        deriv = pos[pos["Ticker"] == "DERIVATIVES"].iloc[0]
+        assert deriv["MARKET VALUE"] == pytest.approx(4882.51 * 1.0)
+
 
 # ── load_all_positions + static loaders ───────────────────────────────────────
 
