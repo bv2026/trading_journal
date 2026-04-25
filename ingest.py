@@ -33,7 +33,7 @@ PARSERS = [
     (schwab.parse,          ACTIVITY / "schwab.csv",            "SCHWAB"),
     (tradier.parse,         ACTIVITY / "tradier.csv",           "TRADIER"),
     (coinbase.parse,        ACTIVITY / "coinbase-main.csv",     "COINBASE"),
-    (fidelity.parse,        ACTIVITY / "fidelitry_Investment_income_balance.csv", "FIDELITY"),
+    (fidelity.parse,        ACTIVITY / "fidelity_Investment_income_balance.csv", "FIDELITY"),
 ]
 
 

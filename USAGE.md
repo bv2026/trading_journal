@@ -182,7 +182,8 @@ on the next load or after clicking **Refresh** (cache TTL is 5 minutes).
    ```
 
 3. Optionally add a sheet to `TRADEPOSITIONS.xlsx` and register it in
-   `_SHEET_ACCOUNT` at the top of `dashboard/app.py` and `mcp_server.py`.
+   `SHEET_ACCOUNT` at the top of `src/positions.py` (used by both the
+   dashboard and the MCP server).
 
 4. Run `python ingest.py`.
 
