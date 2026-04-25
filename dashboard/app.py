@@ -2,6 +2,7 @@
 """Portfolio Journal — Streamlit dashboard.
 Run: streamlit run dashboard/app.py
 """
+import subprocess
 import sys
 from pathlib import Path
 
@@ -16,6 +17,25 @@ from src.db import DB_PATH, init_db, load_transactions, load_snapshot_periods
 # Ensure schema is up-to-date (creates new tables/views if this is an existing DB).
 if DB_PATH.exists():
     init_db()
+
+# ── Background ingest on startup ───────────────────────────────────────────────
+# Runs once per browser session; never blocks the UI.
+_ROOT = Path(__file__).parent.parent
+if "ingest_proc" not in st.session_state:
+    st.session_state.ingest_proc = subprocess.Popen(
+        [sys.executable, str(_ROOT / "ingest.py")],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        cwd=str(_ROOT),
+    )
+    st.session_state.ingest_done = False
+
+# If ingest just finished, flush cached data and re-render with fresh DB.
+_proc: subprocess.Popen = st.session_state.ingest_proc
+if not st.session_state.ingest_done and _proc.poll() is not None:
+    st.session_state.ingest_done = True
+    st.cache_data.clear()
+    st.rerun()
 from src.metrics import compute_metrics, net_income as _net_income_fn, colour_cell, style_table, _bold_last_row
 from src.positions import load_positions_from_db, compute_net_worth, load_all_positions
 
@@ -83,6 +103,10 @@ with st.sidebar:
 
     st.divider()
     st.caption(f"DB: `{DB_PATH.name}`")
+    if st.session_state.get("ingest_done", False):
+        st.success("Data refreshed", icon="✓")
+    else:
+        st.info("Refreshing data…", icon="🔄")
     if st.button("🔄 Refresh"):
         st.cache_data.clear()
         st.rerun()
