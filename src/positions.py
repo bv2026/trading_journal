@@ -37,6 +37,19 @@ COL_RENAME: dict[str, str] = {
     "COST BASIS": "Cost_Basis",
 }
 
+# Sector overrides — applied after loading so they survive Excel file replacements.
+SECTOR_OVERRIDES: dict[str, str] = {
+    "CHPY": "Income ETF",
+    "NVII": "Income ETF",
+    "NVIT": "Income ETF",
+    "RVI":  "Income ETF",
+    "ULTI": "Income ETF",
+    "SDTY": "Income ETF",
+    "QDTY": "Income ETF",
+    "RDTY": "Income ETF",
+    "QLDY": "Income ETF",
+}
+
 # Columns to coerce to float after concatenation.
 NUMERIC_COLS: tuple[str, ...] = (
     "PRICE", "Shares", "Cost_Basis", "COST", "MARKET VALUE",
@@ -96,6 +109,12 @@ def load_positions(filepath: Path) -> pd.DataFrame:
     for col in ("sector", "industry", "TYPE"):
         if col in pos.columns:
             pos[col] = pos[col].fillna("Unknown")
+
+    # Apply hardcoded sector overrides (survives Excel file replacements)
+    if "sector" in pos.columns:
+        pos["sector"] = pos.apply(
+            lambda r: SECTOR_OVERRIDES.get(r["Ticker"], r["sector"]), axis=1
+        )
 
     # Coerce numeric columns
     for col in NUMERIC_COLS:

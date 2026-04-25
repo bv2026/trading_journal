@@ -384,12 +384,26 @@ with tab_portfolio:
         )
         sec_tbl["Alloc_%"]  = (sec_tbl["Market_Value"] / total_mv * 100).round(2)
         sec_tbl["Return_%"] = (sec_tbl["PnL"] / sec_tbl["Total_Cost"] * 100).round(2)
+
+        # Join lifetime dividends aggregated to sector level
+        _sec_divs = (
+            df_all[df_all["category"] == "dividend"]
+            .merge(pos[["Ticker", "sector"]].drop_duplicates("Ticker"),
+                   left_on="symbol", right_on="Ticker", how="inner")
+            .groupby("sector")["amount"].sum()
+            .reset_index()
+            .rename(columns={"amount": "Dividends"})
+        )
+        sec_tbl = sec_tbl.merge(_sec_divs, on="sector", how="left")
+        sec_tbl["Dividends"] = sec_tbl["Dividends"].fillna(0)
+
         st.subheader("Sector Summary")
         st.dataframe(
             sec_tbl.style
                 .format({"Market_Value": "${:,.2f}", "Total_Cost": "${:,.2f}",
-                         "PnL": "${:+,.2f}", "Alloc_%": "{:.2f}%", "Return_%": "{:+.2f}%"})
-                .map(colour_cell, subset=["PnL", "Return_%"]),
+                         "PnL": "${:+,.2f}", "Alloc_%": "{:.2f}%",
+                         "Return_%": "{:+.2f}%", "Dividends": "${:,.2f}"})
+                .map(colour_cell, subset=["PnL", "Return_%", "Dividends"]),
             use_container_width=True, hide_index=True,
         )
         st.divider()
