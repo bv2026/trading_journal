@@ -43,8 +43,9 @@ def initialised_db(tmp_db):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 _ACCOUNTS = [
-    {"account_id": "RH-BV",  "broker": "robinhood", "account_type": "investment", "holder": "BV"},
-    {"account_id": "COINBASE","broker": "coinbase",  "account_type": "crypto",     "holder": None},
+    {"account_id": "RH-BV",   "broker": "robinhood", "account_type": "investment", "holder": "BV"},
+    {"account_id": "COINBASE", "broker": "coinbase",  "account_type": "crypto",     "holder": None},
+    {"account_id": "FIDELITY", "broker": "fidelity",  "account_type": "investment", "holder": None},
 ]
 
 def _rh_csv(tmp_path: Path) -> Path:
@@ -79,6 +80,25 @@ def _cb_csv(tmp_path: Path) -> Path:
     )
     p = tmp_path / "cb.csv"
     p.write_text(content, encoding="utf-8")
+    return p
+
+
+def _fidelity_csv_content() -> str:
+    """Fidelity yearly income CSV content (3 metadata rows, then header + data)."""
+    return (
+        "Fidelity Investment Income Report\n"
+        "Date Range: Jan 2020 - Dec 2024\n"
+        "Generated: 2025-01-01\n"
+        "Yearly,Beginning balance,Dividends,Interest,Deposits,Withdrawals,Ending balance\n"
+        "2024,10000.00,1200.00,0.00,5000.00,2000.00,14200.00\n"
+        "2023,8000.00,950.00,0.00,3000.00,1000.00,10950.00\n"
+        "Total,18000.00,2150.00,0.00,8000.00,3000.00,25150.00\n"
+    )
+
+
+def _fidelity_csv(tmp_path: Path, name: str = "fidelity.csv") -> Path:
+    p = tmp_path / name
+    p.write_text(_fidelity_csv_content(), encoding="utf-8")
     return p
 
 
@@ -260,7 +280,7 @@ class TestFullPipeline:
         assert float(received["amount"].iloc[0]) > 0
         assert float(sent["amount"].iloc[0])     < 0
 
-    def test_metrics_after_ingest(self, tmp_path, initialised_db):
+    def test_metrics_after_ingest(self, tmp_path, initialised_db):  # noqa: E301
         """End-to-end: ingest → load → compute_metrics gives correct totals."""
         from src.metrics import compute_metrics, net_income
 
@@ -291,3 +311,99 @@ class TestFullPipeline:
         # Net income = dividends + rewards + margin_int + fees
         ni = net_income(m)
         assert ni == pytest.approx(m["dividends"] + m["rewards"] + m["margin_int"] + m["fees"])
+
+
+# ── Incremental ingest & reset behaviour ─────────────────────────────────────
+
+class TestIncrementalAndReset:
+    def test_incremental_adds_only_new_records(self, initialised_db):
+        """Second insert of an overlapping batch should add only the new rows."""
+        upsert_accounts(_ACCOUNTS)
+
+        batch1 = [
+            {"id": f"inc{i}", "account_id": "RH-BV", "date": "2024-01-01",
+             "category": "cash_flow", "subcategory": "deposit", "amount": float(i * 100),
+             "currency": "USD", "symbol": None, "description": f"rec {i}",
+             "source_file": "history.csv"}
+            for i in range(3)
+        ]
+        n1 = insert_transactions(batch1)
+        assert n1 == 3
+
+        # Overlap: same 3 IDs + 2 genuinely new ones
+        batch2 = batch1 + [
+            {"id": f"inc{i}", "account_id": "RH-BV", "date": "2024-02-01",
+             "category": "cash_flow", "subcategory": "deposit", "amount": float(i * 100),
+             "currency": "USD", "symbol": None, "description": f"rec {i}",
+             "source_file": "update.csv"}
+            for i in range(3, 5)
+        ]
+        n2 = insert_transactions(batch2)
+        assert n2 == 2  # only new records
+
+        with sqlite3.connect(initialised_db) as conn:
+            total = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+        assert total == 5
+
+    def test_reset_clears_then_reinserts(self, tmp_path, initialised_db, monkeypatch):
+        """--reset should clear all existing transactions then reload from scratch."""
+        import ingest as ingest_mod
+        from src.parsers import robinhood as rh_parser
+
+        rh = _rh_csv(tmp_path)
+        monkeypatch.setattr(ingest_mod, "ACCOUNTS", [_ACCOUNTS[0]])
+        monkeypatch.setattr(ingest_mod, "PARSERS",  [(rh_parser.parse, rh, "RH-BV")])
+        monkeypatch.setattr(ingest_mod, "ALWAYS_REFRESH", set())
+
+        ingest_mod.run(reset=False)
+        with sqlite3.connect(initialised_db) as conn:
+            count_first = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+
+        # reset=True should clear then reload — same final count, not doubled
+        ingest_mod.run(reset=True)
+        with sqlite3.connect(initialised_db) as conn:
+            count_reset = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+
+        assert count_reset == count_first
+
+    def test_fidelity_always_refresh_no_duplicates(self, tmp_path, initialised_db, monkeypatch):
+        """Running ingest twice without --reset must not double Fidelity rows."""
+        import ingest as ingest_mod
+        from src.parsers import fidelity as fid_parser
+
+        fid = _fidelity_csv(tmp_path)
+        monkeypatch.setattr(ingest_mod, "ACCOUNTS", [_ACCOUNTS[2]])  # FIDELITY
+        monkeypatch.setattr(ingest_mod, "PARSERS",  [(fid_parser.parse, fid, "FIDELITY")])
+        monkeypatch.setattr(ingest_mod, "ALWAYS_REFRESH", {"FIDELITY"})
+
+        ingest_mod.run(reset=False)
+        with sqlite3.connect(initialised_db) as conn:
+            count1 = conn.execute(
+                "SELECT COUNT(*) FROM transactions WHERE account_id='FIDELITY'"
+            ).fetchone()[0]
+
+        # Second run — ALWAYS_REFRESH deletes then re-inserts; count must be identical
+        ingest_mod.run(reset=False)
+        with sqlite3.connect(initialised_db) as conn:
+            count2 = conn.execute(
+                "SELECT COUNT(*) FROM transactions WHERE account_id='FIDELITY'"
+            ).fetchone()[0]
+
+        assert count1 > 0
+        assert count2 == count1
+
+    def test_fidelity_id_is_filename_independent(self, tmp_path):
+        """Same Fidelity annual data must yield identical IDs regardless of CSV filename."""
+        from src.parsers import fidelity as fid_parser
+
+        path_a = _fidelity_csv(tmp_path, "fidelity_v1.csv")
+        path_b = _fidelity_csv(tmp_path, "fidelity_v2.csv")
+
+        recs_a = fid_parser.parse(str(path_a), "FIDELITY")
+        recs_b = fid_parser.parse(str(path_b), "FIDELITY")
+
+        ids_a = {r["id"] for r in recs_a}
+        ids_b = {r["id"] for r in recs_b}
+
+        assert len(ids_a) > 0
+        assert ids_a == ids_b
