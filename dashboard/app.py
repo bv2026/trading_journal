@@ -260,13 +260,13 @@ with tab_portfolio:
         }
         summary = pd.concat([summary, pd.DataFrame([_t])], ignore_index=True)
 
-        disp_cols = ["Account", "Broker", "Positions",
+        disp_cols = ["Account", "Broker",
                      "Market_Value", "Total_Cost", "PnL", "Return_%", "Margin",
                      "Net Cash", "Dividends", "Rewards", "Margin Int", "Fees", "Net Income"]
         money_cols_s = ["Market_Value", "Total_Cost", "PnL", "Margin",
                         "Net Cash", "Dividends", "Rewards", "Margin Int", "Fees", "Net Income"]
-        fmt_s = {c: "${:,.2f}" for c in money_cols_s}
-        fmt_s["Return_%"] = "{:+.2f}%"
+        fmt_s = {c: "${:,.0f}" for c in money_cols_s}
+        fmt_s["Return_%"] = "{:+.1f}%"
         colour_cols_s = ["PnL", "Return_%", "Net Cash", "Dividends",
                          "Rewards", "Margin Int", "Fees", "Net Income"]
     else:
@@ -298,44 +298,36 @@ with tab_portfolio:
 
     st.divider()
 
-    # ── 2. SECTOR ALLOCATION CHARTS ───────────────────────────────────────────
+    # ── 2. SECTOR ALLOCATION CHART ────────────────────────────────────────────
     if has_positions:
         total_mv = pos["MARKET VALUE"].sum()
 
-        col_l, col_r = st.columns(2)
-        with col_l:
-            st.subheader("Sector Allocation")
-            sec_grp = (
-                pos.groupby("sector")["MARKET VALUE"].sum()
-                   .sort_values(ascending=False).reset_index()
-            )
-            fig_sec = px.pie(
-                sec_grp, values="MARKET VALUE", names="sector",
-                hole=0.4, color_discrete_sequence=px.colors.qualitative.Safe,
-            )
-            fig_sec.update_traces(
-                textposition="inside", textinfo="percent+label",
-                hovertemplate="%{label}<br>$%{value:,.0f}<br>%{percent}",
-            )
-            fig_sec.update_layout(showlegend=False, margin=dict(t=10, b=10))
-            st.plotly_chart(fig_sec, use_container_width=True)
-
-        with col_r:
-            st.subheader("Account Allocation")
-            acct_grp = (
-                pos.groupby("Account")["MARKET VALUE"].sum()
-                   .sort_values(ascending=False).reset_index()
-            )
-            fig_acct_pie = px.pie(
-                acct_grp, values="MARKET VALUE", names="Account",
-                hole=0.4, color_discrete_sequence=ACCOUNT_COLOURS,
-            )
-            fig_acct_pie.update_traces(
-                textposition="inside", textinfo="percent+label",
-                hovertemplate="%{label}<br>$%{value:,.0f}<br>%{percent}",
-            )
-            fig_acct_pie.update_layout(showlegend=False, margin=dict(t=10, b=10))
-            st.plotly_chart(fig_acct_pie, use_container_width=True)
+        st.subheader("Sector Allocation")
+        # Collapse ETFs: keep "Income ETF" as-is; everything else with TYPE=="ETF"
+        # becomes "ETF" so the chart shows exactly two ETF buckets.
+        _sec_display = pos["sector"].copy()
+        if "TYPE" in pos.columns:
+            _is_etf = pos["TYPE"].str.upper().eq("ETF") & (_sec_display != "Income ETF")
+            _sec_display = _sec_display.where(~_is_etf, "ETF")
+        sec_grp = (
+            pd.Series(_sec_display.values, name="sector")
+            .to_frame()
+            .assign(mv=pos["MARKET VALUE"].values)
+            .groupby("sector")["mv"].sum()
+            .sort_values(ascending=False)
+            .reset_index()
+            .rename(columns={"mv": "MARKET VALUE"})
+        )
+        fig_sec = px.pie(
+            sec_grp, values="MARKET VALUE", names="sector",
+            hole=0.4, color_discrete_sequence=px.colors.qualitative.Safe,
+        )
+        fig_sec.update_traces(
+            textposition="inside", textinfo="percent+label",
+            hovertemplate="%{label}<br>$%{value:,.0f}<br>%{percent}",
+        )
+        fig_sec.update_layout(showlegend=False, margin=dict(t=10, b=10))
+        st.plotly_chart(fig_sec, use_container_width=True)
 
         st.divider()
 
