@@ -12,7 +12,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from src.db import DB_PATH, load_transactions
-from src.metrics import compute_metrics, net_income as _net_income_fn, colour_cell, style_table
+from src.metrics import compute_metrics, net_income as _net_income_fn, colour_cell, style_table, _bold_last_row
 from src.positions import load_positions, compute_net_worth
 
 # ── Positions file path ─────────────────────────────────────────────────────────
@@ -261,7 +261,8 @@ with tab_portfolio:
     st.dataframe(
         summary[disp_cols].style
             .format(fmt_s)
-            .map(colour_cell, subset=colour_cols_s),
+            .map(colour_cell, subset=colour_cols_s)
+            .apply(_bold_last_row, last_idx=summary.index[-1], axis=1),
         use_container_width=True, hide_index=True,
     )
 
@@ -593,7 +594,8 @@ with tab_breakdown:
                 in_rows.append({"Type": LABELS[sub], "Amount": v, "Txns": n})
             in_df = pd.DataFrame(in_rows)
             in_df.loc[len(in_df)] = ["Total In", total_in, ""]
-            st.dataframe(in_df.style.format({"Amount": "${:,.2f}"}),
+            st.dataframe(in_df.style.format({"Amount": "${:,.2f}"})
+                             .apply(_bold_last_row, last_idx=in_df.index[-1], axis=1),
                          use_container_width=True, hide_index=True)
         with col_out:
             st.markdown("**Outflows**")
@@ -604,7 +606,8 @@ with tab_breakdown:
                 out_rows.append({"Type": LABELS[sub], "Amount": v, "Txns": n})
             out_df = pd.DataFrame(out_rows)
             out_df.loc[len(out_df)] = ["Total Out", total_out, ""]
-            st.dataframe(out_df.style.format({"Amount": "${:,.2f}"}),
+            st.dataframe(out_df.style.format({"Amount": "${:,.2f}"})
+                             .apply(_bold_last_row, last_idx=out_df.index[-1], axis=1),
                          use_container_width=True, hide_index=True)
         with col_net:
             st.markdown("**Net**")

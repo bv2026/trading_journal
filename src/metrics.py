@@ -68,12 +68,20 @@ def colour_cell(v) -> str:
         return ""
 
 
-def style_table(df_: pd.DataFrame, money_cols: list[str]):
-    """Format *money_cols* as $#,##0.00 and apply colour coding.
+def _bold_last_row(row, last_idx) -> list[str]:
+    style = "font-weight: bold; border-top: 2px solid #6b7280"
+    return [style] * len(row) if row.name == last_idx else [""] * len(row)
+
+
+def style_table(df_: pd.DataFrame, money_cols: list[str]) -> "pd.io.formats.style.Styler":
+    """Format *money_cols* as $#,##0.00, apply colour coding, and bold the last row.
 
     Silently ignores column names that are not present in *df_* so callers
     do not need to pre-filter the list.
     """
     existing = [c for c in money_cols if c in df_.columns]
     fmt = {c: "${:,.2f}" for c in existing}
-    return df_.style.format(fmt).map(colour_cell, subset=existing)
+    styler = df_.style.format(fmt).map(colour_cell, subset=existing)
+    if len(df_) > 0:
+        styler = styler.apply(_bold_last_row, last_idx=df_.index[-1], axis=1)
+    return styler
