@@ -225,15 +225,23 @@ def load_positions_from_db() -> pd.DataFrame:
     # Separate MARGIN rows — their "price" is meaningless; cost_basis holds the balance.
     is_margin = pos["Ticker"].str.upper() == "MARGIN"
 
-    # Fetch live prices for real positions only
-    real_tickers = pos.loc[~is_margin, "Ticker"].dropna().unique().tolist()
-    prices = _fetch_live_prices(real_tickers)
+    # Only fetch live prices for accounts that use yfinance (price_source = 'live').
+    # Static accounts (e.g. COINBASE) use stored_price directly — skip yfinance to
+    # avoid noisy 404 errors for crypto tickers that Yahoo Finance doesn't serve.
+    is_static = pd.Series(False, index=pos.index)
+    if "Price_Source" in pos.columns:
+        is_static = pos["Price_Source"].str.lower().eq("static")
+
+    live_mask    = ~is_margin & ~is_static
+    live_tickers = pos.loc[live_mask, "Ticker"].dropna().unique().tolist()
+    prices       = _fetch_live_prices(live_tickers)
     pos["PRICE"] = pos["Ticker"].map(prices)
 
-    # Fall back to stored_price where yfinance returned nothing (e.g. crypto tickers)
+    # Static rows: always use stored_price (skip yfinance entirely).
+    # Live rows:   fall back to stored_price only when yfinance returned nothing.
     if "Stored_Price" in pos.columns:
-        missing_price = pos["PRICE"].isna() & ~is_margin
-        pos.loc[missing_price, "PRICE"] = pos.loc[missing_price, "Stored_Price"]
+        use_stored = is_static | (pos["PRICE"].isna() & ~is_margin)
+        pos.loc[use_stored, "PRICE"] = pos.loc[use_stored, "Stored_Price"]
 
     # Compute derived columns for real positions
     pos["COST"]         = pos["Shares"] * pos["Cost_Basis"]

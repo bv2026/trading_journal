@@ -146,12 +146,14 @@ def load_positions_db() -> pd.DataFrame:
         return pd.DataFrame()
     with get_conn() as conn:
         return pd.read_sql_query(
-            "SELECT account_id AS Account, ticker AS Ticker, name AS Name, "
-            "shares AS Shares, cost_basis AS Cost_Basis, stored_price AS Stored_Price, "
-            "sector, industry, "
-            "asset_type AS TYPE, iv_rank AS IV_Rank, perf_ytd AS PERF_YTD, "
-            "atr_pct AS ATR_pct, source_file "
-            "FROM positions",
+            "SELECT p.account_id AS Account, p.ticker AS Ticker, p.name AS Name, "
+            "p.shares AS Shares, p.cost_basis AS Cost_Basis, p.stored_price AS Stored_Price, "
+            "p.sector, p.industry, "
+            "p.asset_type AS TYPE, p.iv_rank AS IV_Rank, p.perf_ytd AS PERF_YTD, "
+            "p.atr_pct AS ATR_pct, p.source_file, "
+            "a.price_source AS Price_Source "
+            "FROM positions p "
+            "JOIN accounts a ON p.account_id = a.account_id",
             conn,
         )
 
