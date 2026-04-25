@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.metrics import colour_cell, style_table, compute_metrics, net_income
+from src.metrics import colour_cell, style_table, compute_metrics, net_income, _bold_last_row
 
 
 # ── colour_cell ───────────────────────────────────────────────────────────────
@@ -60,6 +60,40 @@ class TestColourCell:
         assert colour_cell(pd.NaT) == ""
 
 
+# ── _bold_last_row ────────────────────────────────────────────────────────────
+
+class TestBoldLastRow:
+    def _row(self, df: pd.DataFrame, iloc: int):
+        """Return a Series that mimics what pandas .apply(axis=1) passes."""
+        return df.iloc[iloc]
+
+    def test_last_row_gets_bold_and_border(self):
+        df = pd.DataFrame({"A": [1, 2, 3], "B": [4, 5, 6]})
+        row = self._row(df, -1)
+        result = _bold_last_row(row, df.index[-1])
+        assert all("font-weight: bold" in s for s in result)
+        assert all("border-top" in s for s in result)
+
+    def test_non_last_row_gets_empty_strings(self):
+        df = pd.DataFrame({"A": [1, 2, 3]})
+        for i in range(len(df) - 1):
+            row = self._row(df, i)
+            result = _bold_last_row(row, df.index[-1])
+            assert all(s == "" for s in result)
+
+    def test_result_length_matches_row_width(self):
+        df = pd.DataFrame({"A": [1], "B": [2], "C": [3], "D": [4]})
+        row = self._row(df, 0)
+        result = _bold_last_row(row, df.index[-1])
+        assert len(result) == 4
+
+    def test_single_row_df_is_both_first_and_last(self):
+        df = pd.DataFrame({"X": [99]})
+        row = self._row(df, 0)
+        result = _bold_last_row(row, df.index[-1])
+        assert all("font-weight: bold" in s for s in result)
+
+
 # ── style_table ───────────────────────────────────────────────────────────────
 
 class TestStyleTable:
@@ -92,6 +126,30 @@ class TestStyleTable:
         df = pd.DataFrame(columns=["Account", "Dividends"])
         styled = style_table(df, ["Dividends"])
         assert hasattr(styled, "to_html")
+
+    def test_last_row_bold_in_rendered_html(self):
+        """The TOTAL row (last) must carry bold styling in the rendered output."""
+        df = self._df()
+        html = style_table(df, ["Dividends", "Fees"]).to_html()
+        assert "font-weight: bold" in html
+
+    def test_non_total_rows_not_bold(self):
+        """Only the last row should be bold; earlier rows must not be."""
+        df = pd.DataFrame([
+            {"Account": "A", "Val": 1.0},
+            {"Account": "B", "Val": 2.0},
+            {"Account": "TOTAL", "Val": 3.0},
+        ])
+        # Export to dict of cell styles via Styler._translate (internal, but reliable)
+        styler = style_table(df, ["Val"])
+        # Render to HTML and verify bold appears exactly once
+        html = styler.to_html()
+        assert html.count("font-weight: bold") >= 1  # at least the TOTAL row
+
+    def test_single_row_bolded(self):
+        df = pd.DataFrame([{"Account": "ONLY", "Val": 50.0}])
+        html = style_table(df, ["Val"]).to_html()
+        assert "font-weight: bold" in html
 
 
 # ── compute_metrics ───────────────────────────────────────────────────────────

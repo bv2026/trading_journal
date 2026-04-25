@@ -16,7 +16,7 @@ import pytest
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.positions import load_positions, compute_net_worth, REQUIRED_COLS
+from src.positions import load_positions, compute_net_worth, REQUIRED_COLS, SECTOR_OVERRIDES
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -210,3 +210,63 @@ class TestComputeNetWorth:
         r = compute_net_worth(df)
         assert r["market_value"] == pytest.approx(1200.0)
         assert r["margin"]       == pytest.approx(300.0)
+
+
+# ── SECTOR_OVERRIDES ───────────────────────────────────────────────────────────
+
+_INCOME_ETFS = ["CHPY", "NVII", "NVIT", "RVI", "ULTI", "SDTY", "QDTY", "RDTY", "QLDY"]
+
+
+class TestSectorOverrides:
+    def test_all_income_etfs_present_in_overrides(self):
+        for ticker in _INCOME_ETFS:
+            assert ticker in SECTOR_OVERRIDES, f"{ticker} missing from SECTOR_OVERRIDES"
+            assert SECTOR_OVERRIDES[ticker] == "Income ETF"
+
+    def test_override_applied_when_sector_is_unknown(self, tmp_path):
+        """Tickers in SECTOR_OVERRIDES get 'Income ETF' even if Excel says 'Unknown'."""
+        sheet = pd.DataFrame([
+            {"Ticker": "CHPY", "COST": 1000.0, "MARKET VALUE": 1100.0,
+             "totalReturn": 100.0, "sector": "Unknown"},
+            {"Ticker": "NVII", "COST": 500.0,  "MARKET VALUE": 550.0,
+             "totalReturn": 50.0,  "sector": "Unknown"},
+        ])
+        p = _write_xlsx(tmp_path, {"SCWB": sheet})
+        result = load_positions(p)
+        for ticker in ["CHPY", "NVII"]:
+            assert result[result["Ticker"] == ticker]["sector"].iloc[0] == "Income ETF"
+
+    def test_override_replaces_wrong_sector_in_excel(self, tmp_path):
+        """Override must win even if the Excel file has a plausible-but-wrong sector."""
+        sheet = pd.DataFrame([
+            {"Ticker": "CHPY", "COST": 1000.0, "MARKET VALUE": 1100.0,
+             "totalReturn": 100.0, "sector": "Technology"},
+        ])
+        p = _write_xlsx(tmp_path, {"SCWB": sheet})
+        result = load_positions(p)
+        assert result[result["Ticker"] == "CHPY"]["sector"].iloc[0] == "Income ETF"
+
+    def test_non_override_ticker_keeps_excel_sector(self, tmp_path):
+        """Tickers not in SECTOR_OVERRIDES must keep their original sector unchanged."""
+        sheet = pd.DataFrame([
+            {"Ticker": "AAPL", "COST": 1000.0, "MARKET VALUE": 1200.0,
+             "totalReturn": 200.0, "sector": "Technology"},
+        ])
+        p = _write_xlsx(tmp_path, {"SCWB": sheet})
+        result = load_positions(p)
+        assert result[result["Ticker"] == "AAPL"]["sector"].iloc[0] == "Technology"
+
+    def test_all_income_etfs_applied_in_one_sheet(self, tmp_path):
+        """All 9 overrides must resolve correctly when loaded together."""
+        rows = [
+            {"Ticker": t, "COST": 100.0, "MARKET VALUE": 110.0,
+             "totalReturn": 10.0, "sector": "Unknown"}
+            for t in _INCOME_ETFS
+        ]
+        p = _write_xlsx(tmp_path, {"SCWB": pd.DataFrame(rows)})
+        result = load_positions(p)
+        for ticker in _INCOME_ETFS:
+            row = result[result["Ticker"] == ticker]
+            assert len(row) == 1, f"{ticker} not found in result"
+            assert row["sector"].iloc[0] == "Income ETF", \
+                f"{ticker} sector is {row['sector'].iloc[0]!r}, expected 'Income ETF'"
