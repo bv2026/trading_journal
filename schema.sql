@@ -30,19 +30,20 @@ CREATE INDEX IF NOT EXISTS idx_txn_account  ON transactions(account_id);
 CREATE INDEX IF NOT EXISTS idx_txn_category ON transactions(category);
 
 CREATE TABLE IF NOT EXISTS positions (
-    account_id   TEXT NOT NULL REFERENCES accounts(account_id),
-    ticker       TEXT NOT NULL,
-    name         TEXT,
-    shares       REAL,
-    cost_basis   REAL,
-    sector       TEXT,
-    industry     TEXT,
-    asset_type   TEXT,
-    iv_rank      REAL,
-    perf_ytd     REAL,
-    atr_pct      REAL,
-    source_file  TEXT,
-    ingested_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    account_id    TEXT NOT NULL REFERENCES accounts(account_id),
+    ticker        TEXT NOT NULL,
+    name          TEXT,
+    shares        REAL,
+    cost_basis    REAL,
+    stored_price  REAL,   -- CSV price for static accounts; NULL for live-priced accounts
+    sector        TEXT,
+    industry      TEXT,
+    asset_type    TEXT,
+    iv_rank       REAL,
+    perf_ytd      REAL,
+    atr_pct       REAL,
+    source_file   TEXT,
+    ingested_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (account_id, ticker)
 );
 

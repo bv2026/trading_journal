@@ -17,6 +17,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ALTER TABLE accounts ADD COLUMN account_group TEXT DEFAULT 'investment'",
         "ALTER TABLE accounts ADD COLUMN price_source  TEXT DEFAULT 'live'",
         "ALTER TABLE accounts ADD COLUMN active        INTEGER DEFAULT 1",
+        "ALTER TABLE positions ADD COLUMN stored_price REAL",
     ]
     for sql in migrations:
         try:
@@ -115,7 +116,7 @@ def insert_positions(records: list[dict]) -> int:
     if not records:
         return 0
     df = pd.DataFrame(records)
-    cols = ["account_id", "ticker", "name", "shares", "cost_basis",
+    cols = ["account_id", "ticker", "name", "shares", "cost_basis", "stored_price",
             "sector", "industry", "asset_type", "iv_rank", "perf_ytd",
             "atr_pct", "source_file"]
     for col in cols:
@@ -129,9 +130,9 @@ def insert_positions(records: list[dict]) -> int:
     with get_conn() as conn:
         cursor = conn.executemany(
             "INSERT OR REPLACE INTO positions "
-            "(account_id, ticker, name, shares, cost_basis, sector, industry, "
+            "(account_id, ticker, name, shares, cost_basis, stored_price, sector, industry, "
             " asset_type, iv_rank, perf_ytd, atr_pct, source_file) "
-            "VALUES (:account_id, :ticker, :name, :shares, :cost_basis, :sector, "
+            "VALUES (:account_id, :ticker, :name, :shares, :cost_basis, :stored_price, :sector, "
             "        :industry, :asset_type, :iv_rank, :perf_ytd, :atr_pct, :source_file)",
             rows,
         )
@@ -146,7 +147,8 @@ def load_positions_db() -> pd.DataFrame:
     with get_conn() as conn:
         return pd.read_sql_query(
             "SELECT account_id AS Account, ticker AS Ticker, name AS Name, "
-            "shares AS Shares, cost_basis AS Cost_Basis, sector, industry, "
+            "shares AS Shares, cost_basis AS Cost_Basis, stored_price AS Stored_Price, "
+            "sector, industry, "
             "asset_type AS TYPE, iv_rank AS IV_Rank, perf_ytd AS PERF_YTD, "
             "atr_pct AS ATR_pct, source_file "
             "FROM positions",

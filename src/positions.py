@@ -218,7 +218,7 @@ def load_positions_from_db() -> pd.DataFrame:
         ]
 
     # Coerce numeric columns from DB
-    for col in ("Shares", "Cost_Basis", "IV_Rank", "PERF_YTD", "ATR_pct"):
+    for col in ("Shares", "Cost_Basis", "Stored_Price", "IV_Rank", "PERF_YTD", "ATR_pct"):
         if col in pos.columns:
             pos[col] = pd.to_numeric(pos[col], errors="coerce")
 
@@ -229,6 +229,11 @@ def load_positions_from_db() -> pd.DataFrame:
     real_tickers = pos.loc[~is_margin, "Ticker"].dropna().unique().tolist()
     prices = _fetch_live_prices(real_tickers)
     pos["PRICE"] = pos["Ticker"].map(prices)
+
+    # Fall back to stored_price where yfinance returned nothing (e.g. crypto tickers)
+    if "Stored_Price" in pos.columns:
+        missing_price = pos["PRICE"].isna() & ~is_margin
+        pos.loc[missing_price, "PRICE"] = pos.loc[missing_price, "Stored_Price"]
 
     # Compute derived columns for real positions
     pos["COST"]         = pos["Shares"] * pos["Cost_Basis"]

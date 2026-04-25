@@ -76,13 +76,14 @@ PARSERS = [
 
 # Per-account equity positions CSVs — always fully replaced on each ingest.
 POSITION_FILES = [
-    (ACTIVITY / "positions-scwb.csv",     "SCHWAB"),
-    (ACTIVITY / "positions-trader.csv",   "TRADIER"),
-    (ACTIVITY / "positions-tradestn.csv", "TS"),
-    (ACTIVITY / "positions-rh-bv.csv",    "RH-BV"),
-    (ACTIVITY / "positions-rh-kd.csv",    "RH-KD"),
-    (ACTIVITY / "positions-webull.csv",   "WEBULL"),
-    (ACTIVITY / "positions-fidelity.csv", "FIDELITY"),
+    (ACTIVITY / "positions-scwb.csv",      "SCHWAB"),
+    (ACTIVITY / "positions-trader.csv",    "TRADIER"),
+    (ACTIVITY / "positions-tradestn.csv",  "TS"),
+    (ACTIVITY / "positions-rh-bv.csv",     "RH-BV"),
+    (ACTIVITY / "positions-rh-kd.csv",     "RH-KD"),
+    (ACTIVITY / "positions-webull.csv",    "WEBULL"),
+    (ACTIVITY / "positions-fidelity.csv",  "FIDELITY"),
+    (ACTIVITY / "positions-coinbase.csv",  "COINBASE"),
 ]
 
 # Static positions (options / futures / crypto) — add entries as CSVs become available.

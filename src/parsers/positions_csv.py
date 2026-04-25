@@ -105,6 +105,14 @@ def parse(filepath: str, account_id: str) -> list[dict]:
                 df["Cost_Basis"] = pd.array([float("nan")] * len(df), dtype="Float64")
             df.loc[margin_mask, "Cost_Basis"] = mv_vals.values
 
+    # Capture CSV price as stored_price before dropping PRICE.
+    if "PRICE" in df.columns:
+        df["stored_price"] = pd.to_numeric(
+            df["PRICE"].apply(_clean_value), errors="coerce"
+        )
+        # MARGIN row has no meaningful price — clear it
+        df.loc[margin_mask, "stored_price"] = float("nan")
+
     # Drop runtime-computed columns and the MARGIN sentinel column
     _drop = _RUNTIME_COLS | {"MARGIN"}
     for col in _drop:
@@ -132,18 +140,19 @@ def parse(filepath: str, account_id: str) -> list[dict]:
             return v
 
         records.append({
-            "account_id": account_id,
-            "ticker":     row["Ticker"],
-            "name":       _val("Name"),
-            "shares":     _val("Shares"),
-            "cost_basis": _val("Cost_Basis"),
-            "sector":     _val("sector"),
-            "industry":   _val("industry"),
-            "asset_type": _val("TYPE"),
-            "iv_rank":    _val("IV_Rank"),
-            "perf_ytd":   _val("PERF_YTD"),
-            "atr_pct":    _val("ATR_pct"),
-            "source_file": str(path.name),
+            "account_id":   account_id,
+            "ticker":       row["Ticker"],
+            "name":         _val("Name"),
+            "shares":       _val("Shares"),
+            "cost_basis":   _val("Cost_Basis"),
+            "stored_price": _val("stored_price"),
+            "sector":       _val("sector"),
+            "industry":     _val("industry"),
+            "asset_type":   _val("TYPE"),
+            "iv_rank":      _val("IV_Rank"),
+            "perf_ytd":     _val("PERF_YTD"),
+            "atr_pct":      _val("ATR_pct"),
+            "source_file":  str(path.name),
         })
 
     return records
