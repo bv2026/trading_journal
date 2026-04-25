@@ -5,6 +5,7 @@ Extracted from dashboard/app.py so the logic can be unit-tested and reused
 by both the dashboard and the MCP server.
 """
 import logging
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -37,7 +38,7 @@ COL_RENAME: dict[str, str] = {
     "COST BASIS": "Cost_Basis",
 }
 
-# Sector overrides — applied after loading so they survive Excel file replacements.
+# Ticker-level sector overrides — highest priority, survive Excel replacements.
 SECTOR_OVERRIDES: dict[str, str] = {
     "CHPY": "Income ETF",
     "NVII": "Income ETF",
@@ -49,6 +50,13 @@ SECTOR_OVERRIDES: dict[str, str] = {
     "RDTY": "Income ETF",
     "QLDY": "Income ETF",
 }
+
+# Name-pattern overrides — catch entire fund families automatically so new
+# products from these issuers are categorized correctly without code changes.
+_INCOME_ETF_NAME_RE = re.compile(
+    r"\b(yieldmax|roundhill|defiance|rex)\b",
+    re.IGNORECASE,
+)
 
 # Columns to coerce to float after concatenation.
 NUMERIC_COLS: tuple[str, ...] = (
@@ -110,11 +118,21 @@ def load_positions(filepath: Path) -> pd.DataFrame:
         if col in pos.columns:
             pos[col] = pos[col].fillna("Unknown")
 
-    # Apply hardcoded sector overrides (survives Excel file replacements)
+    # Apply sector overrides — ticker-level first, then fund-family name patterns.
     if "sector" in pos.columns:
-        pos["sector"] = pos.apply(
-            lambda r: SECTOR_OVERRIDES.get(r["Ticker"], r["sector"]), axis=1
-        )
+        name_col = pos.get("Name", pd.Series("", index=pos.index)).fillna("")
+
+        def _resolve_sector(ticker: str, name: str, sector: str) -> str:
+            if ticker in SECTOR_OVERRIDES:
+                return SECTOR_OVERRIDES[ticker]
+            if _INCOME_ETF_NAME_RE.search(str(name)):
+                return "Income ETF"
+            return sector
+
+        pos["sector"] = [
+            _resolve_sector(t, n, s)
+            for t, n, s in zip(pos["Ticker"], name_col, pos["sector"])
+        ]
 
     # Coerce numeric columns
     for col in NUMERIC_COLS:
