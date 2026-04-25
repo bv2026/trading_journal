@@ -6,11 +6,12 @@ Register in Claude Desktop config (see USAGE.md) then ask Claude
 questions like "what were my total dividends in 2024?" directly in chat.
 
 Tools:
-  get_portfolio_summary  — overall KPIs with optional year/account filters
+  get_portfolio_summary  — overall KPIs + live net worth across all asset classes
   get_yearly_summary     — year-over-year breakdown table
   get_account_summary    — per-account breakdown table
   get_transactions       — filterable transaction log
-  get_positions          — current positions from DB with live prices
+  get_positions          — current positions from all asset classes with live prices
+  get_performance        — account-level returns across standard lookback periods
   run_ingest             — re-load all broker CSVs into the database
   launch_dashboard       — start the Streamlit dashboard
 """
@@ -26,9 +27,9 @@ sys.path.insert(0, str(ROOT))
 
 import pandas as pd
 from mcp.server.fastmcp import FastMCP
-from src.db import DB_PATH, load_transactions
+from src.db import DB_PATH, load_transactions, load_snapshot_periods
 from src.metrics import compute_metrics, net_income as _net_income
-from src.positions import load_positions_from_db
+from src.positions import load_all_positions, compute_net_worth
 
 mcp = FastMCP("trading-journal")
 
@@ -69,7 +70,8 @@ def get_portfolio_summary(year: int | None = None,
                           account_id: str | None = None) -> str:
     """
     Return overall portfolio KPIs — net cash flow, dividends, rewards,
-    margin interest, fees, and net income.
+    margin interest, fees, net income, and live net worth across all
+    asset classes (equity, options, futures, crypto).
 
     Args:
         year:       Optional calendar year to filter (e.g. 2024).
@@ -89,6 +91,19 @@ def get_portfolio_summary(year: int | None = None,
     result = _fmt_metrics(compute_metrics(df), label)
     result["transaction_count"] = len(df)
     result["date_range"] = f"{df['date'].min().date()} → {df['date'].max().date()}"
+
+    # Live net worth across all asset classes
+    try:
+        all_pos = load_all_positions()
+        if account_id:
+            all_pos = all_pos[all_pos["Account"].str.upper() == account_id.upper()]
+        nw = compute_net_worth(all_pos)
+        result["live_net_worth"]    = round(nw["net_worth"], 2)
+        result["live_market_value"] = round(nw["market_value"], 2)
+        result["live_margin"]       = round(nw["margin"], 2)
+    except Exception:
+        pass  # live prices are best-effort; failures must not block the tool
+
     return json.dumps(result, indent=2)
 
 
@@ -179,26 +194,32 @@ def get_transactions(category: str | None = None,
 
 @mcp.tool()
 def get_positions(account_id: str | None = None,
+                  asset_class: str | None = None,
                   sector: str | None = None,
                   position_type: str | None = None) -> str:
     """
-    Return current portfolio positions from the database with live prices.
-    Includes market value, cost, unrealized P&L, sector, and type.
+    Return current portfolio positions across all asset classes (equity, options,
+    futures, crypto) with live prices for equity and stored prices for the rest.
 
     Args:
-        account_id:    Filter by account (e.g. "SCHWAB", "RH-BV", "TRADIER").
-        sector:        Filter by sector (e.g. "Technology", "Income ETF").
-        position_type: Filter by type (e.g. "Stock", "ETF", "Option").
+        account_id:    Filter by account (e.g. "SCHWAB", "TRADIER-OPT", "COINBASE").
+        asset_class:   Filter by class: equity | options | futures | crypto.
+        sector:        Filter by sector (equity only, e.g. "Technology", "Income ETF").
+        position_type: Filter by type (equity only, e.g. "Stock", "ETF").
     """
-    pos = load_positions_from_db()
+    pos = load_all_positions()
     if pos.empty:
-        return ("No positions in database. Run ingest after adding "
-                "positions-{account}.csv files to the activity/ folder.")
+        return ("No positions in database. Run ingest after adding position "
+                "CSV files to the activity/ folder.")
 
-    # Apply filters
+    # Strip MARGIN rows — they are balance sentinels, not real positions
+    pos = pos[pos["Ticker"].str.upper() != "MARGIN"]
+
     if account_id:
         pos = pos[pos["Account"].str.upper() == account_id.upper()]
-    if sector:
+    if asset_class:
+        pos = pos[pos["asset_class"].str.lower() == asset_class.lower()]
+    if sector and "sector" in pos.columns:
         pos = pos[pos["sector"].str.lower() == sector.lower()]
     if position_type and "TYPE" in pos.columns:
         pos = pos[pos["TYPE"].str.lower() == position_type.lower()]
@@ -206,46 +227,147 @@ def get_positions(account_id: str | None = None,
     if pos.empty:
         return "No positions match the given filters."
 
-    # Portfolio-level summary
-    total_mv   = float(pos["MARKET VALUE"].sum())
-    total_cost = float(pos["COST"].sum())
-    total_pnl  = float(pos["totalReturn"].sum())
+    mv_col = pd.to_numeric(pos["MARKET VALUE"], errors="coerce")
+    total_mv = float(mv_col.fillna(0).sum())
+
+    # Equity-specific aggregates (cost / P&L only meaningful for equity)
+    eq = pos[pos["asset_class"] == "equity"] if "asset_class" in pos.columns else pos
+    total_cost = float(pd.to_numeric(eq.get("COST", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
+    total_pnl  = float(pd.to_numeric(eq.get("totalReturn", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
 
     summary = {
         "total_market_value": round(total_mv, 2),
-        "total_cost":         round(total_cost, 2),
-        "unrealized_pnl":     round(total_pnl, 2),
-        "total_return_pct":   round(total_pnl / total_cost * 100, 2) if total_cost else 0,
+        "equity_cost":        round(total_cost, 2),
+        "equity_unrealized_pnl": round(total_pnl, 2),
+        "equity_return_pct":  round(total_pnl / total_cost * 100, 2) if total_cost else 0,
         "position_count":     len(pos),
+        "by_asset_class":     (
+            pos.groupby("asset_class")
+               .agg(count=("Ticker", "count"),
+                    market_value=("MARKET VALUE", "sum"))
+               .reset_index()
+               .round(2)
+               .to_dict(orient="records")
+        ) if "asset_class" in pos.columns else [],
     }
 
-    # Sector breakdown
+    # Equity sector breakdown
     if "sector" in pos.columns and total_mv:
-        sec = (
-            pos.groupby("sector")
-               .agg(count=("Ticker", "count"),
-                    market_value=("MARKET VALUE", "sum"),
-                    pnl=("totalReturn", "sum"))
-               .sort_values("market_value", ascending=False)
-               .reset_index()
-        )
-        sec["alloc_pct"] = (sec["market_value"] / total_mv * 100).round(2)
-        sec = sec.round(2).to_dict(orient="records")
-    else:
-        sec = []
+        eq_sec = pos[pos["asset_class"] == "equity"].copy() if "asset_class" in pos.columns else pos
+        if not eq_sec.empty:
+            sec = (
+                eq_sec.groupby("sector")
+                      .agg(count=("Ticker", "count"),
+                           market_value=("MARKET VALUE", "sum"),
+                           pnl=("totalReturn", "sum"))
+                      .sort_values("market_value", ascending=False)
+                      .reset_index()
+            )
+            eq_mv = float(pd.to_numeric(eq_sec["MARKET VALUE"], errors="coerce").fillna(0).sum())
+            sec["alloc_pct"] = (sec["market_value"] / eq_mv * 100).round(2) if eq_mv else 0
+            summary["by_sector"] = sec.round(2).to_dict(orient="records")
 
-    # Individual positions
-    want_cols = ["Account", "Ticker", "Name", "TYPE", "sector",
+    # Individual positions — include asset_class plus relevant per-class columns
+    want_cols = ["Account", "asset_class", "Ticker", "Name", "TYPE", "sector",
                  "Shares", "PRICE", "Cost_Basis", "COST", "MARKET VALUE", "totalReturn",
+                 "underlying", "expiry", "strike", "call_put", "qty", "price",
                  "PERF_YTD", "IV_Rank"]
     out_cols = [c for c in want_cols if c in pos.columns]
     positions = pos[out_cols].round(4).to_dict(orient="records")
 
     return json.dumps({
         "summary":   summary,
-        "by_sector": sec,
         "positions": positions,
-    }, indent=2)
+    }, indent=2, default=str)
+
+
+@mcp.tool()
+def get_performance(account_id: str | None = None) -> str:
+    """
+    Return account-level portfolio returns across standard lookback periods
+    (1-week, 1-month, 3-month, YTD, 1-year).
+
+    Returns percentage changes computed from daily portfolio snapshots written
+    at the end of each ingest run.  Periods with no prior snapshot yet show null.
+
+    Args:
+        account_id: Optional account to filter (e.g. "SCHWAB", "RH-BV").
+    """
+    snap = load_snapshot_periods()
+    if snap.empty:
+        return ("No snapshot data yet. Run `python ingest.py` at least once "
+                "to record the first snapshot.  Historical periods accumulate "
+                "with each subsequent run.")
+
+    if account_id:
+        snap = snap[snap["account_id"].str.upper() == account_id.upper()]
+    if snap.empty:
+        return "No snapshot data found for that account."
+
+    # Also load live current values for accuracy
+    try:
+        all_pos = load_all_positions()
+        live_mv = (
+            all_pos[all_pos["Ticker"].str.upper() != "MARGIN"]
+            .groupby("Account")["MARKET VALUE"]
+            .sum()
+            .reset_index()
+            .rename(columns={"Account": "account_id", "MARKET VALUE": "current_live"})
+        )
+        live_mv["current_live"] = pd.to_numeric(live_mv["current_live"], errors="coerce")
+        snap = snap.merge(live_mv, on="account_id", how="left")
+        snap["current_value"] = snap["current_live"].combine_first(
+            pd.to_numeric(snap["current_value"], errors="coerce")
+        )
+    except Exception:
+        snap["current_value"] = pd.to_numeric(snap.get("current_value", pd.Series(dtype=float)), errors="coerce")
+
+    def _pct(cur, prior):
+        try:
+            p = float(prior)
+            c = float(cur)
+            if pd.isna(p) or p == 0:
+                return None
+            return round((c - p) / p * 100, 2)
+        except (TypeError, ValueError):
+            return None
+
+    rows = []
+    for _, r in snap.iterrows():
+        cur = r.get("current_value")
+        rows.append({
+            "account_id":  r["account_id"],
+            "current_value": round(float(cur), 2) if pd.notna(cur) else None,
+            "returns": {
+                "1w":  _pct(cur, r.get("value_1w")),
+                "1m":  _pct(cur, r.get("value_1m")),
+                "3m":  _pct(cur, r.get("value_3m")),
+                "ytd": _pct(cur, r.get("value_ytd_start")),
+                "1y":  _pct(cur, r.get("value_1y")),
+            },
+        })
+
+    # Portfolio total row
+    valid_cur = pd.to_numeric(snap.get("current_value", pd.Series(dtype=float)), errors="coerce")
+    tot_cur = float(valid_cur.fillna(0).sum())
+
+    def _tot_pct(col):
+        prior = pd.to_numeric(snap.get(col, pd.Series(dtype=float)), errors="coerce").dropna().sum()
+        return _pct(tot_cur, prior) if prior else None
+
+    rows.append({
+        "account_id": "TOTAL",
+        "current_value": round(tot_cur, 2),
+        "returns": {
+            "1w":  _tot_pct("value_1w"),
+            "1m":  _tot_pct("value_1m"),
+            "3m":  _tot_pct("value_3m"),
+            "ytd": _tot_pct("value_ytd_start"),
+            "1y":  _tot_pct("value_1y"),
+        },
+    })
+
+    return json.dumps(rows, indent=2)
 
 
 @mcp.tool()

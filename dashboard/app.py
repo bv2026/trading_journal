@@ -11,14 +11,30 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from src.db import DB_PATH, load_transactions
+from src.db import DB_PATH, init_db, load_transactions, load_snapshot_periods
+
+# Ensure schema is up-to-date (creates new tables/views if this is an existing DB).
+if DB_PATH.exists():
+    init_db()
 from src.metrics import compute_metrics, net_income as _net_income_fn, colour_cell, style_table, _bold_last_row
-from src.positions import load_positions_from_db, compute_net_worth
+from src.positions import load_positions_from_db, compute_net_worth, load_all_positions
 
 @st.cache_data(ttl=300)
 def _load_positions() -> pd.DataFrame:
-    """Load positions from DB with live prices via yfinance (cached 5 min)."""
+    """Load equity positions from DB with live prices via yfinance (cached 5 min)."""
     return load_positions_from_db()
+
+
+@st.cache_data(ttl=300)
+def _load_all_positions() -> pd.DataFrame:
+    """Load all position types (equity + options + futures + crypto, cached 5 min)."""
+    return load_all_positions()
+
+
+@st.cache_data(ttl=300)
+def _load_snapshot_periods() -> pd.DataFrame:
+    """Load per-account snapshot periods from DB (cached 5 min)."""
+    return load_snapshot_periods()
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Portfolio Journal", page_icon="📊", layout="wide")
@@ -129,8 +145,8 @@ st.dataframe(
 st.divider()
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
-tab_portfolio, tab_yearly, tab_breakdown, tab_positions, tab_txns = st.tabs([
-    "Portfolio", "Yearly Summary", "By Account", "Positions", "Transactions"
+tab_portfolio, tab_yearly, tab_breakdown, tab_positions, tab_txns, tab_perf = st.tabs([
+    "Portfolio", "Yearly Summary", "By Account", "Positions", "Transactions", "Performance"
 ])
 
 
@@ -732,4 +748,155 @@ with tab_txns:
     st.download_button("⬇ Download CSV",
                        txn[display_cols].to_csv(index=False).encode(),
                        "transactions.csv", "text/csv")
+
+
+# ═══ TAB 6 — Performance ══════════════════════════════════════════════════════
+with tab_perf:
+    st.subheader("Portfolio Performance")
+
+    try:
+        _all_pos  = _load_all_positions()
+        _snap_df  = _load_snapshot_periods()
+    except Exception as _exc:
+        st.error(f"Failed to load performance data: {_exc}")
+        _all_pos  = pd.DataFrame()
+        _snap_df  = pd.DataFrame()
+
+    if _all_pos.empty:
+        st.info("No positions loaded yet. Run `python ingest.py` to populate positions data.")
+    else:
+        # ── Compute live current value per account ─────────────────────────────
+        _is_margin_p = _all_pos["Ticker"].str.upper() == "MARGIN"
+
+        _live_mv = (
+            _all_pos[~_is_margin_p]
+            .groupby("Account")["MARKET VALUE"]
+            .sum()
+            .reset_index()
+            .rename(columns={"Account": "account_id", "MARKET VALUE": "current_value"})
+        )
+        _live_mv["current_value"] = pd.to_numeric(_live_mv["current_value"], errors="coerce")
+
+        _margin_mv = (
+            _all_pos[_is_margin_p]
+            .groupby("Account")["MARKET VALUE"]
+            .sum()
+            .abs()
+            .reset_index()
+            .rename(columns={"Account": "account_id", "MARKET VALUE": "margin"})
+        )
+
+        # ── Merge with snapshot periods ────────────────────────────────────────
+        _snap_cols = ["account_id", "value_1w", "value_1m", "value_3m",
+                      "value_1y", "value_ytd_start"]
+        _snap_avail = [c for c in _snap_cols if c in _snap_df.columns]
+
+        if not _snap_df.empty:
+            _perf = _live_mv.merge(_snap_df[_snap_avail], on="account_id", how="left")
+        else:
+            _perf = _live_mv.copy()
+            for _c in ["value_1w", "value_1m", "value_3m", "value_1y", "value_ytd_start"]:
+                _perf[_c] = float("nan")
+
+        _perf = _perf.merge(_margin_mv, on="account_id", how="left")
+        _perf["margin"] = _perf["margin"].fillna(0.0)
+
+        def _ret(cur, prior):
+            """Return % change or NaN."""
+            if pd.isna(prior) or prior == 0:
+                return float("nan")
+            return (cur - prior) / prior * 100
+
+        def _chg(cur, prior):
+            return float("nan") if pd.isna(prior) else cur - prior
+
+        # ── TOTAL row values ───────────────────────────────────────────────────
+        _tot_cur   = _perf["current_value"].sum()
+        _tot_margin = _perf["margin"].sum()
+
+        def _tot_prior(col):
+            _valid = _perf[col].dropna()
+            return _valid.sum() if not _valid.empty else float("nan")
+
+        # ── Section 1: Portfolio Summary (1-Week) ──────────────────────────────
+        st.markdown("##### Portfolio Summary")
+
+        _sum_rows = []
+        for _, _r in _perf.iterrows():
+            _cur  = _r["current_value"]
+            _1w   = _r.get("value_1w", float("nan"))
+            _sum_rows.append({
+                "Account":       _r["account_id"],
+                "Current Value": _cur,
+                "Margin":        _r["margin"],
+                "1W Ago":        _1w,
+                "$ Change":      _chg(_cur, _1w),
+                "% Change":      _ret(_cur, _1w),
+            })
+
+        _t1w = _tot_prior("value_1w")
+        _sum_rows.append({
+            "Account":       "TOTAL",
+            "Current Value": _tot_cur,
+            "Margin":        _tot_margin,
+            "1W Ago":        _t1w,
+            "$ Change":      _chg(_tot_cur, _t1w),
+            "% Change":      _ret(_tot_cur, _t1w),
+        })
+
+        _sum_df = pd.DataFrame(_sum_rows)
+        _sum_money = ["Current Value", "Margin", "1W Ago", "$ Change"]
+        _sum_fmt   = {c: "${:,.0f}" for c in _sum_money}
+        _sum_fmt["% Change"] = "{:+.2f}%"
+
+        st.dataframe(
+            _sum_df.style
+                .format(_sum_fmt, na_rep="—")
+                .map(colour_cell, subset=["$ Change", "% Change"])
+                .apply(_bold_last_row, last_idx=_sum_df.index[-1], axis=1),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        if _snap_df.empty:
+            st.caption("Historical data accumulates with each `ingest.py` run.")
+
+        st.divider()
+
+        # ── Section 2: Portfolio Returns ───────────────────────────────────────
+        st.markdown("##### Portfolio Returns")
+
+        _ret_rows = []
+        for _, _r in _perf.iterrows():
+            _cur = _r["current_value"]
+            _ret_rows.append({
+                "Account": _r["account_id"],
+                "1-Week":  _ret(_cur, _r.get("value_1w",       float("nan"))),
+                "1-Month": _ret(_cur, _r.get("value_1m",       float("nan"))),
+                "3-Month": _ret(_cur, _r.get("value_3m",       float("nan"))),
+                "YTD":     _ret(_cur, _r.get("value_ytd_start",float("nan"))),
+                "1-Year":  _ret(_cur, _r.get("value_1y",       float("nan"))),
+            })
+
+        _ret_rows.append({
+            "Account": "TOTAL",
+            "1-Week":  _ret(_tot_cur, _tot_prior("value_1w")),
+            "1-Month": _ret(_tot_cur, _tot_prior("value_1m")),
+            "3-Month": _ret(_tot_cur, _tot_prior("value_3m")),
+            "YTD":     _ret(_tot_cur, _tot_prior("value_ytd_start")),
+            "1-Year":  _ret(_tot_cur, _tot_prior("value_1y")),
+        })
+
+        _ret_df   = pd.DataFrame(_ret_rows)
+        _ret_cols = ["1-Week", "1-Month", "3-Month", "YTD", "1-Year"]
+        _ret_fmt  = {c: "{:+.2f}%" for c in _ret_cols}
+
+        st.dataframe(
+            _ret_df.style
+                .format(_ret_fmt, na_rep="—")
+                .map(colour_cell, subset=_ret_cols)
+                .apply(_bold_last_row, last_idx=_ret_df.index[-1], axis=1),
+            use_container_width=True,
+            hide_index=True,
+        )
 

@@ -17,7 +17,11 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import src.db as db_module
-from src.db import init_db, upsert_accounts, delete_positions_by_account, insert_positions, load_positions_db
+from src.db import (
+    init_db, upsert_accounts,
+    delete_positions_by_account, insert_positions, load_positions_db,
+    insert_options, insert_futures, insert_crypto,
+)
 from src.parsers.positions_csv import parse
 import src.positions as positions_module
 
@@ -208,3 +212,238 @@ class TestPositionsRoundTrip:
         pos = load_positions_db()
         assert set(pos["Account"]) == {"SCHWAB", "TRADIER"}
         assert set(pos["Ticker"])  == {"AAPL", "MSFT"}
+
+
+# ── load_all_positions + static loaders ───────────────────────────────────────
+
+@pytest.fixture()
+def full_seeded_db(tmp_db):
+    """DB seeded with equity, options, futures, and crypto accounts."""
+    init_db()
+    upsert_accounts([
+        {"account_id": "SCHWAB",      "broker": "schwab",       "account_type": "equity",
+         "account_group": "investment", "holder": None, "price_source": "live",   "active": 1},
+        {"account_id": "TRADIER-OPT", "broker": "tradier",      "account_type": "options",
+         "account_group": "investment", "holder": None, "price_source": "static", "active": 1},
+        {"account_id": "TS-FUT",      "broker": "tradestation", "account_type": "futures",
+         "account_group": "investment", "holder": None, "price_source": "static", "active": 1},
+        {"account_id": "COINBASE",    "broker": "coinbase",     "account_type": "crypto",
+         "account_group": "investment", "holder": None, "price_source": "static", "active": 1},
+    ])
+    return tmp_db
+
+
+class TestLoadAllPositions:
+    def test_load_options_from_db(self, full_seeded_db):
+        insert_options([{
+            "account_id": "TRADIER-OPT", "symbol": "QQQ 20260120C500",
+            "underlying": "QQQ", "expiry": "2026-01-20", "strike": 500.0,
+            "call_put": "Call", "description": "QQQ Call",
+            "qty": -1.0, "price": 2.0, "market_value": -200.0,
+            "source_file": "options-trader.csv",
+        }])
+        df = positions_module.load_options_from_db()
+        assert len(df) == 1
+        assert df.iloc[0]["Account"] == "TRADIER-OPT"
+        assert df.iloc[0]["Ticker"] == "QQQ 20260120C500"
+        assert df.iloc[0]["MARKET VALUE"] == pytest.approx(-200.0)
+        assert df.iloc[0]["asset_class"] == "options"
+
+    def test_load_futures_from_db(self, full_seeded_db):
+        insert_futures([{
+            "account_id": "TS-FUT", "symbol": "/ESM25",
+            "underlying": "/ES", "description": "E-mini S&P",
+            "qty": 2.0, "price": 5200.0, "market_value": 520_000.0,
+            "source_file": "futures-ts.csv",
+        }])
+        df = positions_module.load_futures_from_db()
+        assert len(df) == 1
+        assert df.iloc[0]["Account"] == "TS-FUT"
+        assert df.iloc[0]["Ticker"] == "/ESM25"
+        assert df.iloc[0]["MARKET VALUE"] == pytest.approx(520_000.0)
+        assert df.iloc[0]["asset_class"] == "futures"
+
+    def test_load_crypto_from_db(self, full_seeded_db):
+        insert_crypto([{
+            "account_id": "COINBASE", "symbol": "BTC",
+            "name": "Bitcoin", "qty": 0.5, "price": 60_000.0,
+            "cost_basis": None, "market_value": 30_000.0,
+            "source_file": "crypto.csv",
+        }])
+        df = positions_module.load_crypto_from_db()
+        assert len(df) == 1
+        assert df.iloc[0]["Account"] == "COINBASE"
+        assert df.iloc[0]["Ticker"] == "BTC"
+        assert df.iloc[0]["MARKET VALUE"] == pytest.approx(30_000.0)
+        assert df.iloc[0]["asset_class"] == "crypto"
+
+    def test_load_all_positions_includes_all_asset_classes(self, full_seeded_db, monkeypatch):
+        monkeypatch.setattr(positions_module, "_fetch_live_prices", lambda tickers: {t: 100.0 for t in tickers})
+
+        insert_positions([{
+            "account_id": "SCHWAB", "ticker": "AAPL", "name": "Apple",
+            "shares": 10.0, "cost_basis": 80.0, "sector": "Technology",
+            "industry": None, "asset_type": None,
+            "iv_rank": None, "perf_ytd": None, "atr_pct": None,
+            "source_file": "test.csv",
+        }])
+        insert_options([{
+            "account_id": "TRADIER-OPT", "symbol": "QQQ 20260120C500",
+            "underlying": "QQQ", "expiry": "2026-01-20", "strike": 500.0,
+            "call_put": "Call", "description": "QQQ Call",
+            "qty": -1.0, "price": 2.0, "market_value": -200.0,
+            "source_file": "options-trader.csv",
+        }])
+        insert_futures([{
+            "account_id": "TS-FUT", "symbol": "/ESM25",
+            "underlying": "/ES", "description": "E-mini",
+            "qty": 1.0, "price": 5200.0, "market_value": 100_000.0,
+            "source_file": "futures-ts.csv",
+        }])
+        insert_crypto([{
+            "account_id": "COINBASE", "symbol": "BTC",
+            "name": "Bitcoin", "qty": 0.5, "price": 60_000.0,
+            "cost_basis": None, "market_value": 30_000.0,
+            "source_file": "crypto.csv",
+        }])
+
+        all_pos = positions_module.load_all_positions()
+        assert "asset_class" in all_pos.columns
+        assert set(all_pos["asset_class"]) == {"equity", "options", "futures", "crypto"}
+        assert "AAPL" in all_pos["Ticker"].values
+        assert "QQQ 20260120C500" in all_pos["Ticker"].values
+        assert "/ESM25" in all_pos["Ticker"].values
+        assert "BTC" in all_pos["Ticker"].values
+
+    def test_load_all_positions_only_equity(self, full_seeded_db, monkeypatch):
+        monkeypatch.setattr(positions_module, "_fetch_live_prices", lambda tickers: {t: 100.0 for t in tickers})
+
+        insert_positions([{
+            "account_id": "SCHWAB", "ticker": "AAPL", "name": "Apple",
+            "shares": 5.0, "cost_basis": 100.0, "sector": "Technology",
+            "industry": None, "asset_type": None,
+            "iv_rank": None, "perf_ytd": None, "atr_pct": None,
+            "source_file": "test.csv",
+        }])
+        all_pos = positions_module.load_all_positions()
+        assert set(all_pos["asset_class"]) == {"equity"}
+        assert len(all_pos) == 1
+
+    def test_load_all_positions_empty_db(self, full_seeded_db, monkeypatch):
+        monkeypatch.setattr(positions_module, "_fetch_live_prices", lambda tickers: {})
+        all_pos = positions_module.load_all_positions()
+        assert all_pos.empty
+
+    def test_compute_net_worth_with_all_asset_classes(self, full_seeded_db, monkeypatch):
+        monkeypatch.setattr(positions_module, "_fetch_live_prices", lambda tickers: {t: 100.0 for t in tickers})
+
+        insert_positions([
+            {"account_id": "SCHWAB", "ticker": "AAPL", "name": "Apple",
+             "shares": 10.0, "cost_basis": 80.0, "sector": "Technology",
+             "industry": None, "asset_type": None,
+             "iv_rank": None, "perf_ytd": None, "atr_pct": None,
+             "source_file": "test.csv"},
+            {"account_id": "SCHWAB", "ticker": "MARGIN", "name": "Margin",
+             "shares": None, "cost_basis": -25_000.0, "sector": None,
+             "industry": None, "asset_type": None,
+             "iv_rank": None, "perf_ytd": None, "atr_pct": None,
+             "source_file": "test.csv"},
+        ])
+        insert_options([{
+            "account_id": "TRADIER-OPT", "symbol": "QQQ C500",
+            "underlying": "QQQ", "expiry": "2026-01-20", "strike": 500.0,
+            "call_put": "Call", "description": "QQQ Call",
+            "qty": 1.0, "price": 2.0, "market_value": 500.0,
+            "source_file": "opts.csv",
+        }])
+        insert_crypto([{
+            "account_id": "COINBASE", "symbol": "BTC",
+            "name": "Bitcoin", "qty": 0.5, "price": 60_000.0,
+            "cost_basis": None, "market_value": 30_000.0,
+            "source_file": "crypto.csv",
+        }])
+
+        all_pos = positions_module.load_all_positions()
+        nw = positions_module.compute_net_worth(all_pos)
+
+        # equity AAPL: 10 shares × $100 = $1000
+        # options: $500 market value
+        # crypto: $30,000 market value
+        # MARGIN: $25,000 debt
+        assert nw["market_value"] == pytest.approx(1000.0 + 500.0 + 30_000.0)
+        assert nw["margin"]       == pytest.approx(25_000.0)
+        assert nw["net_worth"]    == pytest.approx(1000.0 + 500.0 + 30_000.0 - 25_000.0)
+
+
+# ── Snapshot write via ingest pipeline ────────────────────────────────────────
+
+class TestSnapshotViaIngest:
+    """Verify that ingest.run() writes a portfolio snapshot at the end of each run."""
+
+    def test_ingest_writes_snapshot(self, tmp_path, full_seeded_db, monkeypatch):
+        import ingest as ingest_mod
+        from src.db import load_snapshot_periods, write_portfolio_snapshot
+
+        # Seed equity positions so there's something to snapshot
+        insert_positions([{
+            "account_id": "SCHWAB", "ticker": "AAPL", "name": "Apple",
+            "shares": 10.0, "cost_basis": 80.0, "sector": "Technology",
+            "industry": None, "asset_type": None,
+            "iv_rank": None, "perf_ytd": None, "atr_pct": None,
+            "source_file": "test.csv",
+        }])
+
+        # Stub yfinance and snapshot computation so the test runs offline
+        monkeypatch.setattr(positions_module, "_fetch_live_prices",
+                            lambda tickers: {t: 100.0 for t in tickers})
+
+        # Provide a deterministic snapshot map (bypasses the yfinance call inside
+        # _compute_snapshot_map, which we already test at the unit level)
+        monkeypatch.setattr(
+            ingest_mod, "_compute_snapshot_map",
+            lambda: {"SCHWAB": {"market_value": 1000.0, "cost_basis": 800.0, "margin": 0.0}},
+        )
+        monkeypatch.setattr(ingest_mod, "ACCOUNTS",      [
+            {"account_id": "SCHWAB", "broker": "schwab", "account_type": "equity",
+             "account_group": "investment", "holder": None,
+             "price_source": "live", "active": 1},
+        ])
+        monkeypatch.setattr(ingest_mod, "PARSERS",        [])
+        monkeypatch.setattr(ingest_mod, "POSITION_FILES", [])
+        monkeypatch.setattr(ingest_mod, "OPTIONS_FILES",  [])
+        monkeypatch.setattr(ingest_mod, "FUTURES_FILES",  [])
+        monkeypatch.setattr(ingest_mod, "CRYPTO_FILES",   [])
+
+        ingest_mod.run(reset=False)
+
+        snap = load_snapshot_periods()
+        assert len(snap) >= 1
+        accts = set(snap["account_id"])
+        assert "SCHWAB" in accts
+
+    def test_ingest_same_day_rerun_updates_snapshot(self, tmp_path, full_seeded_db, monkeypatch):
+        import ingest as ingest_mod
+        from src.db import load_snapshot_periods
+
+        def _run_with_mv(mv):
+            monkeypatch.setattr(
+                ingest_mod, "_compute_snapshot_map",
+                lambda: {"SCHWAB": {"market_value": mv, "cost_basis": None, "margin": 0.0}},
+            )
+            monkeypatch.setattr(ingest_mod, "ACCOUNTS", [
+                {"account_id": "SCHWAB", "broker": "schwab", "account_type": "equity",
+                 "account_group": "investment", "holder": None,
+                 "price_source": "live", "active": 1},
+            ])
+            for attr in ("PARSERS", "POSITION_FILES", "OPTIONS_FILES",
+                         "FUTURES_FILES", "CRYPTO_FILES"):
+                monkeypatch.setattr(ingest_mod, attr, [])
+            ingest_mod.run(reset=False)
+
+        _run_with_mv(1_000.0)
+        _run_with_mv(1_100.0)   # second run same day — should update, not duplicate
+
+        snap = load_snapshot_periods()
+        schwab = snap[snap["account_id"] == "SCHWAB"]
+        assert len(schwab) == 1
+        assert schwab.iloc[0]["current_value"] == pytest.approx(1_100.0)

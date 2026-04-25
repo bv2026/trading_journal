@@ -6,16 +6,18 @@ dashboard.
 
 ## Accounts supported
 
-| Account ID | Broker       | Type              |
-|------------|--------------|-------------------|
-| RH-BV      | Robinhood    | Investment        |
-| RH-KD      | Robinhood    | Investment        |
-| WEBULL     | Webull       | Investment + Cash |
-| TS         | TradeStation | Investment        |
-| SCHWAB     | Schwab       | Investment        |
-| TRADIER    | Tradier      | Investment        |
-| COINBASE   | Coinbase     | Crypto            |
-| FIDELITY   | Fidelity     | Investment        |
+| Account ID  | Broker       | Asset class       |
+|-------------|--------------|-------------------|
+| RH-BV       | Robinhood    | Equity            |
+| RH-KD       | Robinhood    | Equity            |
+| WEBULL      | Webull       | Equity            |
+| TS          | TradeStation | Equity            |
+| SCHWAB      | Schwab       | Equity            |
+| TRADIER     | Tradier      | Equity            |
+| TRADIER-OPT | Tradier      | Options           |
+| SCHWAB-OPT  | Schwab       | Options           |
+| COINBASE    | Coinbase     | Crypto            |
+| FIDELITY    | Fidelity     | Equity            |
 
 ## What it tracks
 
@@ -27,24 +29,29 @@ dashboard.
 - **Fees** — trading fees, subscription fees, clearing fees
 - **Crypto Flow** — Coinbase USD deposits/withdrawals, bank-funded buys, external wallet transfers
 
-**Live positions** (ingested from per-account CSVs; live prices fetched from yfinance at load time):
+**Live equity positions** (ingested from per-account CSVs; live prices fetched from yfinance at load time):
 - Market value, cost basis, unrealized P&L, return %
 - Sector and industry classification
 - IV Rank, YTD performance, ATR %
 - Margin borrowed per account
 - Net worth = total market value − total margin
 
+**Options / futures / crypto positions** (stored at ingest time from Tradier-style CSV exports):
+- Market value, quantity, strike, expiry, call/put
+- Unified with equity in net worth and performance calculations
+
 ## Dashboard
 
-The dashboard has five tabs:
+The dashboard has six tabs:
 
 | Tab | Contents |
 |-----|----------|
-| **Portfolio** | Net worth banner · unified account summary · sector allocation pies · positions by account · sector summary · yearly pivots · crypto flow |
+| **Portfolio** | Net worth banner · unified account summary · sector allocation pies · positions by account · sector summary |
 | **Yearly Summary** | Year-over-year table · income/cost charts |
 | **By Account** | Previous Year / Current Year / ALL pivot tables per account |
 | **Positions** | Holdings by symbol — Market Value, Cost, P&L, Sector, Return %, Dividends |
 | **Transactions** | Filterable/searchable transaction log with CSV export |
+| **Performance** | Portfolio Summary (current value, margin, 1W change) · Portfolio Returns (1W / 1M / 3M / YTD / 1Y) per account |
 
 ## Project structure
 
@@ -54,12 +61,13 @@ trading-journal/
 ├── data/                   SQLite database (gitignored)
 │   └── journal.db
 ├── src/
-│   ├── db.py               Database helpers (init, upsert, load; transactions + positions)
+│   ├── db.py               DB helpers — init, upsert, load; all 4 asset classes + snapshots
 │   ├── metrics.py          compute_metrics, style helpers
-│   ├── positions.py        load_positions_from_db, sector overrides, yfinance price fetch
+│   ├── positions.py        load_positions_from_db, load_all_positions, yfinance price fetch
 │   └── parsers/
 │       ├── utils.py        Shared utilities (parse_amount, parse_date, make_id)
-│       ├── positions_csv.py  Per-account positions CSV parser
+│       ├── positions_csv.py        Per-account equity positions CSV parser
+│       ├── static_positions_csv.py Options / futures / crypto CSV parser (Tradier-style)
 │       ├── robinhood.py
 │       ├── webull.py
 │       ├── tradestation.py
@@ -68,10 +76,11 @@ trading-journal/
 │       ├── coinbase.py
 │       └── fidelity.py     Yearly summary parser (2020+)
 ├── dashboard/
-│   └── app.py              Streamlit dashboard (5 tabs)
+│   └── app.py              Streamlit dashboard (6 tabs, including Performance)
 ├── mcp_server.py           FastMCP server for Claude Desktop integration
-├── ingest.py               Load all CSVs → journal.db (transactions + positions)
-├── schema.sql              Table definitions (accounts, transactions, positions)
+├── ingest.py               Load all CSVs → journal.db; writes daily portfolio snapshot
+├── schema.sql              Tables: accounts, transactions, positions (equity/options/futures/crypto),
+│                           portfolio_snapshots; views: v_snapshot_periods + 4 others
 ├── requirements.txt
 ├── README.md
 └── USAGE.md                Full usage guide
@@ -86,6 +95,14 @@ Once the MCP server is registered you can ask Claude questions directly in chat.
 > *"Show me my portfolio summary"*
 > *"What are my Technology positions in Schwab?"*
 > *"Show me unrealized P&L by sector"*
+> *"Show me all my options positions"*
+> *"What is my total market value including options and crypto?"*
+
+**Portfolio performance**
+> *"How has my portfolio performed over the last month?"*
+> *"What is my YTD return?"*
+> *"Which account has the best 1-year return?"*
+> *"Show me my 1-week return for each account"*
 
 **Portfolio overview**
 > *"What is my all-time net income across all accounts?"*

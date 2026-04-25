@@ -19,25 +19,43 @@ Special cases:
 import sys
 import argparse
 import inspect
+from datetime import date as _date
 from pathlib import Path
+
+import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from src import db
 from src.parsers import robinhood, webull, tradestation, schwab, tradier, coinbase, fidelity
-from src.parsers import positions_csv
+from src.parsers import positions_csv, static_positions_csv
 
 ACTIVITY = Path(__file__).parent / "activity"
 
 ACCOUNTS = [
-    {"account_id": "RH-BV",    "broker": "robinhood",    "account_type": "investment", "holder": "BV"},
-    {"account_id": "RH-KD",    "broker": "robinhood",    "account_type": "investment", "holder": "KD"},
-    {"account_id": "WEBULL",   "broker": "webull",       "account_type": "investment", "holder": None},
-    {"account_id": "TS",       "broker": "tradestation", "account_type": "investment", "holder": None},
-    {"account_id": "SCHWAB",   "broker": "schwab",       "account_type": "investment", "holder": None},
-    {"account_id": "TRADIER",  "broker": "tradier",      "account_type": "investment", "holder": None},
-    {"account_id": "COINBASE", "broker": "coinbase",     "account_type": "crypto",     "holder": None},
-    {"account_id": "FIDELITY", "broker": "fidelity",     "account_type": "investment", "holder": None},
+    # ── Equity accounts (live yfinance prices) ────────────────────────────────
+    {"account_id": "RH-BV",    "broker": "robinhood",    "account_type": "equity",
+     "account_group": "investment", "holder": "BV",   "price_source": "live",   "active": 1},
+    {"account_id": "RH-KD",    "broker": "robinhood",    "account_type": "equity",
+     "account_group": "investment", "holder": "KD",   "price_source": "live",   "active": 1},
+    {"account_id": "WEBULL",   "broker": "webull",       "account_type": "equity",
+     "account_group": "investment", "holder": None,   "price_source": "live",   "active": 1},
+    {"account_id": "TS",       "broker": "tradestation", "account_type": "equity",
+     "account_group": "investment", "holder": None,   "price_source": "live",   "active": 1},
+    {"account_id": "SCHWAB",   "broker": "schwab",       "account_type": "equity",
+     "account_group": "investment", "holder": None,   "price_source": "live",   "active": 1},
+    {"account_id": "TRADIER",  "broker": "tradier",      "account_type": "equity",
+     "account_group": "investment", "holder": None,   "price_source": "live",   "active": 1},
+    {"account_id": "FIDELITY", "broker": "fidelity",     "account_type": "equity",
+     "account_group": "investment", "holder": None,   "price_source": "live",   "active": 1},
+    # ── Crypto account (transactions only; positions via CRYPTO_FILES) ─────────
+    {"account_id": "COINBASE", "broker": "coinbase",     "account_type": "crypto",
+     "account_group": "investment", "holder": None,   "price_source": "static", "active": 1},
+    # ── Options accounts (static prices stored at ingest time) ────────────────
+    {"account_id": "TRADIER-OPT", "broker": "tradier",   "account_type": "options",
+     "account_group": "investment", "holder": None,   "price_source": "static", "active": 1},
+    {"account_id": "SCHWAB-OPT",  "broker": "schwab",    "account_type": "options",
+     "account_group": "investment", "holder": None,   "price_source": "static", "active": 1},
 ]
 
 # Accounts whose CSVs are yearly summaries rather than running transaction logs.
@@ -56,7 +74,7 @@ PARSERS = [
     (fidelity.parse,        ACTIVITY / "fidelity_Investment_income_balance.csv",        "FIDELITY"),
 ]
 
-# Per-account positions CSVs — always fully replaced on each ingest.
+# Per-account equity positions CSVs — always fully replaced on each ingest.
 POSITION_FILES = [
     (ACTIVITY / "positions-scwb.csv",     "SCHWAB"),
     (ACTIVITY / "positions-trader.csv",   "TRADIER"),
@@ -66,6 +84,74 @@ POSITION_FILES = [
     (ACTIVITY / "positions-webull.csv",   "WEBULL"),
     (ACTIVITY / "positions-fidelity.csv", "FIDELITY"),
 ]
+
+# Static positions (options / futures / crypto) — add entries as CSVs become available.
+OPTIONS_FILES = [
+    (ACTIVITY / "options-trader.csv",  "TRADIER-OPT"),
+    (ACTIVITY / "options-schwab.csv",  "SCHWAB-OPT"),
+]
+
+FUTURES_FILES: list[tuple[Path, str]] = [
+    # (ACTIVITY / "futures-ts.csv", "TS-FUT"),
+]
+
+CRYPTO_FILES: list[tuple[Path, str]] = [
+    # (ACTIVITY / "crypto-coinbase.csv", "COINBASE"),
+]
+
+
+def _compute_snapshot_map() -> dict[str, dict]:
+    """Build per-account market-value summary for portfolio_snapshots.
+
+    Equity accounts: live prices via yfinance (calls load_positions_from_db).
+    Static accounts: market_value stored in DB at ingest time.
+    """
+    from src.positions import load_positions_from_db  # avoid circular import at module level
+
+    snap: dict[str, dict] = {}
+
+    # ── Equity (live prices) ──────────────────────────────────────────────────
+    eq_df = load_positions_from_db()
+    if not eq_df.empty and "MARKET VALUE" in eq_df.columns:
+        is_margin = eq_df["Ticker"].str.upper() == "MARGIN"
+        for acct, grp in eq_df.groupby("Account"):
+            grp_margin = is_margin.reindex(grp.index, fill_value=False)
+            mv = float(pd.to_numeric(
+                grp.loc[~grp_margin, "MARKET VALUE"], errors="coerce"
+            ).fillna(0).sum())
+            margin = abs(float(pd.to_numeric(
+                grp.loc[grp_margin, "MARKET VALUE"], errors="coerce"
+            ).fillna(0).sum()))
+            cost = float(pd.to_numeric(
+                grp.loc[~grp_margin, "COST"], errors="coerce"
+            ).fillna(0).sum()) if "COST" in grp.columns else 0.0
+            snap[str(acct)] = {"market_value": mv, "cost_basis": cost, "margin": margin}
+
+    # ── Options ───────────────────────────────────────────────────────────────
+    opt_df = db.load_options_db()
+    if not opt_df.empty:
+        for acct, grp in opt_df.groupby("account_id"):
+            mv = float(pd.to_numeric(grp["market_value"], errors="coerce").fillna(0).sum())
+            snap.setdefault(str(acct), {"market_value": 0.0, "cost_basis": None, "margin": 0.0})
+            snap[str(acct)]["market_value"] += mv
+
+    # ── Futures ───────────────────────────────────────────────────────────────
+    fut_df = db.load_futures_db()
+    if not fut_df.empty:
+        for acct, grp in fut_df.groupby("account_id"):
+            mv = float(pd.to_numeric(grp["market_value"], errors="coerce").fillna(0).sum())
+            snap.setdefault(str(acct), {"market_value": 0.0, "cost_basis": None, "margin": 0.0})
+            snap[str(acct)]["market_value"] += mv
+
+    # ── Crypto ────────────────────────────────────────────────────────────────
+    cry_df = db.load_crypto_db()
+    if not cry_df.empty:
+        for acct, grp in cry_df.groupby("account_id"):
+            mv = float(pd.to_numeric(grp["market_value"], errors="coerce").fillna(0).sum())
+            snap.setdefault(str(acct), {"market_value": 0.0, "cost_basis": None, "margin": 0.0})
+            snap[str(acct)]["market_value"] += mv
+
+    return snap
 
 
 def run(reset: bool = False) -> None:
@@ -119,7 +205,7 @@ def run(reset: bool = False) -> None:
     if total_skipped and not reset:
         print("Tip: run with --reset to do a full rebuild from all CSV files.")
 
-    # ── Positions CSVs (always fully replaced per account) ────────────────────
+    # ── Equity positions (always fully replaced per account) ──────────────────
     pos_total = 0
     for path, acct in POSITION_FILES:
         if not path.exists():
@@ -137,6 +223,58 @@ def run(reset: bool = False) -> None:
 
     if pos_total:
         print(f"\nPositions — {pos_total} rows written across accounts.")
+
+    # ── Options positions ─────────────────────────────────────────────────────
+    for path, acct in OPTIONS_FILES:
+        if not path.exists():
+            continue
+        try:
+            recs = static_positions_csv.parse(str(path), acct, "options")
+        except Exception as exc:
+            print(f"  ERROR options {acct}: {exc}")
+            continue
+        db.delete_options_by_account(acct)
+        written = db.insert_options(recs)
+        print(f"  OK    options  {acct}: {written} rows")
+
+    # ── Futures positions ─────────────────────────────────────────────────────
+    for path, acct in FUTURES_FILES:
+        if not path.exists():
+            continue
+        try:
+            recs = static_positions_csv.parse(str(path), acct, "futures")
+        except Exception as exc:
+            print(f"  ERROR futures {acct}: {exc}")
+            continue
+        db.delete_futures_by_account(acct)
+        written = db.insert_futures(recs)
+        print(f"  OK    futures  {acct}: {written} rows")
+
+    # ── Crypto positions ──────────────────────────────────────────────────────
+    for path, acct in CRYPTO_FILES:
+        if not path.exists():
+            continue
+        try:
+            recs = static_positions_csv.parse(str(path), acct, "crypto")
+        except Exception as exc:
+            print(f"  ERROR crypto  {acct}: {exc}")
+            continue
+        db.delete_crypto_by_account(acct)
+        written = db.insert_crypto(recs)
+        print(f"  OK    crypto   {acct}: {written} rows")
+
+    # ── Portfolio snapshot ────────────────────────────────────────────────────
+    print("\nWriting portfolio snapshot …")
+    try:
+        snap_map = _compute_snapshot_map()
+        if snap_map:
+            today = _date.today().isoformat()
+            db.write_portfolio_snapshot(today, snap_map)
+            print(f"  Snapshot — {len(snap_map)} accounts written for {today}")
+        else:
+            print("  Snapshot — no positions found, skipped")
+    except Exception as exc:
+        print(f"  WARNING snapshot failed: {exc}")
 
 
 if __name__ == "__main__":

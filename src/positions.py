@@ -252,17 +252,108 @@ def _resolve_sector(ticker: str, name: str, sector: str) -> str:
     return sector
 
 
+def load_options_from_db() -> pd.DataFrame:
+    """Load options positions from DB, normalised to the unified column layout.
+
+    Returns a DataFrame with columns: Account, Ticker, MARKET VALUE, asset_class,
+    plus options-specific columns (underlying, expiry, strike, call_put, qty, price).
+    """
+    from src.db import load_options_db  # noqa: PLC0415
+    df = load_options_db()
+    if df.empty:
+        return pd.DataFrame()
+    df = df.rename(columns={
+        "account_id":   "Account",
+        "symbol":       "Ticker",
+        "market_value": "MARKET VALUE",
+    })
+    df["MARKET VALUE"] = pd.to_numeric(df["MARKET VALUE"], errors="coerce")
+    df["asset_class"] = "options"
+    return df
+
+
+def load_futures_from_db() -> pd.DataFrame:
+    """Load futures positions from DB, normalised to the unified column layout.
+
+    Returns a DataFrame with columns: Account, Ticker, MARKET VALUE, asset_class,
+    plus futures-specific columns (underlying, qty, price).
+    """
+    from src.db import load_futures_db  # noqa: PLC0415
+    df = load_futures_db()
+    if df.empty:
+        return pd.DataFrame()
+    df = df.rename(columns={
+        "account_id":   "Account",
+        "symbol":       "Ticker",
+        "market_value": "MARKET VALUE",
+    })
+    df["MARKET VALUE"] = pd.to_numeric(df["MARKET VALUE"], errors="coerce")
+    df["asset_class"] = "futures"
+    return df
+
+
+def load_crypto_from_db() -> pd.DataFrame:
+    """Load crypto positions from DB, normalised to the unified column layout.
+
+    Returns a DataFrame with columns: Account, Ticker, MARKET VALUE, asset_class,
+    plus crypto-specific columns (name, qty, price, cost_basis).
+    """
+    from src.db import load_crypto_db  # noqa: PLC0415
+    df = load_crypto_db()
+    if df.empty:
+        return pd.DataFrame()
+    df = df.rename(columns={
+        "account_id":   "Account",
+        "symbol":       "Ticker",
+        "market_value": "MARKET VALUE",
+    })
+    df["MARKET VALUE"] = pd.to_numeric(df["MARKET VALUE"], errors="coerce")
+    df["asset_class"] = "crypto"
+    return df
+
+
+def load_all_positions() -> pd.DataFrame:
+    """Load all position types and return a unified DataFrame.
+
+    Columns guaranteed present: Account, Ticker, MARKET VALUE, asset_class.
+    Asset-specific columns (sector, underlying, expiry, etc.) are included
+    where available and NaN elsewhere.
+
+    Used by the Performance tab and MCP get_positions tool.
+    Existing tabs 1-5 continue to use load_positions_from_db() (equity only).
+    """
+    frames: list[pd.DataFrame] = []
+
+    eq = load_positions_from_db()
+    if not eq.empty:
+        eq["asset_class"] = "equity"
+        frames.append(eq)
+
+    for loader in (load_options_from_db, load_futures_from_db, load_crypto_from_db):
+        df = loader()
+        if not df.empty:
+            frames.append(df)
+
+    if not frames:
+        return pd.DataFrame()
+
+    return pd.concat(frames, ignore_index=True)
+
+
 def compute_net_worth(positions_df: pd.DataFrame) -> dict[str, float]:
-    """Compute net worth from a loaded positions DataFrame.
+    """Compute net worth from a positions DataFrame (equity or unified).
 
     Returns a dict with keys ``market_value``, ``margin``, and ``net_worth``.
     All values are 0.0 when *positions_df* is empty or lacks a MARKET VALUE column.
+
+    MARGIN rows (equity-only sentinel) are separated out and treated as margin debt.
+    All other rows — including options, futures, and crypto — contribute to market_value.
     """
     if positions_df.empty or "MARKET VALUE" not in positions_df.columns:
         return {"market_value": 0.0, "margin": 0.0, "net_worth": 0.0}
 
     mv_col = pd.to_numeric(positions_df["MARKET VALUE"], errors="coerce")
-    is_margin = positions_df["Ticker"] == "MARGIN"
+    is_margin = positions_df.get("Ticker", pd.Series(dtype=str)) == "MARGIN"
 
     total_mv     = float(mv_col[~is_margin].sum())
     total_margin = abs(float(mv_col[is_margin].sum()))
