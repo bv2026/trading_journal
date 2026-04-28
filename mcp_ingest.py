@@ -33,6 +33,7 @@ sys.path.insert(0, str(ROOT))
 from src import db
 from src.fetchers import tradier as tradier_fetcher
 from src.fetchers import tradestation as ts_fetcher
+from src.fetchers import webull as webull_fetcher
 
 
 # ── Tradier ────────────────────────────────────────────────────────────────────
@@ -153,6 +154,92 @@ def write_tradestation(
           f"futures={fut_written}  instruments={instr_written}")
     return {"equity_count": eq_written, "option_count": opt_written,
             "futures_count": fut_written, "instrument_count": instr_written}
+
+
+# ── Webull ────────────────────────────────────────────────────────────────────
+
+def write_webull(
+    account_list_result: str,
+    positions_by_wb_id: dict[str, str],
+    balance_by_wb_id: dict[str, str] | None = None,
+    *,
+    dry_run: bool = False,
+) -> dict:
+    """
+    Normalize Webull MCP responses for all 4 accounts and write to journal DB.
+
+    Args:
+        account_list_result:  Raw `result` text from get_account_list.
+        positions_by_wb_id:   {webull_account_id: positions result text}
+                              from get_account_positions for each account.
+        balance_by_wb_id:     Optional {webull_account_id: balance result text}
+                              from get_account_balance.
+        dry_run:              Parse only; do not write to DB.
+
+    Returns:
+        Dict with per-account counts and totals.
+    """
+    db.init_db()
+
+    # Build webull_id → journal_id map from account list
+    id_map = webull_fetcher.account_map_from_list(account_list_result)
+
+    totals = {"equity": 0, "options": 0, "futures": 0, "crypto": 0, "instruments": 0}
+    per_account: dict[str, dict] = {}
+
+    for wb_id, positions_text in positions_by_wb_id.items():
+        journal_id = id_map.get(wb_id)
+        if not journal_id:
+            print(f"  SKIP  unknown webull account {wb_id} — not in CLASS_TO_ACCOUNT_ID map")
+            continue
+
+        parsed = webull_fetcher.parse_positions_text(positions_text)
+        eq_recs, opt_recs, fut_recs, cry_recs = webull_fetcher.normalize_positions(
+            parsed, journal_id
+        )
+
+        if dry_run:
+            print(f"  [dry-run] {journal_id}: {len(eq_recs)} equity  "
+                  f"{len(opt_recs)} options  {len(fut_recs)} futures  "
+                  f"{len(cry_recs)} crypto")
+            per_account[journal_id] = {
+                "equity": len(eq_recs), "options": len(opt_recs),
+                "futures": len(fut_recs), "crypto": len(cry_recs),
+            }
+            continue
+
+        db.delete_positions_by_account(journal_id)
+        eq_w = db.insert_positions(eq_recs) if eq_recs else 0
+
+        db.delete_options_by_account(journal_id)
+        opt_w = db.insert_options(opt_recs) if opt_recs else 0
+
+        db.delete_futures_by_account(journal_id)
+        fut_w = db.insert_futures(fut_recs) if fut_recs else 0
+
+        db.delete_crypto_by_account(journal_id)
+        cry_w = db.insert_crypto(cry_recs) if cry_recs else 0
+
+        instr_recs = webull_fetcher.normalize_instruments(
+            eq_recs, opt_recs, fut_recs, cry_recs
+        )
+        instr_w = db.upsert_instruments(instr_recs) if instr_recs else 0
+
+        if balance_by_wb_id and wb_id in balance_by_wb_id:
+            bal = webull_fetcher.parse_balance_text(balance_by_wb_id[wb_id])
+            print(f"  [{journal_id}] MV={bal['market_value']:.2f}  "
+                  f"margin={bal['margin']:.2f}  net_liq={bal['net_liquidation']:.2f}")
+
+        print(f"  [{journal_id}] equity={eq_w}  options={opt_w}  "
+              f"futures={fut_w}  crypto={cry_w}  instruments={instr_w}")
+        per_account[journal_id] = {
+            "equity": eq_w, "options": opt_w, "futures": fut_w,
+            "crypto": cry_w, "instruments": instr_w,
+        }
+        for k in ("equity", "options", "futures", "crypto", "instruments"):
+            totals[k] += per_account[journal_id].get(k, 0)
+
+    return {"per_account": per_account, "totals": totals}
 
 
 # ── CLI helper ─────────────────────────────────────────────────────────────────
