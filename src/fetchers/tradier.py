@@ -44,8 +44,6 @@ Tradier market quotes response shape (get_market_quotes):
 import re
 from .base import is_occ_symbol, parse_occ, parse_iso_date, make_txn_id
 
-_SKIP_SYMBOLS = {"USD"}  # cash / internal markers
-
 # Transaction categorization regexes (mirror CSV parser logic)
 _ACH_DEPOSIT    = re.compile(r"ACH DEPOSIT",                          re.I)
 _ACH_WITHDRAWAL = re.compile(r"ACH WITHDRAWAL|ACH DEBIT",             re.I)
@@ -122,7 +120,7 @@ def normalize_positions(
 
     for pos in raw:
         symbol = str(pos.get("symbol", "")).strip()
-        if not symbol or symbol in _SKIP_SYMBOLS:
+        if not symbol:
             continue
 
         qty       = float(pos.get("quantity", 0) or 0)
