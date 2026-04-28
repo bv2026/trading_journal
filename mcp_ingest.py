@@ -34,6 +34,7 @@ from src import db
 from src.fetchers import tradier as tradier_fetcher
 from src.fetchers import tradestation as ts_fetcher
 from src.fetchers import webull as webull_fetcher
+from src.fetchers import robinhood as rh_fetcher
 
 
 # ── Tradier ────────────────────────────────────────────────────────────────────
@@ -240,6 +241,54 @@ def write_webull(
             totals[k] += per_account[journal_id].get(k, 0)
 
     return {"per_account": per_account, "totals": totals}
+
+
+# ── Robinhood ─────────────────────────────────────────────────────────────────
+
+def write_robinhood(
+    positions_resp: dict,
+    portfolio_resp: dict | None = None,
+    account_id: str = "RH-BV",
+    *,
+    dry_run: bool = False,
+) -> dict:
+    """
+    Normalize trayd get_positions (and optionally get_portfolio) responses and
+    write equity positions to the journal DB.
+
+    Robinhood only exposes equities via MCP; options are not available.
+    RH-KD requires separate trayd credentials and falls back to CSV ingest.
+
+    Args:
+        positions_resp: Response from trayd get_positions MCP tool.
+        portfolio_resp: Optional response from trayd get_portfolio (for margin info).
+        account_id:     Journal account_id (default: "RH-BV").
+        dry_run:        Parse only; do not write to DB.
+
+    Returns:
+        Dict with keys: equity_count, instrument_count.
+    """
+    db.init_db()
+
+    eq_recs = rh_fetcher.normalize_positions(positions_resp, account_id)
+
+    if dry_run:
+        print(f"[dry-run] {account_id}: {len(eq_recs)} equity — nothing written")
+        return {"equity_count": len(eq_recs)}
+
+    db.delete_positions_by_account(account_id)
+    eq_written = db.insert_positions(eq_recs) if eq_recs else 0
+
+    instr_recs = rh_fetcher.normalize_instruments(eq_recs)
+    instr_written = db.upsert_instruments(instr_recs) if instr_recs else 0
+
+    if portfolio_resp:
+        port = rh_fetcher.normalize_portfolio(portfolio_resp)
+        print(f"[{account_id}] equity={port['equity']:.2f}  "
+              f"cash={port['cash']:.2f}  margin={port['margin']:.2f}")
+
+    print(f"[{account_id}] equity={eq_written}  instruments={instr_written}")
+    return {"equity_count": eq_written, "instrument_count": instr_written}
 
 
 # ── CLI helper ─────────────────────────────────────────────────────────────────
