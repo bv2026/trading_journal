@@ -198,7 +198,52 @@ Current content:
 
 ---
 
-## 6. Ingest / Refresh Architecture
+## 6. Instrument Master Table
+
+A new `instruments` table acts as a **security master / symbol catalog** — the single source of truth for all metadata about every ticker, option, future, or crypto symbol seen in the system.
+
+### Schema
+
+```sql
+CREATE TABLE instruments (
+    symbol       TEXT PRIMARY KEY,       -- canonical symbol (e.g. AAPL, /ES, BTC, AAPL250516C00200000)
+    name         TEXT,                   -- human-readable name (e.g. "Apple Inc.")
+    asset_class  TEXT NOT NULL,          -- Stock | ETF | Option | Future | Crypto | Derivative
+    sector       TEXT,                   -- yfinance sector (equities/ETFs only; NULL for others)
+    industry     TEXT,                   -- yfinance industry (equities/ETFs only)
+    underlying   TEXT,                   -- parent symbol for options/futures (e.g. AAPL for AAPL options)
+    exchange     TEXT,                   -- e.g. NASDAQ, NYSE, CME
+    currency     TEXT DEFAULT 'USD',
+    last_updated TEXT,                   -- ISO timestamp of last metadata refresh
+    source       TEXT                    -- yfinance | manual | mcp
+);
+```
+
+### Behaviour
+
+| # | Rule | Detail |
+|---|------|--------|
+| I.1 | **New symbol detection** | On every ingest/refresh, collect all symbols from incoming positions and transactions. Any symbol not already in `instruments` triggers a metadata fetch before positions are written |
+| I.2 | **Equity / ETF metadata** | Fetched from yfinance `ticker.info`: name, sector, industry, exchange, asset_class (Stock vs ETF based on `quoteType`) |
+| I.3 | **Option symbol parsing** | Asset class = Option; underlying, expiry, strike, call_put parsed from OCC symbol format (e.g. `AAPL250516C00200000`); no yfinance call needed |
+| I.4 | **Futures symbol parsing** | Asset class = Future; underlying derived from root symbol (e.g. `/ES` → S&P 500); exchange from broker MCP if available |
+| I.5 | **Crypto** | Asset class = Crypto; name from yfinance or broker MCP; no sector/industry |
+| I.6 | **Refresh cadence** | Metadata is refreshed only when `last_updated` is older than 7 days, or when symbol is first seen — never on every dashboard load |
+| I.7 | **Positions JOIN** | All position queries JOIN `instruments` on symbol to get name, sector, asset_class — removes the need to store these redundantly in the positions table |
+| I.8 | **Transactions JOIN** | Transaction rows with a symbol can also JOIN `instruments` for display enrichment |
+| I.9 | **Manual override** | `source = 'manual'` rows are never overwritten by auto-fetch — allows correcting wrong sector/name from yfinance |
+
+### Impact on yfinance Usage
+
+| Before | After |
+|--------|-------|
+| yfinance called on every `load_positions_from_db()` — every dashboard load | yfinance called only for new symbols or stale entries (>7 days old) |
+| Sector/name not persisted — lost on restart | Sector/name stored in DB permanently |
+| ETF type detection per load | Stored once in `asset_class` |
+
+---
+
+## 7. Ingest / Refresh Architecture
 
 | # | Requirement | Detail |
 |---|-------------|--------|
@@ -214,14 +259,16 @@ Current content:
 
 ---
 
-## 7. Schema Changes
+## 8. Schema Changes
 
 | Table / Column | Change | When |
 |----------------|--------|------|
+| `instruments` | **New table** — symbol master catalog (see Section 6 for full schema) | Phase 1 |
 | `positions` | Add `asset_type` TEXT (equity/option/future/crypto) | Phase 1 |
 | `positions` | Add `underlying`, `expiry`, `strike`, `call_put` TEXT (nullable) | Phase 1 |
 | `positions` | Add `data_source` TEXT (mcp/csv) | Phase 1 |
 | `positions` | Add `price_source` TEXT (live/yfinance/static) | Phase 1 |
+| `positions` | Remove `sector`, `name`, `TYPE` columns — served by JOIN to `instruments` | Phase 1 |
 | `transactions` | Add `data_source` TEXT (mcp/csv) | Phase 1 |
 | `accounts` | Retire `TRADIER-OPT`, `SCHWAB-OPT` rows | Phase 3 |
 | `options_positions` | Deprecate (stop writing; keep for read during transition) | Phase 3 |
@@ -230,7 +277,7 @@ Current content:
 
 ---
 
-## 8. Out of Scope
+## 9. Out of Scope
 
 | Item | Reason |
 |------|--------|
