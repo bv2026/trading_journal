@@ -21,6 +21,46 @@ _CURRENCY_CODES = frozenset({
 })
 
 
+# TradeStation option symbol format: "{underlying} {YYMMDD}{C/P}{strike}"
+# Examples: "MSFT 260717C425", "SPXW 260428C7370", "SPY 260618P665"
+# Strike is a plain integer/decimal — no zero-padding unlike OCC.
+_TS_OPT_RE = re.compile(
+    r'^(?P<underlying>[A-Z0-9]+)\s+'
+    r'(?P<yy>\d{2})(?P<mm>\d{2})(?P<dd>\d{2})'
+    r'(?P<cp>[CP])'
+    r'(?P<strike>\d+(?:\.\d+)?)$'
+)
+
+
+def is_ts_option_symbol(symbol: str) -> bool:
+    return bool(_TS_OPT_RE.match(symbol))
+
+
+def parse_ts_option(symbol: str) -> dict | None:
+    """Parse a TradeStation option symbol into components."""
+    m = _TS_OPT_RE.match(symbol)
+    if not m:
+        return None
+    year = 2000 + int(m.group("yy"))
+    expiry = f"{year:04d}-{m.group('mm')}-{m.group('dd')}"
+    strike = float(m.group("strike"))
+    underlying = m.group("underlying")
+    cp = m.group("cp")
+
+    # Build OCC-format symbol for storage consistency across brokers:
+    # {underlying}{YYMMDD}{C/P}{8-digit strike*1000}
+    strike_int = round(strike * 1000)
+    occ = f"{underlying}{m.group('yy')}{m.group('mm')}{m.group('dd')}{cp}{strike_int:08d}"
+
+    return {
+        "underlying": underlying,
+        "expiry":     expiry,
+        "call_put":   cp,
+        "strike":     strike,
+        "occ_symbol": occ,
+    }
+
+
 def is_currency_entry(symbol: str, total_cost: float, quantity: float) -> bool:
     """
     Return True when a position with this symbol is a broker cash/currency

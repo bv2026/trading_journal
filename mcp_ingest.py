@@ -32,6 +32,7 @@ sys.path.insert(0, str(ROOT))
 
 from src import db
 from src.fetchers import tradier as tradier_fetcher
+from src.fetchers import tradestation as ts_fetcher
 
 
 # ── Tradier ────────────────────────────────────────────────────────────────────
@@ -93,6 +94,65 @@ def write_tradier(
           f"txns={txn_written}  instruments={instr_written}")
     return {"equity_count": eq_written, "option_count": opt_written,
             "txn_count": txn_written, "instrument_count": instr_written}
+
+
+# ── TradeStation ──────────────────────────────────────────────────────────────
+
+def write_tradestation(
+    positions_resp: dict,
+    balances_resp: dict | None = None,
+    account_id: str = "TS",
+    *,
+    dry_run: bool = False,
+) -> dict:
+    """
+    Normalize TradeStation get-positions-details (and optionally get-balances-details)
+    responses and write them to the journal DB.
+
+    Args:
+        positions_resp: Response from get-positions-details MCP tool.
+        balances_resp:  Optional response from get-balances-details.
+                        Used only for reference; balance info is not yet written
+                        to a separate table (portfolio_snapshots handles that).
+        account_id:     Journal account_id (default: "TS").
+        dry_run:        Parse only; do not write to DB.
+
+    Returns:
+        Dict with keys: equity_count, option_count, futures_count, instrument_count.
+    """
+    db.init_db()
+
+    eq_recs, opt_recs, fut_recs = ts_fetcher.normalize_positions(
+        positions_resp, account_id
+    )
+
+    if dry_run:
+        print(f"[dry-run] {account_id}: {len(eq_recs)} equity, "
+              f"{len(opt_recs)} options, {len(fut_recs)} futures — nothing written")
+        return {"equity_count": len(eq_recs), "option_count": len(opt_recs),
+                "futures_count": len(fut_recs)}
+
+    db.delete_positions_by_account(account_id)
+    eq_written = db.insert_positions(eq_recs) if eq_recs else 0
+
+    db.delete_options_by_account(account_id)
+    opt_written = db.insert_options(opt_recs) if opt_recs else 0
+
+    db.delete_futures_by_account(account_id)
+    fut_written = db.insert_futures(fut_recs) if fut_recs else 0
+
+    instr_recs = ts_fetcher.normalize_instruments(eq_recs, opt_recs, fut_recs)
+    instr_written = db.upsert_instruments(instr_recs) if instr_recs else 0
+
+    if balances_resp:
+        bal = ts_fetcher.normalize_balances(balances_resp, account_id)
+        print(f"[{account_id}] balances — MV={bal['market_value']:.2f}  "
+              f"equity={bal['equity']:.2f}  margin={bal['margin']:.2f}")
+
+    print(f"[{account_id}] equity={eq_written}  options={opt_written}  "
+          f"futures={fut_written}  instruments={instr_written}")
+    return {"equity_count": eq_written, "option_count": opt_written,
+            "futures_count": fut_written, "instrument_count": instr_written}
 
 
 # ── CLI helper ─────────────────────────────────────────────────────────────────
