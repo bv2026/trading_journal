@@ -12,6 +12,8 @@ Tools:
   get_transactions       — filterable transaction log
   get_positions          — current positions from all asset classes with live prices
   get_performance        — account-level returns across standard lookback periods
+  set_margin             — directly set margin balance for an account
+  refresh_positions      — fetch live positions from broker APIs and write to DB
   run_ingest             — re-load all broker CSVs into the database
   launch_dashboard       — start the Streamlit dashboard
 """
@@ -418,6 +420,35 @@ def run_ingest(reset: bool = False) -> str:
     if result.returncode != 0:
         return f"Ingest failed (exit {result.returncode}):\n{output}"
     return output.strip()
+
+
+@mcp.tool()
+def set_margin(account_id: str, amount: float) -> str:
+    """
+    Directly set the margin balance for an account without a full position refresh.
+
+    Use this when you know the current margin balance from a broker statement,
+    app, or quick balance check, and just want to update that one number.
+
+    Args:
+        account_id: The journal account ID (e.g. "RH-BV", "SCHWAB", "TS",
+                    "TRADIER"). Case-insensitive.
+        amount:     Margin balance in USD as a positive number (e.g. 25000 for
+                    $25,000 borrowed). Pass 0 to clear the margin sentinel
+                    (i.e. account has no margin debt).
+
+    Returns:
+        Confirmation message with the account and amount stored.
+
+    Examples:
+        set_margin("RH-BV", 25000)    # $25k margin on Robinhood
+        set_margin("SCHWAB", 0)        # clear margin (paid off / not using)
+        set_margin("TS", 12500.50)     # TradeStation with $12,500.50 margin
+    """
+    result = _ingest.set_margin(account_id, amount)
+    if result["action"] == "cleared":
+        return f"Margin cleared for {result['account_id']} (set to $0)."
+    return f"Margin for {result['account_id']} set to ${result['amount']:,.2f}."
 
 
 @mcp.tool()

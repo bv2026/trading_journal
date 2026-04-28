@@ -481,6 +481,44 @@ def write_schwab(
             "instrument_count": instr_written, "margin": margin}
 
 
+# ── Margin override ────────────────────────────────────────────────────────────
+
+def set_margin(account_id: str, amount: float) -> dict:
+    """
+    Directly set the margin debt for an account.
+
+    Writes (or replaces) the MARGIN sentinel row in the positions table.
+    Pass amount=0 to clear margin for the account.
+
+    Args:
+        account_id: Journal account_id (e.g. "RH-BV", "SCHWAB", "TS").
+        amount:     Margin balance in USD (positive number, e.g. 25000).
+                    Pass 0 to remove the margin sentinel.
+
+    Returns:
+        Dict with account_id, amount, and action taken.
+    """
+    db.init_db()
+    account_id = account_id.upper()
+
+    if amount < 0:
+        amount = abs(amount)  # accept negative input gracefully
+
+    if amount == 0:
+        with db.get_conn() as conn:
+            conn.execute(
+                "DELETE FROM positions WHERE account_id=? AND ticker='MARGIN'",
+                (account_id,),
+            )
+            conn.commit()
+        print(f"[{account_id}] MARGIN sentinel cleared")
+        return {"account_id": account_id, "amount": 0.0, "action": "cleared"}
+
+    _insert_margin_sentinel(account_id, amount)
+    print(f"[{account_id}] MARGIN set to ${amount:,.0f}")
+    return {"account_id": account_id, "amount": amount, "action": "set"}
+
+
 # ── CLI helper ─────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -495,11 +533,17 @@ Examples:
   python mcp_ingest.py --broker schwab  --equity eq.json --summary summary.json
   python mcp_ingest.py --broker ts      --positions pos.json --balances bal.json
   python mcp_ingest.py --broker robinhood --positions pos.json --portfolio port.json
+
+  # Set margin directly (no broker data needed)
+  python mcp_ingest.py --set-margin RH-BV 25000
+  python mcp_ingest.py --set-margin SCHWAB 0        # clear margin
         """,
     )
-    parser.add_argument("--broker", required=True,
+    parser.add_argument("--broker",
                         choices=["tradier", "schwab", "tradestation", "ts", "robinhood", "rh"],
                         help="Which broker's data to write.")
+    parser.add_argument("--set-margin", nargs=2, metavar=("ACCOUNT", "AMOUNT"),
+                        help="Set margin for ACCOUNT to AMOUNT (USD). Pass 0 to clear.")
     parser.add_argument("--positions",  metavar="FILE", help="JSON file: positions response.")
     parser.add_argument("--equity",     metavar="FILE", help="JSON file: equity positions (Schwab).")
     parser.add_argument("--futures",    metavar="FILE", help="JSON file: futures positions.")
@@ -517,6 +561,21 @@ Examples:
                         help="Parse only; do not write to DB.")
 
     args = parser.parse_args()
+
+    # ── set-margin shortcut ────────────────────────────────────────────────────
+    if args.set_margin:
+        acct, raw_amt = args.set_margin
+        try:
+            amt = float(raw_amt.replace(",", "").replace("$", ""))
+        except ValueError:
+            print(f"ERROR: AMOUNT must be a number, got {raw_amt!r}", file=sys.stderr)
+            sys.exit(1)
+        result = set_margin(acct, amt)
+        print(json.dumps(result))
+        sys.exit(0)
+
+    if not args.broker:
+        parser.error("--broker is required unless --set-margin is used")
 
     def _load(path: str | None) -> dict | None:
         if not path:
