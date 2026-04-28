@@ -35,6 +35,7 @@ from src.fetchers import tradier as tradier_fetcher
 from src.fetchers import tradestation as ts_fetcher
 from src.fetchers import webull as webull_fetcher
 from src.fetchers import robinhood as rh_fetcher
+from src.fetchers import schwab as schwab_fetcher
 
 
 # ── Tradier ────────────────────────────────────────────────────────────────────
@@ -289,6 +290,75 @@ def write_robinhood(
 
     print(f"[{account_id}] equity={eq_written}  instruments={instr_written}")
     return {"equity_count": eq_written, "instrument_count": instr_written}
+
+
+# ── Schwab ────────────────────────────────────────────────────────────────────
+
+def write_schwab(
+    equity_resp: dict,
+    futures_resp: dict | None = None,
+    summary_resp: dict | None = None,
+    txn_resp: dict | None = None,
+    account_id: str = "SCHWAB",
+    *,
+    dry_run: bool = False,
+) -> dict:
+    """
+    Normalize Schwab MCP responses and write them to the journal DB.
+
+    Args:
+        equity_resp:   Response from get_equity_positions MCP tool.
+        futures_resp:  Optional response from get_futures_positions.
+        summary_resp:  Optional response from get_account_summary (for balance info).
+        txn_resp:      Optional response from get_transactions (60-day window).
+        account_id:    Journal account_id (default: "SCHWAB").
+        dry_run:       Parse only; do not write to DB.
+
+    Returns:
+        Dict with keys: equity_count, option_count, futures_count, txn_count,
+        instrument_count.
+    """
+    db.init_db()
+
+    eq_recs, opt_recs = schwab_fetcher.normalize_equity(equity_resp, account_id)
+    fut_recs: list[dict] = []
+    if futures_resp:
+        fut_recs = schwab_fetcher.normalize_futures(futures_resp, account_id)
+    txn_recs: list[dict] = []
+    if txn_resp:
+        txn_recs = schwab_fetcher.normalize_transactions(txn_resp, account_id)
+
+    if dry_run:
+        print(f"[dry-run] {account_id}: {len(eq_recs)} equity, "
+              f"{len(opt_recs)} options, {len(fut_recs)} futures, "
+              f"{len(txn_recs)} txns — nothing written")
+        return {"equity_count": len(eq_recs), "option_count": len(opt_recs),
+                "futures_count": len(fut_recs), "txn_count": len(txn_recs)}
+
+    db.delete_positions_by_account(account_id)
+    eq_written = db.insert_positions(eq_recs) if eq_recs else 0
+
+    db.delete_options_by_account(account_id)
+    opt_written = db.insert_options(opt_recs) if opt_recs else 0
+
+    db.delete_futures_by_account(account_id)
+    fut_written = db.insert_futures(fut_recs) if fut_recs else 0
+
+    txn_written = db.insert_transactions(txn_recs) if txn_recs else 0
+
+    instr_recs = schwab_fetcher.normalize_instruments(eq_recs, opt_recs, fut_recs)
+    instr_written = db.upsert_instruments(instr_recs) if instr_recs else 0
+
+    if summary_resp:
+        bal = schwab_fetcher.normalize_balances(summary_resp)
+        print(f"[{account_id}] balances — MV={bal['market_value']:.2f}  "
+              f"equity={bal['equity']:.2f}  margin={bal['margin']:.2f}")
+
+    print(f"[{account_id}] equity={eq_written}  options={opt_written}  "
+          f"futures={fut_written}  txns={txn_written}  instruments={instr_written}")
+    return {"equity_count": eq_written, "option_count": opt_written,
+            "futures_count": fut_written, "txn_count": txn_written,
+            "instrument_count": instr_written}
 
 
 # ── CLI helper ─────────────────────────────────────────────────────────────────
