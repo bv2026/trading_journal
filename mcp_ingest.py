@@ -37,6 +37,59 @@ from src.fetchers import webull as webull_fetcher
 from src.fetchers import robinhood as rh_fetcher
 from src.fetchers import schwab as schwab_fetcher
 
+# ── Margin helpers ─────────────────────────────────────────────────────────────
+
+def _get_existing_margin(account_id: str) -> float:
+    """Return the current MARGIN sentinel value for an account (0 if none)."""
+    try:
+        with db.get_conn() as conn:
+            row = conn.execute(
+                "SELECT cost_basis FROM positions WHERE account_id=? AND ticker='MARGIN'",
+                (account_id,),
+            ).fetchone()
+            if row and row[0] is not None:
+                return abs(float(row[0]))
+    except Exception:
+        pass
+    return 0.0
+
+
+def _insert_margin_sentinel(account_id: str, margin: float) -> None:
+    """
+    Write a MARGIN sentinel row into positions so the dashboard accounts for
+    margin debt.  The dashboard reads cost_basis for MARGIN rows directly
+    (load_positions_from_db stores it as MARKET VALUE), so cost_basis is stored
+    as a negative value representing the debt.
+    """
+    if margin <= 0:
+        return
+    db.insert_positions([{
+        "account_id":   account_id,
+        "ticker":       "MARGIN",
+        "name":         "Margin Balance",
+        "shares":       1,
+        "cost_basis":   -margin,
+        "stored_price": None,
+        "sector":       None,
+        "industry":     None,
+        "asset_type":   "margin",
+        "iv_rank":      None,
+        "perf_ytd":     None,
+        "atr_pct":      None,
+        "data_source":  "mcp",
+        "source_file":  None,
+    }])
+
+
+def _gross_mv_from_records(eq_recs: list[dict]) -> float:
+    """Sum shares × stored_price across equity records (used for computed margin)."""
+    total = 0.0
+    for r in eq_recs:
+        shares = r.get("shares") or 0
+        price  = r.get("stored_price") or 0
+        total += float(shares) * float(price)
+    return total
+
 
 # ── Tradier ────────────────────────────────────────────────────────────────────
 
@@ -106,6 +159,7 @@ def write_tradestation(
     balances_resp: dict | None = None,
     account_id: str = "TS",
     *,
+    margin_mode: str = "balance",
     dry_run: bool = False,
 ) -> dict:
     """
@@ -115,13 +169,15 @@ def write_tradestation(
     Args:
         positions_resp: Response from get-positions-details MCP tool.
         balances_resp:  Optional response from get-balances-details.
-                        Used only for reference; balance info is not yet written
-                        to a separate table (portfolio_snapshots handles that).
         account_id:     Journal account_id (default: "TS").
+        margin_mode:    How to determine margin debt to store:
+                          "balance"  — use currentCashBalance from balances response (default).
+                          "computed" — gross_MV (sum positions×price) minus currentEquity.
+                          "csv"      — preserve whatever MARGIN sentinel is already in the DB.
         dry_run:        Parse only; do not write to DB.
 
     Returns:
-        Dict with keys: equity_count, option_count, futures_count, instrument_count.
+        Dict with keys: equity_count, option_count, futures_count, instrument_count, margin.
     """
     db.init_db()
 
@@ -135,6 +191,8 @@ def write_tradestation(
         return {"equity_count": len(eq_recs), "option_count": len(opt_recs),
                 "futures_count": len(fut_recs)}
 
+    csv_margin = _get_existing_margin(account_id)
+
     db.delete_positions_by_account(account_id)
     eq_written = db.insert_positions(eq_recs) if eq_recs else 0
 
@@ -147,15 +205,26 @@ def write_tradestation(
     instr_recs = ts_fetcher.normalize_instruments(eq_recs, opt_recs, fut_recs)
     instr_written = db.upsert_instruments(instr_recs) if instr_recs else 0
 
+    # Margin sentinel
+    margin = 0.0
     if balances_resp:
         bal = ts_fetcher.normalize_balances(balances_resp, account_id)
+        if margin_mode == "computed":
+            gross_mv = _gross_mv_from_records(eq_recs)
+            margin = max(0.0, gross_mv - bal["equity"])
+        else:  # "balance"
+            margin = bal["margin"]
         print(f"[{account_id}] balances — MV={bal['market_value']:.2f}  "
-              f"equity={bal['equity']:.2f}  margin={bal['margin']:.2f}")
+              f"equity={bal['equity']:.2f}  margin={margin:.2f}  mode={margin_mode}")
+    elif margin_mode == "csv":
+        margin = csv_margin
+    _insert_margin_sentinel(account_id, margin)
 
     print(f"[{account_id}] equity={eq_written}  options={opt_written}  "
-          f"futures={fut_written}  instruments={instr_written}")
+          f"futures={fut_written}  instruments={instr_written}  margin=${margin:,.0f}")
     return {"equity_count": eq_written, "option_count": opt_written,
-            "futures_count": fut_written, "instrument_count": instr_written}
+            "futures_count": fut_written, "instrument_count": instr_written,
+            "margin": margin}
 
 
 # ── Webull ────────────────────────────────────────────────────────────────────
@@ -251,6 +320,7 @@ def write_robinhood(
     portfolio_resp: dict | None = None,
     account_id: str = "RH-BV",
     *,
+    margin_mode: str = "balance",
     dry_run: bool = False,
 ) -> dict:
     """
@@ -264,10 +334,14 @@ def write_robinhood(
         positions_resp: Response from trayd get_positions MCP tool.
         portfolio_resp: Optional response from trayd get_portfolio (for margin info).
         account_id:     Journal account_id (default: "RH-BV").
+        margin_mode:    How to determine margin debt to store:
+                          "balance"  — use abs(cash) from portfolio response (default).
+                          "computed" — gross_MV (sum positions×price) minus equity.
+                          "csv"      — preserve whatever MARGIN sentinel is in the DB.
         dry_run:        Parse only; do not write to DB.
 
     Returns:
-        Dict with keys: equity_count, instrument_count.
+        Dict with keys: equity_count, instrument_count, margin.
     """
     db.init_db()
 
@@ -277,19 +351,31 @@ def write_robinhood(
         print(f"[dry-run] {account_id}: {len(eq_recs)} equity — nothing written")
         return {"equity_count": len(eq_recs)}
 
+    csv_margin = _get_existing_margin(account_id)
+
     db.delete_positions_by_account(account_id)
     eq_written = db.insert_positions(eq_recs) if eq_recs else 0
 
     instr_recs = rh_fetcher.normalize_instruments(eq_recs)
     instr_written = db.upsert_instruments(instr_recs) if instr_recs else 0
 
+    # Margin sentinel
+    margin = 0.0
     if portfolio_resp:
         port = rh_fetcher.normalize_portfolio(portfolio_resp)
-        print(f"[{account_id}] equity={port['equity']:.2f}  "
-              f"cash={port['cash']:.2f}  margin={port['margin']:.2f}")
+        if margin_mode == "computed":
+            gross_mv = _gross_mv_from_records(eq_recs)
+            margin = max(0.0, gross_mv - port["equity"])
+        else:  # "balance"
+            margin = port["margin"]
+        print(f"[{account_id}] portfolio — equity={port['equity']:.2f}  "
+              f"cash={port['cash']:.2f}  margin={margin:.2f}  mode={margin_mode}")
+    elif margin_mode == "csv":
+        margin = csv_margin
+    _insert_margin_sentinel(account_id, margin)
 
-    print(f"[{account_id}] equity={eq_written}  instruments={instr_written}")
-    return {"equity_count": eq_written, "instrument_count": instr_written}
+    print(f"[{account_id}] equity={eq_written}  instruments={instr_written}  margin=${margin:,.0f}")
+    return {"equity_count": eq_written, "instrument_count": instr_written, "margin": margin}
 
 
 # ── Schwab ────────────────────────────────────────────────────────────────────
@@ -301,6 +387,7 @@ def write_schwab(
     txn_resp: dict | None = None,
     account_id: str = "SCHWAB",
     *,
+    margin_mode: str = "balance",
     dry_run: bool = False,
 ) -> dict:
     """
@@ -312,11 +399,15 @@ def write_schwab(
         summary_resp:  Optional response from get_account_summary (for balance info).
         txn_resp:      Optional response from get_transactions (60-day window).
         account_id:    Journal account_id (default: "SCHWAB").
+        margin_mode:   How to determine margin debt to store:
+                         "balance"  — use abs(margin_balance) from summary response (default).
+                         "computed" — gross_MV (sum positions×price) minus equity.
+                         "csv"      — preserve whatever MARGIN sentinel is in the DB.
         dry_run:       Parse only; do not write to DB.
 
     Returns:
         Dict with keys: equity_count, option_count, futures_count, txn_count,
-        instrument_count.
+        instrument_count, margin.
     """
     db.init_db()
 
@@ -335,6 +426,8 @@ def write_schwab(
         return {"equity_count": len(eq_recs), "option_count": len(opt_recs),
                 "futures_count": len(fut_recs), "txn_count": len(txn_recs)}
 
+    csv_margin = _get_existing_margin(account_id)
+
     db.delete_positions_by_account(account_id)
     eq_written = db.insert_positions(eq_recs) if eq_recs else 0
 
@@ -349,16 +442,27 @@ def write_schwab(
     instr_recs = schwab_fetcher.normalize_instruments(eq_recs, opt_recs, fut_recs)
     instr_written = db.upsert_instruments(instr_recs) if instr_recs else 0
 
+    # Margin sentinel
+    margin = 0.0
     if summary_resp:
         bal = schwab_fetcher.normalize_balances(summary_resp)
+        if margin_mode == "computed":
+            gross_mv = _gross_mv_from_records(eq_recs)
+            margin = max(0.0, gross_mv - bal["equity"])
+        else:  # "balance"
+            margin = bal["margin"]
         print(f"[{account_id}] balances — MV={bal['market_value']:.2f}  "
-              f"equity={bal['equity']:.2f}  margin={bal['margin']:.2f}")
+              f"equity={bal['equity']:.2f}  margin={margin:.2f}  mode={margin_mode}")
+    elif margin_mode == "csv":
+        margin = csv_margin
+    _insert_margin_sentinel(account_id, margin)
 
     print(f"[{account_id}] equity={eq_written}  options={opt_written}  "
-          f"futures={fut_written}  txns={txn_written}  instruments={instr_written}")
+          f"futures={fut_written}  txns={txn_written}  instruments={instr_written}  "
+          f"margin=${margin:,.0f}")
     return {"equity_count": eq_written, "option_count": opt_written,
             "futures_count": fut_written, "txn_count": txn_written,
-            "instrument_count": instr_written}
+            "instrument_count": instr_written, "margin": margin}
 
 
 # ── CLI helper ─────────────────────────────────────────────────────────────────

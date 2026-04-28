@@ -436,6 +436,7 @@ def refresh_positions(
     webull_account_list: str | None = None,
     webull_positions_json: str | None = None,
     webull_balances_json: str | None = None,
+    margin_mode: str = "balance",
 ) -> str:
     """
     Write pre-fetched MCP broker data into the journal database in one call.
@@ -462,6 +463,12 @@ def refresh_positions(
         webull_account_list:    Raw result text from webull get_account_list.
         webull_positions_json:  JSON string: {"webull_account_id": "positions text", ...}.
         webull_balances_json:   JSON string: {"webull_account_id": "balance text", ...}.
+        margin_mode:            How margin debt is derived for Schwab, TS, and Robinhood:
+                                  "balance"  — use the value reported by the broker balance/
+                                               summary/portfolio endpoint (default).
+                                  "computed" — gross market value of positions minus net equity.
+                                  "csv"      — preserve whatever MARGIN sentinel is already in
+                                               the DB (e.g. from a prior CSV ingest).
 
     Returns:
         JSON summary of rows written per broker.
@@ -478,6 +485,7 @@ def refresh_positions(
                 futures_resp = _j(schwab_futures_json),
                 summary_resp = _j(schwab_summary_json),
                 txn_resp     = _j(schwab_txn_json),
+                margin_mode  = margin_mode,
             )
             summary["SCHWAB"] = result
         except Exception as exc:
@@ -499,6 +507,7 @@ def refresh_positions(
             result = _ingest.write_tradestation(
                 positions_resp = json.loads(ts_positions_json),
                 balances_resp  = _j(ts_balances_json),
+                margin_mode    = margin_mode,
             )
             summary["TS"] = result
         except Exception as exc:
@@ -509,6 +518,7 @@ def refresh_positions(
             result = _ingest.write_robinhood(
                 positions_resp = json.loads(rh_positions_json),
                 portfolio_resp = _j(rh_portfolio_json),
+                margin_mode    = margin_mode,
             )
             summary["RH-BV"] = result
         except Exception as exc:
