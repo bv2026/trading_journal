@@ -10,6 +10,37 @@ _OCC_RE = re.compile(
     r'^(?P<underlying>[A-Z0-9]+?)(?P<yy>\d{2})(?P<mm>\d{2})(?P<dd>\d{2})(?P<cp>[CP])(?P<strike>\d{8})$'
 )
 
+# ISO 4217 currency codes that brokers sometimes return as position symbols to
+# represent a cash balance (e.g. Webull returns "USD" for uninvested cash).
+# Some of these are also valid equity tickers (e.g. USD = ProShares Ultra
+# Semiconductors ETF).  We disambiguate by cost-per-unit: a cash entry has
+# cost/unit ≈ $1.00; a real equity at that ticker will have a very different price.
+_CURRENCY_CODES = frozenset({
+    "USD", "EUR", "GBP", "CAD", "JPY", "CHF", "AUD", "NZD",
+    "HKD", "SGD", "MXN", "BRL", "INR", "CNY", "KRW",
+})
+
+
+def is_currency_entry(symbol: str, total_cost: float, quantity: float) -> bool:
+    """
+    Return True when a position with this symbol is a broker cash/currency
+    balance entry, NOT a real security.
+
+    Rule: symbol is a known ISO currency code AND cost-per-unit is within 2%
+    of 1.0 (i.e., 1 unit costs ~$1).
+
+    This safely handles "USD" being both the ProShares Ultra Semiconductors
+    ETF (cost ≈ $70/share) and Webull's representation of uninvested USD cash
+    (cost = $1.00/unit).  Any broker returning EUR/GBP/etc. as a position is
+    also caught here.
+    """
+    if symbol not in _CURRENCY_CODES:
+        return False
+    if not quantity:
+        return False
+    cost_per_unit = abs(total_cost) / abs(quantity)
+    return cost_per_unit < 1.02   # ≤ $1.02 per unit → treat as cash
+
 
 def is_occ_symbol(symbol: str) -> bool:
     return bool(_OCC_RE.match(symbol))

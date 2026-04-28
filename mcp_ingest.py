@@ -85,9 +85,14 @@ def write_tradier(
     # Write transactions (incremental — INSERT OR IGNORE deduplicates by id)
     txn_written = db.insert_transactions(txn_recs) if txn_recs else 0
 
-    print(f"[{account_id}] equity={eq_written}  options={opt_written}  txns={txn_written}")
+    # Upsert instruments master table
+    instr_recs = tradier_fetcher.normalize_instruments(eq_recs, opt_recs)
+    instr_written = db.upsert_instruments(instr_recs) if instr_recs else 0
+
+    print(f"[{account_id}] equity={eq_written}  options={opt_written}  "
+          f"txns={txn_written}  instruments={instr_written}")
     return {"equity_count": eq_written, "option_count": opt_written,
-            "txn_count": txn_written}
+            "txn_count": txn_written, "instrument_count": instr_written}
 
 
 # ── CLI helper ─────────────────────────────────────────────────────────────────

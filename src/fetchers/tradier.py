@@ -20,8 +20,8 @@ Tradier positions response shape:
   }
 
   costBasis is TOTAL (not per-share). Negative quantity = short position.
-  USD symbol = cash, skipped.
   OCC-format symbols are options, all others are equities.
+  Currency-code symbols (USD, EUR, …) with cost/unit ≈ $1 are cash → skipped.
 
 Tradier account history response shape:
   {
@@ -42,7 +42,7 @@ Tradier market quotes response shape (get_market_quotes):
   }
 """
 import re
-from .base import is_occ_symbol, parse_occ, parse_iso_date, make_txn_id
+from .base import is_occ_symbol, parse_occ, parse_iso_date, make_txn_id, is_currency_entry
 
 # Transaction categorization regexes (mirror CSV parser logic)
 _ACH_DEPOSIT    = re.compile(r"ACH DEPOSIT",                          re.I)
@@ -125,6 +125,9 @@ def normalize_positions(
 
         qty       = float(pos.get("quantity", 0) or 0)
         cost_tot  = float(pos.get("costBasis", 0) or 0)
+
+        if is_currency_entry(symbol, cost_tot, qty):
+            continue   # broker cash balance, not a real security
 
         if is_occ_symbol(symbol):
             parsed = parse_occ(symbol)
@@ -215,6 +218,72 @@ def normalize_history(
             "description": description[:500],
             "data_source": "mcp",
             "source_file": None,
+        })
+
+    return records
+
+
+def normalize_instruments(
+    equity_records: list[dict],
+    option_records: list[dict],
+) -> list[dict]:
+    """
+    Build instruments master-table records from already-normalized position lists.
+
+    Call this after normalize_positions() and pass its two return values.
+    Sector/industry/name for equities are left NULL here — they are filled in
+    by yfinance at dashboard load time (or by a separate enrichment pass).
+    Options get point_value=100 (standard US equity option contract size).
+
+    Returns:
+        List of records suitable for db.upsert_instruments().
+    """
+    records: list[dict] = []
+
+    seen: set[tuple[str, str]] = set()
+
+    for eq in equity_records:
+        key = (eq["ticker"], "equity")
+        if key in seen:
+            continue
+        seen.add(key)
+        records.append({
+            "symbol":      eq["ticker"],
+            "asset_class": "equity",
+            "underlying":  None,
+            "name":        None,
+            "exchange":    None,
+            "currency":    "USD",
+            "sector":      None,
+            "industry":    None,
+            "expiry":      None,
+            "strike":      None,
+            "call_put":    None,
+            "tick_size":   None,
+            "point_value": None,
+            "tradable":    None,
+        })
+
+    for opt in option_records:
+        key = (opt["symbol"], "option")
+        if key in seen:
+            continue
+        seen.add(key)
+        records.append({
+            "symbol":      opt["symbol"],
+            "asset_class": "option",
+            "underlying":  opt.get("underlying"),
+            "name":        None,
+            "exchange":    None,
+            "currency":    "USD",
+            "sector":      None,
+            "industry":    None,
+            "expiry":      opt.get("expiry"),
+            "strike":      opt.get("strike"),
+            "call_put":    opt.get("call_put"),
+            "tick_size":   None,
+            "point_value": 100.0,   # standard US equity option = 100 shares
+            "tradable":    None,
         })
 
     return records
