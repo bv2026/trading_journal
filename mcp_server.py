@@ -25,6 +25,8 @@ from pathlib import Path
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
 
+import mcp_ingest as _ingest
+
 import pandas as pd
 from mcp.server.fastmcp import FastMCP
 from src.db import DB_PATH, load_transactions, load_snapshot_periods
@@ -416,6 +418,124 @@ def run_ingest(reset: bool = False) -> str:
     if result.returncode != 0:
         return f"Ingest failed (exit {result.returncode}):\n{output}"
     return output.strip()
+
+
+@mcp.tool()
+def refresh_positions(
+    schwab_equity_json: str | None = None,
+    schwab_futures_json: str | None = None,
+    schwab_summary_json: str | None = None,
+    schwab_txn_json: str | None = None,
+    tradier_positions_json: str | None = None,
+    tradier_quotes_json: str | None = None,
+    tradier_history_json: str | None = None,
+    ts_positions_json: str | None = None,
+    ts_balances_json: str | None = None,
+    rh_positions_json: str | None = None,
+    rh_portfolio_json: str | None = None,
+    webull_account_list: str | None = None,
+    webull_positions_json: str | None = None,
+    webull_balances_json: str | None = None,
+) -> str:
+    """
+    Write pre-fetched MCP broker data into the journal database in one call.
+
+    Call each broker's MCP tools first (get_equity_positions, get_positions, etc.),
+    then pass their raw JSON responses here as strings.  Any broker whose data is
+    omitted is left unchanged in the DB.
+
+    After writing positions, the instrument sector/industry table is enriched via
+    yfinance for any equity symbols that still have NULL sector.
+
+    Args:
+        schwab_equity_json:     JSON string from schwab get_equity_positions.
+        schwab_futures_json:    JSON string from schwab get_futures_positions.
+        schwab_summary_json:    JSON string from schwab get_account_summary.
+        schwab_txn_json:        JSON string from schwab get_transactions.
+        tradier_positions_json: JSON string from tradier get_positions.
+        tradier_quotes_json:    JSON string from tradier get_market_quotes.
+        tradier_history_json:   JSON string from tradier get_account_history.
+        ts_positions_json:      JSON string from TradeStation get-positions-details.
+        ts_balances_json:       JSON string from TradeStation get-balances-details.
+        rh_positions_json:      JSON string from trayd get_positions (Robinhood).
+        rh_portfolio_json:      JSON string from trayd get_portfolio.
+        webull_account_list:    Raw result text from webull get_account_list.
+        webull_positions_json:  JSON string: {"webull_account_id": "positions text", ...}.
+        webull_balances_json:   JSON string: {"webull_account_id": "balance text", ...}.
+
+    Returns:
+        JSON summary of rows written per broker.
+    """
+    def _j(s: str | None) -> dict | None:
+        return json.loads(s) if s else None
+
+    summary: dict[str, dict] = {}
+
+    if schwab_equity_json:
+        try:
+            result = _ingest.write_schwab(
+                equity_resp  = json.loads(schwab_equity_json),
+                futures_resp = _j(schwab_futures_json),
+                summary_resp = _j(schwab_summary_json),
+                txn_resp     = _j(schwab_txn_json),
+            )
+            summary["SCHWAB"] = result
+        except Exception as exc:
+            summary["SCHWAB"] = {"error": str(exc)}
+
+    if tradier_positions_json:
+        try:
+            result = _ingest.write_tradier(
+                positions_resp = json.loads(tradier_positions_json),
+                quotes_resp    = _j(tradier_quotes_json),
+                history_resp   = _j(tradier_history_json),
+            )
+            summary["TRADIER"] = result
+        except Exception as exc:
+            summary["TRADIER"] = {"error": str(exc)}
+
+    if ts_positions_json:
+        try:
+            result = _ingest.write_tradestation(
+                positions_resp = json.loads(ts_positions_json),
+                balances_resp  = _j(ts_balances_json),
+            )
+            summary["TS"] = result
+        except Exception as exc:
+            summary["TS"] = {"error": str(exc)}
+
+    if rh_positions_json:
+        try:
+            result = _ingest.write_robinhood(
+                positions_resp = json.loads(rh_positions_json),
+                portfolio_resp = _j(rh_portfolio_json),
+            )
+            summary["RH-BV"] = result
+        except Exception as exc:
+            summary["RH-BV"] = {"error": str(exc)}
+
+    if webull_account_list and webull_positions_json:
+        try:
+            pos_by_id  = json.loads(webull_positions_json)
+            bal_by_id  = json.loads(webull_balances_json) if webull_balances_json else None
+            result = _ingest.write_webull(
+                account_list_result = webull_account_list,
+                positions_by_wb_id  = pos_by_id,
+                balance_by_wb_id    = bal_by_id,
+            )
+            summary["WEBULL"] = result
+        except Exception as exc:
+            summary["WEBULL"] = {"error": str(exc)}
+
+    # Enrich sector/industry for any new equity instruments
+    try:
+        from src.enrichment import enrich_sectors  # noqa: PLC0415
+        enriched = enrich_sectors()
+        summary["sector_enrichment"] = {"instruments_updated": enriched}
+    except Exception as exc:
+        summary["sector_enrichment"] = {"error": str(exc)}
+
+    return json.dumps(summary, indent=2)
 
 
 @mcp.tool()

@@ -270,6 +270,15 @@ def run(reset: bool = False) -> None:
         written = db.insert_crypto(recs)
         print(f"  OK    crypto   {acct}: {written} rows")
 
+    # ── Sector/industry enrichment ────────────────────────────────────────────
+    print("\nEnriching instrument sectors via yfinance …")
+    try:
+        from src.enrichment import enrich_sectors
+        enriched = enrich_sectors()
+        print(f"  Enriched {enriched} instrument(s) with sector/industry data.")
+    except Exception as exc:
+        print(f"  WARNING sector enrichment failed: {exc}")
+
     # ── Portfolio snapshot ────────────────────────────────────────────────────
     print("\nWriting portfolio snapshot …")
     try:
