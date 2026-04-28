@@ -200,46 +200,118 @@ Current content:
 
 ## 6. Instrument Master Table
 
-A new `instruments` table acts as a **security master / symbol catalog** — the single source of truth for all metadata about every ticker, option, future, or crypto symbol seen in the system.
+A new `instruments` table acts as a **security master / symbol catalog** — the single source of truth for all static metadata about every ticker, option, future, or crypto symbol seen in the system. Key principle: **fetch once, reuse forever** for anything that does not change.
 
 ### Schema
 
 ```sql
 CREATE TABLE instruments (
-    symbol       TEXT PRIMARY KEY,       -- canonical symbol (e.g. AAPL, /ES, BTC, AAPL250516C00200000)
-    name         TEXT,                   -- human-readable name (e.g. "Apple Inc.")
-    asset_class  TEXT NOT NULL,          -- Stock | ETF | Option | Future | Crypto | Derivative
-    sector       TEXT,                   -- yfinance sector (equities/ETFs only; NULL for others)
-    industry     TEXT,                   -- yfinance industry (equities/ETFs only)
-    underlying   TEXT,                   -- parent symbol for options/futures (e.g. AAPL for AAPL options)
-    exchange     TEXT,                   -- e.g. NASDAQ, NYSE, CME
-    currency     TEXT DEFAULT 'USD',
-    last_updated TEXT,                   -- ISO timestamp of last metadata refresh
-    source       TEXT                    -- yfinance | manual | mcp
+    -- ── Identity ──────────────────────────────────────────────────────────────
+    symbol          TEXT PRIMARY KEY,  -- canonical symbol (AAPL, /ESM25, BTC, AAPL250516C00200000)
+    name            TEXT,              -- human-readable name ("Apple Inc.", "E-mini S&P 500 Jun 2025")
+    asset_class     TEXT NOT NULL,     -- Stock | ETF | Option | Future | Crypto
+    exchange        TEXT,              -- NASDAQ | NYSE | CME | NYMEX | CBOE | Coinbase …
+    currency        TEXT DEFAULT 'USD',
+    country         TEXT,              -- equities only (US, GB, …)
+    is_active       INTEGER DEFAULT 1, -- 0 = expired option/future or delisted
+
+    -- ── Equity / ETF fields ───────────────────────────────────────────────────
+    sector          TEXT,              -- yfinance sector (Technology, Healthcare …)
+    industry        TEXT,              -- yfinance industry (Semiconductors, Biotech …)
+    cap_category    TEXT,              -- Large | Mid | Small | Micro (derived from market cap bucket)
+    etf_category    TEXT,              -- ETF only: "Large Blend", "Technology" (yfinance fund_category)
+    etf_fund_family TEXT,              -- ETF only: iShares | Vanguard | SPDR …
+    etf_expense_ratio REAL,           -- ETF only: annual expense ratio (0.0003 = 0.03%)
+    etf_tracking_index TEXT,           -- ETF only: "S&P 500", "Russell 2000" …
+    inception_date  TEXT,              -- ETF/Stock IPO date (YYYY-MM-DD)
+
+    -- ── Option fields ─────────────────────────────────────────────────────────
+    underlying      TEXT,              -- Options + Futures: parent symbol (AAPL, /ES)
+    expiry_date     TEXT,              -- Options + Futures: expiration (YYYY-MM-DD)
+    strike          REAL,              -- Options only: strike price
+    call_put        TEXT,              -- Options only: C | P
+    option_style    TEXT,              -- Options only: American | European
+    contract_size   INTEGER,           -- Options: 100 | Futures: contract multiplier (e.g. 50 for /ES)
+
+    -- ── Futures fields ────────────────────────────────────────────────────────
+    futures_root    TEXT,              -- root symbol without month/year (/ES, /CL, /ZW)
+    contract_month  TEXT,              -- e.g. "Jun 2025"
+    tick_size       REAL,              -- minimum price increment (0.25 for /ES)
+    tick_value      REAL,              -- dollar value per tick ($12.50 for /ES)
+    first_notice_date TEXT,            -- YYYY-MM-DD
+    last_trading_date TEXT,            -- YYYY-MM-DD
+
+    -- ── Crypto fields ─────────────────────────────────────────────────────────
+    blockchain      TEXT,              -- Bitcoin | Ethereum | Solana …
+    max_supply      REAL,              -- maximum token supply (21000000 for BTC; NULL if unlimited)
+    launch_year     INTEGER,           -- year the coin/token launched
+
+    -- ── Metadata ──────────────────────────────────────────────────────────────
+    notes           TEXT,              -- free text; manual annotations
+    source          TEXT,              -- yfinance | manual | mcp | parsed
+    last_updated    TEXT               -- ISO timestamp of last metadata refresh
 );
 ```
+
+### Field Population by Asset Class
+
+| Field | Stock | ETF | Option | Future | Crypto | Source |
+|-------|:-----:|:---:|:------:|:------:|:------:|--------|
+| name | ✅ | ✅ | ✅ | ✅ | ✅ | yfinance / MCP / parsed |
+| exchange | ✅ | ✅ | ✅ | ✅ | ✅ | yfinance / MCP |
+| currency | ✅ | ✅ | ✅ | ✅ | ✅ | yfinance |
+| country | ✅ | ✅ | — | — | — | yfinance |
+| sector | ✅ | — | — | — | — | yfinance |
+| industry | ✅ | — | — | — | — | yfinance |
+| cap_category | ✅ | — | — | — | — | derived from yfinance marketCap |
+| etf_category | — | ✅ | — | — | — | yfinance fund_category |
+| etf_fund_family | — | ✅ | — | — | — | yfinance |
+| etf_expense_ratio | — | ✅ | — | — | — | yfinance |
+| etf_tracking_index | — | ✅ | — | — | — | yfinance |
+| inception_date | ✅ | ✅ | — | — | — | yfinance |
+| underlying | — | — | ✅ | ✅ | — | parsed from symbol |
+| expiry_date | — | — | ✅ | ✅ | — | parsed from symbol / MCP |
+| strike | — | — | ✅ | — | — | parsed from OCC symbol |
+| call_put | — | — | ✅ | — | — | parsed from OCC symbol |
+| option_style | — | — | ✅ | — | — | MCP / default American |
+| contract_size | — | — | ✅ | ✅ | — | MCP / standard (100 for options) |
+| futures_root | — | — | — | ✅ | — | parsed from symbol |
+| contract_month | — | — | — | ✅ | — | parsed from symbol |
+| tick_size | — | — | — | ✅ | — | MCP (schwab/TS) |
+| tick_value | — | — | — | ✅ | — | MCP (schwab/TS) |
+| first_notice_date | — | — | — | ✅ | — | MCP |
+| last_trading_date | — | — | — | ✅ | — | MCP |
+| blockchain | — | — | — | — | ✅ | yfinance / manual |
+| max_supply | — | — | — | — | ✅ | yfinance |
+| launch_year | — | — | — | — | ✅ | yfinance / manual |
+
+### What is NOT stored here (changes over time)
+- Current price, market cap (exact), beta, dividend yield, IV, shares outstanding, P&L, open interest
 
 ### Behaviour
 
 | # | Rule | Detail |
 |---|------|--------|
-| I.1 | **New symbol detection** | On every ingest/refresh, collect all symbols from incoming positions and transactions. Any symbol not already in `instruments` triggers a metadata fetch before positions are written |
-| I.2 | **Equity / ETF metadata** | Fetched from yfinance `ticker.info`: name, sector, industry, exchange, asset_class (Stock vs ETF based on `quoteType`) |
-| I.3 | **Option symbol parsing** | Asset class = Option; underlying, expiry, strike, call_put parsed from OCC symbol format (e.g. `AAPL250516C00200000`); no yfinance call needed |
-| I.4 | **Futures symbol parsing** | Asset class = Future; underlying derived from root symbol (e.g. `/ES` → S&P 500); exchange from broker MCP if available |
-| I.5 | **Crypto** | Asset class = Crypto; name from yfinance or broker MCP; no sector/industry |
-| I.6 | **Refresh cadence** | Metadata is refreshed only when `last_updated` is older than 7 days, or when symbol is first seen — never on every dashboard load |
-| I.7 | **Positions JOIN** | All position queries JOIN `instruments` on symbol to get name, sector, asset_class — removes the need to store these redundantly in the positions table |
-| I.8 | **Transactions JOIN** | Transaction rows with a symbol can also JOIN `instruments` for display enrichment |
-| I.9 | **Manual override** | `source = 'manual'` rows are never overwritten by auto-fetch — allows correcting wrong sector/name from yfinance |
+| I.1 | **New symbol detection** | On every ingest/refresh, collect all symbols from incoming positions and transactions. Any symbol not in `instruments` triggers a fetch before positions are written |
+| I.2 | **Stock / ETF** | yfinance `ticker.info`: name, sector, industry, exchange, asset_class (Stock vs ETF via `quoteType`), cap_category, ETF fields |
+| I.3 | **Option parsing** | OCC format (`AAPL250516C00200000`) decoded: underlying=AAPL, expiry=2025-05-16, strike=200, call_put=C. No yfinance call needed |
+| I.4 | **Futures parsing** | Root + month code decoded (e.g. `/ESM25` → root=/ES, month=Jun 2025, expiry estimated). Tick size/value from schwab or TS MCP |
+| I.5 | **Crypto** | yfinance or broker MCP: name, blockchain, max_supply, launch_year |
+| I.6 | **Refresh cadence** | Re-fetched only when `last_updated` > 7 days old or symbol first seen — never on every dashboard load |
+| I.7 | **Positions JOIN** | All position queries JOIN `instruments` on symbol — name, sector, asset_class, expiry, strike etc. all served from one table |
+| I.8 | **Transactions JOIN** | Transaction rows with a symbol JOIN `instruments` for display enrichment in the Transactions tab |
+| I.9 | **Manual override** | `source = 'manual'` rows are never overwritten by auto-fetch |
+| I.10 | **is_active flag** | Set to 0 automatically when option/future expiry_date has passed; keeps symbol in DB for historical reference without cluttering active views |
 
 ### Impact on yfinance Usage
 
 | Before | After |
 |--------|-------|
-| yfinance called on every `load_positions_from_db()` — every dashboard load | yfinance called only for new symbols or stale entries (>7 days old) |
-| Sector/name not persisted — lost on restart | Sector/name stored in DB permanently |
-| ETF type detection per load | Stored once in `asset_class` |
+| yfinance called on every dashboard load for every equity position | Called only for new/stale symbols (>7 days); zero calls for options/futures |
+| Sector/name lost on restart | Persisted permanently in DB |
+| ETF type detection repeated every load | Stored once in `asset_class` |
+| Options had no name/underlying in DB | Fully described by parsed OCC fields |
+| Futures tick size required MCP call at display time | Stored once at first ingest |
 
 ---
 
