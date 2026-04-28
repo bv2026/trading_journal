@@ -218,7 +218,6 @@ CREATE TABLE instruments (
     -- ── Equity / ETF fields ───────────────────────────────────────────────────
     sector          TEXT,              -- yfinance sector (Technology, Healthcare …)
     industry        TEXT,              -- yfinance industry (Semiconductors, Biotech …)
-    cap_category    TEXT,              -- Large | Mid | Small | Micro (derived from market cap bucket)
     etf_category    TEXT,              -- ETF only: "Large Blend", "Technology" (yfinance fund_category)
     etf_fund_family TEXT,              -- ETF only: iShares | Vanguard | SPDR …
     etf_expense_ratio REAL,           -- ETF only: annual expense ratio (0.0003 = 0.03%)
@@ -257,30 +256,30 @@ CREATE TABLE instruments (
 
 | Field | Stock | ETF | Option | Future | Crypto | Source |
 |-------|:-----:|:---:|:------:|:------:|:------:|--------|
-| name | ✅ | ✅ | ✅ | ✅ | ✅ | yfinance / MCP / parsed |
-| exchange | ✅ | ✅ | ✅ | ✅ | ✅ | yfinance / MCP |
-| currency | ✅ | ✅ | ✅ | ✅ | ✅ | yfinance |
+| name | ✅ | ✅ | ✅ | ✅ | ✅ | Stocks/ETFs: yfinance · Options: parsed · Futures: webull `get_futures_instruments` · Crypto: webull `get_crypto_instruments` |
+| exchange | ✅ | ✅ | ✅ | ✅ | ✅ | Stocks/ETFs: yfinance · Futures+Crypto: webull |
+| currency | ✅ | ✅ | ✅ | ✅ | ✅ | yfinance (default USD) |
 | country | ✅ | ✅ | — | — | — | yfinance |
+| is_active | ✅ | ✅ | ✅ | ✅ | ✅ | Crypto: webull status (OC/CO/NT) · Options/Futures: derived from expiry_date · Stocks: yfinance |
 | sector | ✅ | — | — | — | — | yfinance |
 | industry | ✅ | — | — | — | — | yfinance |
-| cap_category | ✅ | — | — | — | — | derived from yfinance marketCap |
 | etf_category | — | ✅ | — | — | — | yfinance fund_category |
 | etf_fund_family | — | ✅ | — | — | — | yfinance |
 | etf_expense_ratio | — | ✅ | — | — | — | yfinance |
 | etf_tracking_index | — | ✅ | — | — | — | yfinance |
 | inception_date | ✅ | ✅ | — | — | — | yfinance |
 | underlying | — | — | ✅ | ✅ | — | parsed from symbol |
-| expiry_date | — | — | ✅ | ✅ | — | parsed from symbol / MCP |
+| expiry_date | — | — | ✅ | ✅ | — | Options: parsed from OCC symbol · Futures: schwab/TS MCP |
 | strike | — | — | ✅ | — | — | parsed from OCC symbol |
 | call_put | — | — | ✅ | — | — | parsed from OCC symbol |
-| option_style | — | — | ✅ | — | — | MCP / default American |
-| contract_size | — | — | ✅ | ✅ | — | MCP / standard (100 for options) |
+| option_style | — | — | ✅ | — | — | default American; MCP if available |
+| contract_size | — | — | ✅ | ✅ | — | Options: 100 (standard) · Futures: schwab/TS MCP |
 | futures_root | — | — | — | ✅ | — | parsed from symbol |
 | contract_month | — | — | — | ✅ | — | parsed from symbol |
-| tick_size | — | — | — | ✅ | — | MCP (schwab/TS) |
-| tick_value | — | — | — | ✅ | — | MCP (schwab/TS) |
-| first_notice_date | — | — | — | ✅ | — | MCP |
-| last_trading_date | — | — | — | ✅ | — | MCP |
+| tick_size | — | — | — | ✅ | — | schwab / TS MCP |
+| tick_value | — | — | — | ✅ | — | schwab / TS MCP |
+| first_notice_date | — | — | — | ✅ | — | schwab / TS MCP |
+| last_trading_date | — | — | — | ✅ | — | schwab / TS MCP |
 | blockchain | — | — | — | — | ✅ | yfinance / manual |
 | max_supply | — | — | — | — | ✅ | yfinance |
 | launch_year | — | — | — | — | ✅ | yfinance / manual |
@@ -293,10 +292,10 @@ CREATE TABLE instruments (
 | # | Rule | Detail |
 |---|------|--------|
 | I.1 | **New symbol detection** | On every ingest/refresh, collect all symbols from incoming positions and transactions. Any symbol not in `instruments` triggers a fetch before positions are written |
-| I.2 | **Stock / ETF** | yfinance `ticker.info`: name, sector, industry, exchange, asset_class (Stock vs ETF via `quoteType`), cap_category, ETF fields |
+| I.2 | **Stock / ETF** | yfinance `ticker.info`: name, sector, industry, exchange, asset_class (Stock vs ETF via `quoteType`), ETF fields (fund_family, expense_ratio, tracking_index, category) |
 | I.3 | **Option parsing** | OCC format (`AAPL250516C00200000`) decoded: underlying=AAPL, expiry=2025-05-16, strike=200, call_put=C. No yfinance call needed |
-| I.4 | **Futures parsing** | Root + month code decoded (e.g. `/ESM25` → root=/ES, month=Jun 2025, expiry estimated). Tick size/value from schwab or TS MCP |
-| I.5 | **Crypto** | yfinance or broker MCP: name, blockchain, max_supply, launch_year |
+| I.4 | **Futures** | Name + exchange from webull `get_futures_instruments` / `get_futures_products`. Root + contract_month parsed from symbol. Tick size, tick value, contract size, expiry/notice dates from schwab or TS MCP |
+| I.5 | **Crypto** | Name + exchange + is_active from webull `get_crypto_instruments` (status: OC=active, CO=liquidate-only, NT=inactive). Blockchain, max_supply, launch_year from yfinance or manual |
 | I.6 | **Refresh cadence** | Re-fetched only when `last_updated` > 7 days old or symbol first seen — never on every dashboard load |
 | I.7 | **Positions JOIN** | All position queries JOIN `instruments` on symbol — name, sector, asset_class, expiry, strike etc. all served from one table |
 | I.8 | **Transactions JOIN** | Transaction rows with a symbol JOIN `instruments` for display enrichment in the Transactions tab |
