@@ -133,6 +133,8 @@ def normalize_positions(
             parsed = parse_occ(symbol)
             if not parsed:
                 continue
+            opt_price = price_map.get(symbol)
+            opt_mv    = (opt_price * qty * 100) if (opt_price is not None and qty) else None
             option_records.append({
                 "account_id":   account_id,
                 "symbol":       symbol,
@@ -142,8 +144,8 @@ def normalize_positions(
                 "call_put":     parsed["call_put"],
                 "description":  symbol,
                 "qty":          qty,
-                "price":        None,    # no live price in positions response
-                "market_value": None,
+                "price":        opt_price,
+                "market_value": opt_mv,
                 "data_source":  "mcp",
                 "source_file":  None,
             })

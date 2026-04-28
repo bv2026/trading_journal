@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS options_positions (
     qty          REAL,
     price        REAL,
     market_value REAL,
+    data_source  TEXT,   -- mcp | csv
     source_file  TEXT,
     ingested_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (account_id, symbol)

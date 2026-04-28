@@ -471,19 +471,32 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Write pre-fetched MCP data into the journal DB."
+        description="Write pre-fetched MCP broker data into the journal DB.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python mcp_ingest.py --broker tradier --positions pos.json --quotes quotes.json
+  python mcp_ingest.py --broker schwab  --equity eq.json --summary summary.json
+  python mcp_ingest.py --broker ts      --positions pos.json --balances bal.json
+  python mcp_ingest.py --broker robinhood --positions pos.json --portfolio port.json
+        """,
     )
     parser.add_argument("--broker", required=True,
-                        choices=["tradier"],
+                        choices=["tradier", "schwab", "tradestation", "ts", "robinhood", "rh"],
                         help="Which broker's data to write.")
-    parser.add_argument("--positions", metavar="FILE",
-                        help="Path to JSON file with get_positions response.")
-    parser.add_argument("--quotes", metavar="FILE",
-                        help="Path to JSON file with get_market_quotes response.")
-    parser.add_argument("--history", metavar="FILE",
-                        help="Path to JSON file with get_account_history response.")
-    parser.add_argument("--account-id", default=None,
+    parser.add_argument("--positions",  metavar="FILE", help="JSON file: positions response.")
+    parser.add_argument("--equity",     metavar="FILE", help="JSON file: equity positions (Schwab).")
+    parser.add_argument("--futures",    metavar="FILE", help="JSON file: futures positions.")
+    parser.add_argument("--quotes",     metavar="FILE", help="JSON file: market quotes.")
+    parser.add_argument("--history",    metavar="FILE", help="JSON file: account history.")
+    parser.add_argument("--balances",   metavar="FILE", help="JSON file: balances response.")
+    parser.add_argument("--summary",    metavar="FILE", help="JSON file: account summary (Schwab).")
+    parser.add_argument("--portfolio",  metavar="FILE", help="JSON file: portfolio response (RH).")
+    parser.add_argument("--account-id", metavar="ID",   default=None,
                         help="Override journal account_id (default per broker).")
+    parser.add_argument("--margin-mode", default="balance",
+                        choices=["balance", "computed", "csv"],
+                        help="How to derive margin debt (default: balance).")
     parser.add_argument("--dry-run", action="store_true",
                         help="Parse only; do not write to DB.")
 
@@ -495,10 +508,13 @@ if __name__ == "__main__":
         with open(path, encoding="utf-8") as f:
             return json.load(f)
 
-    if args.broker == "tradier":
+    broker = args.broker.lower()
+    result: dict = {}
+
+    if broker == "tradier":
         pos = _load(args.positions)
         if not pos:
-            print("ERROR: --positions is required for tradier", file=sys.stderr)
+            print("ERROR: --positions required for tradier", file=sys.stderr)
             sys.exit(1)
         result = write_tradier(
             positions_resp=pos,
@@ -507,4 +523,45 @@ if __name__ == "__main__":
             account_id=args.account_id or "TRADIER",
             dry_run=args.dry_run,
         )
-        print(json.dumps(result, indent=2))
+
+    elif broker == "schwab":
+        eq = _load(args.equity) or _load(args.positions)
+        if not eq:
+            print("ERROR: --equity (or --positions) required for schwab", file=sys.stderr)
+            sys.exit(1)
+        result = write_schwab(
+            equity_resp  = eq,
+            futures_resp = _load(args.futures),
+            summary_resp = _load(args.summary) or _load(args.balances),
+            account_id   = args.account_id or "SCHWAB",
+            margin_mode  = args.margin_mode,
+            dry_run      = args.dry_run,
+        )
+
+    elif broker in ("tradestation", "ts"):
+        pos = _load(args.positions)
+        if not pos:
+            print("ERROR: --positions required for tradestation", file=sys.stderr)
+            sys.exit(1)
+        result = write_tradestation(
+            positions_resp = pos,
+            balances_resp  = _load(args.balances),
+            account_id     = args.account_id or "TS",
+            margin_mode    = args.margin_mode,
+            dry_run        = args.dry_run,
+        )
+
+    elif broker in ("robinhood", "rh"):
+        pos = _load(args.positions)
+        if not pos:
+            print("ERROR: --positions required for robinhood", file=sys.stderr)
+            sys.exit(1)
+        result = write_robinhood(
+            positions_resp = pos,
+            portfolio_resp = _load(args.portfolio) or _load(args.balances),
+            account_id     = args.account_id or "RH-BV",
+            margin_mode    = args.margin_mode,
+            dry_run        = args.dry_run,
+        )
+
+    print(json.dumps(result, indent=2))

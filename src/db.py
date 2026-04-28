@@ -20,6 +20,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ALTER TABLE positions ADD COLUMN stored_price  REAL",
         "ALTER TABLE positions ADD COLUMN data_source   TEXT",
         "ALTER TABLE transactions ADD COLUMN data_source TEXT",
+        "ALTER TABLE options_positions ADD COLUMN data_source TEXT",
     ]
     for sql in migrations:
         try:
@@ -173,7 +174,8 @@ def insert_options(records: list[dict]) -> int:
         return 0
     df = pd.DataFrame(records)
     cols = ["account_id", "symbol", "underlying", "expiry", "strike",
-            "call_put", "description", "qty", "price", "market_value", "source_file"]
+            "call_put", "description", "qty", "price", "market_value",
+            "data_source", "source_file"]
     for col in cols:
         if col not in df.columns:
             df[col] = None
@@ -186,9 +188,9 @@ def insert_options(records: list[dict]) -> int:
         cursor = conn.executemany(
             "INSERT OR REPLACE INTO options_positions "
             "(account_id, symbol, underlying, expiry, strike, call_put, "
-            " description, qty, price, market_value, source_file) "
+            " description, qty, price, market_value, data_source, source_file) "
             "VALUES (:account_id, :symbol, :underlying, :expiry, :strike, :call_put, "
-            "        :description, :qty, :price, :market_value, :source_file)",
+            "        :description, :qty, :price, :market_value, :data_source, :source_file)",
             rows,
         )
         conn.commit()
@@ -202,7 +204,7 @@ def load_options_db() -> pd.DataFrame:
         with get_conn() as conn:
             return pd.read_sql_query(
                 "SELECT account_id, symbol, underlying, expiry, strike, call_put, "
-                "description, qty, price, market_value, source_file "
+                "description, qty, price, market_value, data_source, source_file "
                 "FROM options_positions",
                 conn,
             )

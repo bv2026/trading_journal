@@ -57,11 +57,6 @@ ACCOUNTS = [
     # ── Crypto account (transactions only; positions via CRYPTO_FILES) ─────────
     {"account_id": "COINBASE", "broker": "coinbase",     "account_type": "crypto",
      "account_group": "investment", "holder": None,   "price_source": "static", "active": 1},
-    # ── Options accounts (static prices stored at ingest time) ────────────────
-    {"account_id": "TRADIER-OPT", "broker": "tradier",   "account_type": "options",
-     "account_group": "investment", "holder": None,   "price_source": "static", "active": 1},
-    {"account_id": "SCHWAB-OPT",  "broker": "schwab",    "account_type": "options",
-     "account_group": "investment", "holder": None,   "price_source": "static", "active": 1},
 ]
 
 # Accounts whose CSVs are yearly summaries rather than running transaction logs.
@@ -92,11 +87,9 @@ POSITION_FILES = [
     (ACTIVITY / "positions-coinbase.csv",  "COINBASE"),
 ]
 
-# Static positions (options / futures / crypto) — add entries as CSVs become available.
-OPTIONS_FILES = [
-    (ACTIVITY / "options-trader.csv",  "TRADIER-OPT"),
-    (ACTIVITY / "options-schwab.csv",  "SCHWAB-OPT"),
-]
+# Options/futures/crypto are now written via MCP (write_tradier, write_schwab, etc.)
+# Add CSV entries here only for brokers without MCP option support.
+OPTIONS_FILES: list[tuple[Path, str]] = []
 
 FUTURES_FILES: list[tuple[Path, str]] = [
     # (ACTIVITY / "futures-ts.csv", "TS-FUT"),
