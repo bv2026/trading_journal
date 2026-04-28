@@ -74,7 +74,20 @@
 
 ---
 
-## 5. Tab Requirements
+## 5. Global / Page-Level Elements *(apply across all tabs)*
+
+| # | Element | Current Behaviour | Redesign Change |
+|---|---------|------------------|-----------------|
+| G.1 | **Sidebar date range** | Filters transactions; positions unaffected | No change — positions are always point-in-time |
+| G.2 | **Sidebar account selector** | Multiselect by account_id | Phase 3: change to broker selector; during Phase 1 keep account_id |
+| G.3 | **Sidebar "Include internal transfers"** | Toggles internal_transfer subcategory | Keep as-is |
+| G.4 | **Header KPI bar** | Single row: Net Cash Flow, Dividends, Rewards, Div+Rewards, Margin Interest, Fees, Net Income (transaction-based, date+account filtered) | No change — all from transactions table |
+| G.5 | **Net Worth banner** | 3 metrics: Net Worth / Market Value / Margin Borrowed — equity positions only | Expand to include options + futures + crypto in Market Value total; Margin Borrowed stays equity-only |
+| G.6 | **Refresh button** | Triggers full cache clear + rerun | Phase 1: keep; Phase 2: trigger MCP fetches inline without subprocess restart |
+
+---
+
+## 6. Tab Requirements
 
 ### Tab 1 — Portfolio *(existing, unchanged during Phase 1)*
 No changes until Phase 3.
@@ -86,12 +99,15 @@ No changes until Phase 3.
 |---|-------------|-------|
 | A.1 | Total net worth KPI = equity + options + futures + crypto | Single hero number at top |
 | A.2 | Asset class breakdown cards: equity / options / futures / crypto | Market value + day P&L per class |
-| A.3 | Broker breakdown table: one row per broker, columns = equity MV / options MV / futures MV / total / cost / P&L | Replaces per-account-type split |
-| A.4 | Sector allocation pie — equity only | Options/futures excluded |
-| A.5 | Sector summary table — equity only, collapsed labels | Same as current |
-| A.6 | Options summary: count, total MV, total P&L, expiring this week | New |
-| A.7 | Futures summary: count, notional value, unrealized P&L | New |
-| A.8 | Data freshness label per broker (last refreshed timestamp + source: MCP / CSV) | Per broker, not global |
+| A.3 | Account Summary table — one row per broker/account, same columns as today | Adds options MV + futures MV columns; retires TRADIER-OPT and SCHWAB-OPT rows |
+| A.4 | Sector allocation pie — equity only, ETF collapsed | Same as current |
+| A.5 | Positions by Account expanders — equity positions per broker | Same as current; drop PERF_YTD / IV_Rank / ATR_pct columns (no MCP source) |
+| A.6 | Sector summary table — equity only, collapsed labels | Same as current |
+| A.7 | Options summary sub-section: count, total MV, total P&L, expiring this week | New |
+| A.8 | Futures summary sub-section: count, notional value, unrealized P&L | New |
+| A.9 | Data freshness label per broker (last refreshed + source: MCP / CSV) | Per broker row in Account Summary |
+
+> **Note on dropped columns:** `PERF_YTD`, `IV_Rank`, `ATR_pct` currently come from position CSV files. No broker MCP provides these. They will be dropped from the positions expander in the redesign.
 
 ---
 
@@ -101,6 +117,12 @@ Already redesigned. No changes.
 ---
 
 ### Tab 3 — By Account *(existing, unchanged during Phase 1)*
+Current content:
+- **Net Cash Flow by Account** — pivot table: Account × (prev year / curr year / ALL)
+- **Div + Rewards by Account** — same pivot
+- **Margin + Fees by Account** — same pivot
+- **Crypto Flow (Coinbase)** — inflow/outflow breakdown: usd_deposit, bank_purchase, crypto_received, usd_withdrawal, crypto_sent; 3-column layout (Inflows / Outflows / Net metrics)
+
 No changes until Phase 3.
 
 ---
@@ -108,15 +130,20 @@ No changes until Phase 3.
 ### Tab NEW-B — By Broker *(replaces Tab 3 in Phase 3)*
 | # | Requirement | Notes |
 |---|-------------|-------|
-| B.1 | One expander section per broker | Collapsed by default |
-| B.2 | Each section header: broker name, total MV, total P&L, position count | Scannable at a glance |
-| B.3 | Inside each section: equity positions sub-table, options sub-table, futures sub-table (only shown if broker has that asset class) | |
-| B.4 | Dividends + income metrics per broker (from transactions) | Same KPIs as current By Account tab |
-| B.5 | RH-BV and RH-KD shown as sub-rows within Robinhood section | Two holders under one broker |
+| B.1 | Net Cash Flow / Div+Rewards / Margin+Fees pivot tables | Keep exactly; change row label from account_id to broker name |
+| B.2 | Crypto Flow section | Keep as-is; still sourced from Coinbase CSV |
+| B.3 | One expander section per broker for position drill-down | Collapsed by default; header shows broker, total MV, P&L, position count |
+| B.4 | Inside each expander: equity sub-table, options sub-table, futures sub-table (hidden if empty) | |
+| B.5 | RH-BV and RH-KD shown as separate rows within Robinhood expander | Two holders, one broker |
 
 ---
 
 ### Tab 4 — Positions *(existing, unchanged during Phase 1)*
+Current content:
+- **Positions by Symbol** table — aggregated across all accounts by ticker; columns: Ticker, Name, sector, Market_Value, Total_Cost, PnL, Return_%, Dividends (lifetime, from full transaction history, not date-filtered)
+- **Footer totals** — 5 metric tiles: Market Value, Total Cost, P&L, Return, Dividends
+- Note: this tab aggregates by symbol (multi-account holders of same stock are summed)
+
 No changes until Phase 3.
 
 ---
@@ -127,31 +154,47 @@ Four separate sub-tables within the tab, one per asset class. Broker filter at t
 | # | Requirement | Notes |
 |---|-------------|-------|
 | C.1 | Broker filter at top — applies to all sub-tables | Replaces account filter |
-| C.2 | **Equity sub-table** columns: ticker, broker, shares, avg cost, current price, market value, P&L $, P&L %, sector | Default sort: market value descending |
-| C.3 | **Options sub-table** columns: symbol, broker, underlying, expiry, strike, C/P, qty, price, market value, P&L | Default sort: expiry ascending |
-| C.4 | **Futures sub-table** columns: symbol, broker, qty, price, market value, P&L | |
-| C.5 | **Crypto sub-table** columns: symbol, broker, qty, price, cost basis, market value, P&L | |
-| C.6 | Each sub-table hidden if no positions in that class | No empty tables shown |
-| C.7 | Source badge on each row: MCP (green) / CSV (grey) / TOS (orange) | Small tag, not a full column |
-| C.8 | Sub-table totals row: market value + P&L summed | Footer row per sub-table |
+| C.2 | **Equity sub-table** columns: ticker, broker, shares, avg cost, current price, market value, P&L $, P&L %, sector, lifetime dividends | Aggregated by symbol across accounts (same as current); default sort: market value descending |
+| C.3 | **Equity sub-table** footer: Market Value, Total Cost, P&L, Return %, Dividends tiles | Same 5-metric footer as current Tab 4 |
+| C.4 | **Options sub-table** columns: symbol, broker, underlying, expiry, strike, C/P, qty, price, market value, P&L | Default sort: expiry ascending |
+| C.5 | **Futures sub-table** columns: symbol, broker, qty, price, market value, P&L | |
+| C.6 | **Crypto sub-table** columns: symbol, broker, qty, price, cost basis, market value, P&L | |
+| C.7 | Each sub-table hidden if no positions in that class | No empty tables shown |
+| C.8 | Source badge on each row: MCP (green) / CSV (grey) / TOS (orange) | Small tag, not a full column |
+| C.9 | Sub-table totals row: market value + P&L summed | Footer row per sub-table |
 
 ---
 
 ### Tab 5 — Transactions *(existing, minor update)*
+Current content:
+- Filters: Category multiselect, Account multiselect, Year multiselect, Description text search
+- Columns: date, account_id, broker, category, subcategory, amount, currency, symbol, description
+- Row count caption
+- **Download CSV button**
+
 | # | Requirement | Notes |
 |---|-------------|-------|
-| 5.1 | No structural change to columns | Keep current category/subcategory model |
-| 5.2 | Add `source` filter chip: All / MCP / CSV | Hidden by default; power-user feature |
-| 5.3 | Broker filter replaces account filter | Show broker name, not account_id |
+| 5.1 | Keep all current columns including currency | No structural change |
+| 5.2 | Keep Download CSV button | Already present; keep |
+| 5.3 | Add `source` filter chip: All / MCP / CSV | Hidden by default; power-user feature |
+| 5.4 | Broker filter replaces account filter in Phase 3 | Show broker name, not account_id |
 
 ---
 
 ### Tab 6 — Performance *(existing, minor update)*
+Current content:
+- **Portfolio Summary** table — per account: Current Value, 1W Ago, $ Change, % Change
+- **Portfolio Returns** table — per account: 1-Week, 1-Month, 3-Month, YTD, 1-Year
+- Performance uses **net_value = current_value − margin** (margin-adjusted); this must be preserved
+- Historical snapshots accumulate with each ingest run; caption shown when no history yet
+
 | # | Requirement | Notes |
 |---|-------------|-------|
-| 6.1 | Snapshot-based returns kept (1w, 1m, 3m, ytd, 1y) | Snapshot table written after every refresh |
-| 6.2 | Merge `TRADIER-OPT` into `TRADIER` row, `SCHWAB-OPT` into `SCHWAB` | Combined broker-level return |
-| 6.3 | No other changes during Phase 1 | Asset class breakdown deferred to Phase 3 |
+| 6.1 | Keep both sub-sections (Portfolio Summary + Portfolio Returns) | No structural change |
+| 6.2 | Net value = current MV − margin borrowed; keep this calculation | Critical — ensures margin accounts show true equity |
+| 6.3 | Merge `TRADIER-OPT` into `TRADIER` row, `SCHWAB-OPT` into `SCHWAB` | Combined broker-level return in Phase 3 |
+| 6.4 | Snapshots written after every refresh must include options + futures + crypto MV | Currently equity-only; needs to aggregate all asset classes |
+| 6.5 | No other changes during Phase 1 | Asset class breakdown deferred to Phase 3 |
 
 ---
 
