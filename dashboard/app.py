@@ -104,7 +104,7 @@ with st.sidebar:
     st.divider()
     st.caption(f"DB: `{DB_PATH.name}`")
     if st.session_state.get("ingest_done", False):
-        st.success("Data refreshed", icon="✓")
+        st.success("Data refreshed", icon="✅")
     else:
         st.info("Refreshing data…", icon="🔄")
     if st.button("🔄 Refresh"):
@@ -395,10 +395,12 @@ with tab_portfolio:
 
     # ── 4. SECTOR SUMMARY TABLE ────────────────────────────────────────────────
     if has_positions:
+        # Use the same collapsed sector labels as the pie chart
+        _sec_tbl_src = pos.copy()
+        _sec_tbl_src["sector"] = _sec_display.values
         sec_tbl = (
-            pos.groupby("sector")
-               .agg(Positions   =("Ticker",       "count"),
-                    Market_Value=("MARKET VALUE", "sum"),
+            _sec_tbl_src.groupby("sector")
+               .agg(Market_Value=("MARKET VALUE", "sum"),
                     Total_Cost  =("COST",         "sum"),
                     PnL         =("totalReturn",  "sum"))
                .reset_index()
@@ -407,10 +409,12 @@ with tab_portfolio:
         sec_tbl["Alloc_%"]  = (sec_tbl["Market_Value"] / total_mv * 100).round(2)
         sec_tbl["Return_%"] = (sec_tbl["PnL"] / sec_tbl["Total_Cost"] * 100).round(2)
 
-        # Join lifetime dividends aggregated to sector level
+        # Join lifetime dividends aggregated to collapsed sector level
+        _pos_with_collapsed = pos[["Ticker", "sector"]].copy()
+        _pos_with_collapsed["sector"] = _sec_display.values
         _sec_divs = (
             df_all[df_all["category"] == "dividend"]
-            .merge(pos[["Ticker", "sector"]].drop_duplicates("Ticker"),
+            .merge(_pos_with_collapsed.drop_duplicates("Ticker"),
                    left_on="symbol", right_on="Ticker", how="inner")
             .groupby("sector")["amount"].sum()
             .reset_index()
@@ -422,9 +426,9 @@ with tab_portfolio:
         st.subheader("Sector Summary")
         st.dataframe(
             sec_tbl.style
-                .format({"Market_Value": "${:,.2f}", "Total_Cost": "${:,.2f}",
-                         "PnL": "${:+,.2f}", "Alloc_%": "{:.2f}%",
-                         "Return_%": "{:+.2f}%", "Dividends": "${:,.2f}"})
+                .format({"Market_Value": "${:,.0f}", "Total_Cost": "${:,.0f}",
+                         "PnL": "${:+,.0f}", "Alloc_%": "{:.2f}%",
+                         "Return_%": "{:+.2f}%", "Dividends": "${:,.0f}"})
                 .map(colour_cell, subset=["PnL", "Return_%", "Dividends"]),
             use_container_width=True, hide_index=True,
         )
@@ -433,132 +437,72 @@ with tab_portfolio:
 
 # ═══ TAB 2 — Yearly Summary ═══════════════════════════════════════════════════
 with tab_yearly:
+    import datetime as _yrdt
+
     df["year"] = df["date"].dt.year
-    years = sorted(df["year"].dropna().unique().astype(int))
+    _yr_curr  = _yrdt.date.today().year
+    _yr_prev  = _yr_curr - 1
+    _yr_avail = set(df["year"].dropna().unique().astype(int))
+    _yr_cols  = [y for y in [_yr_prev, _yr_curr] if y in _yr_avail]
 
-    # ── Year-over-year table ───────────────────────────────────────────────────
+    # ── Transposed summary: rows = metrics, cols = [YR-1, YR, ALL] ────────────
+    _metric_defs = [
+        ("Deposits",        lambda m: m["deposits"]),
+        ("Withdrawals",     lambda m: m["withdrawals"]),
+        ("Net Cash",        lambda m: m["net_cash"]),
+        ("Dividends",       lambda m: m["dividends"]),
+        ("Rewards",         lambda m: m["rewards"]),
+        ("Div + Rewards",   lambda m: m["dividends"] + m["rewards"]),
+        ("Margin Interest", lambda m: m["margin_int"]),
+        ("Fees",            lambda m: m["fees"]),
+        ("Net Income",      lambda m: _net_income_fn(m)),
+    ]
+
+    _yr_summary_rows = []
+    for _label, _fn in _metric_defs:
+        _row = {"Metric": _label}
+        for _yr in _yr_cols:
+            _row[_yr] = _fn(compute_metrics(df[df["year"] == _yr]))
+        _row["ALL"] = _fn(compute_metrics(df))
+        _yr_summary_rows.append(_row)
+
+    yr_df = pd.DataFrame(_yr_summary_rows)
+    _yr_val_cols = [c for c in yr_df.columns if c != "Metric"]
+    fmt_yr = {c: "${:,.0f}" for c in _yr_val_cols}
+
     st.subheader("Year-over-Year Summary")
-    yr_rows = []
-    for yr in years:
-        yd  = df[df["year"] == yr]
-        ym  = compute_metrics(yd)
-        yr_rows.append({
-            "Year":            int(yr),
-            "Deposits":        ym["deposits"],
-            "Withdrawals":     ym["withdrawals"],
-            "Net Cash":        ym["net_cash"],
-            "Dividends":       ym["dividends"],
-            "Rewards":         ym["rewards"],
-            "Div + Rewards":   ym["dividends"] + ym["rewards"],
-            "Margin Interest": ym["margin_int"],
-            "Fees":            ym["fees"],
-            "Net Income":      _net_income_fn(ym),
-        })
-
-    # Totals row
-    t = compute_metrics(df)
-    yr_rows.append({
-        "Year":            "ALL",
-        "Deposits":        t["deposits"],
-        "Withdrawals":     t["withdrawals"],
-        "Net Cash":        t["net_cash"],
-        "Dividends":       t["dividends"],
-        "Rewards":         t["rewards"],
-        "Div + Rewards":   t["dividends"] + t["rewards"],
-        "Margin Interest": t["margin_int"],
-        "Fees":            t["fees"],
-        "Net Income":      _net_income_fn(t),
-    })
-
-    yr_df = pd.DataFrame(yr_rows)
-    yr_money = ["Deposits", "Withdrawals", "Net Cash", "Dividends", "Rewards",
-                "Div + Rewards", "Margin Interest", "Fees", "Net Income"]
-    st.dataframe(style_table(yr_df, yr_money), use_container_width=True, hide_index=True)
-
-    st.divider()
-
-    # ── Year charts ────────────────────────────────────────────────────────────
-    yr_plot = pd.DataFrame([r for r in yr_rows if r["Year"] != "ALL"])
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("Income vs Costs by Year")
-        fig = go.Figure()
-        fig.add_bar(name="Dividends",      x=yr_plot["Year"], y=yr_plot["Dividends"],
-                    marker_color=C_GREEN)
-        fig.add_bar(name="Rewards",        x=yr_plot["Year"], y=yr_plot["Rewards"],
-                    marker_color=C_BLUE)
-        fig.add_bar(name="Margin Interest",x=yr_plot["Year"], y=yr_plot["Margin Interest"],
-                    marker_color=C_RED)
-        fig.add_bar(name="Fees",           x=yr_plot["Year"], y=yr_plot["Fees"],
-                    marker_color=C_ORANGE)
-        fig.update_layout(barmode="relative",
-                          xaxis=dict(type="category"),
-                          yaxis_title="USD",
-                          legend=dict(orientation="h", y=-0.2),
-                          margin=dict(t=10))
-        st.plotly_chart(fig, use_container_width=True)
-
-    with col2:
-        st.subheader("Net Income by Year")
-        yr_plot2 = yr_plot.copy()
-        yr_plot2["colour"] = yr_plot2["Net Income"].apply(
-            lambda v: "Positive" if v >= 0 else "Negative"
-        )
-        fig = px.bar(yr_plot2, x="Year", y="Net Income", color="colour",
-                     color_discrete_map={"Positive": C_GREEN, "Negative": C_RED},
-                     labels={"Net Income": "USD"})
-        fig.update_layout(showlegend=False, xaxis=dict(type="category"),
-                          margin=dict(t=10))
-        st.plotly_chart(fig, use_container_width=True)
-
-    st.subheader("Cash Flow by Year")
-    col3, col4 = st.columns(2)
-
-    with col3:
-        fig = go.Figure()
-        fig.add_bar(name="Deposits",     x=yr_plot["Year"], y=yr_plot["Deposits"],
-                    marker_color=C_GREEN)
-        fig.add_bar(name="Withdrawals",  x=yr_plot["Year"], y=yr_plot["Withdrawals"],
-                    marker_color=C_RED)
-        fig.update_layout(barmode="group", xaxis=dict(type="category"),
-                          yaxis_title="USD",
-                          legend=dict(orientation="h", y=-0.2),
-                          margin=dict(t=10))
-        st.plotly_chart(fig, use_container_width=True)
-
-    with col4:
-        # Dividend growth by year — stacked by account
-        st.subheader("Dividends by Year & Account")
-        div_yr = (
-            df[df["category"].isin(["dividend", "reward"]) & (df["amount"] > 0)]
-            .groupby(["year", "account_id"])["amount"].sum().reset_index()
-        )
-        if not div_yr.empty:
-            fig = px.bar(div_yr, x="year", y="amount", color="account_id",
-                         barmode="stack",
-                         labels={"amount": "USD", "year": "Year", "account_id": "Account"},
-                         color_discrete_sequence=ACCOUNT_COLOURS)
-            fig.update_layout(xaxis=dict(type="category"),
-                              legend_title="Account",
-                              margin=dict(t=10))
-            st.plotly_chart(fig, use_container_width=True)
-
-    # ── Drilldown by year ──────────────────────────────────────────────────────
-    st.divider()
-    st.subheader("Drilldown — Income by Type per Year")
-    inc_yr = (
-        df[df["category"].isin(["dividend", "reward"]) & (df["amount"] > 0)]
-        .groupby(["year", "subcategory"])["amount"].sum()
-        .unstack(fill_value=0)
-        .reset_index()
+    st.dataframe(
+        yr_df.style
+            .format(fmt_yr)
+            .map(colour_cell, subset=_yr_val_cols)
+            .apply(_bold_last_row, last_idx=yr_df.index[-1], axis=1),
+        use_container_width=True, hide_index=True,
     )
-    if not inc_yr.empty:
-        sub_cols = [c for c in inc_yr.columns if c != "year"]
-        inc_yr_fmt = inc_yr.rename(columns={"year": "Year"})
+
+    st.divider()
+
+    # ── Drilldown — Income by Type, transposed: rows = type, cols = [YR-1, YR, ALL] ──
+    st.subheader("Income Breakdown by Type")
+    _inc_src = df[df["category"].isin(["dividend", "reward"]) & (df["amount"] > 0)]
+    if not _inc_src.empty:
+        _inc_pivot = (
+            _inc_src.groupby(["subcategory", "year"])["amount"].sum()
+            .unstack(fill_value=0)
+        )
+        _inc_yr_cols = [y for y in _yr_cols if y in _inc_pivot.columns]
+        _inc_pivot["ALL"] = _inc_pivot.sum(axis=1)
+        _inc_tbl = (
+            _inc_pivot[_inc_yr_cols + ["ALL"]]
+            .reset_index()
+            .rename(columns={"subcategory": "Type"})
+            .sort_values("ALL", ascending=False)
+            .reset_index(drop=True)
+        )
+        _inc_val_cols = [c for c in _inc_tbl.columns if c != "Type"]
         st.dataframe(
-            inc_yr_fmt.style.format({c: "${:,.2f}" for c in sub_cols}),
+            _inc_tbl.style
+                .format({c: "${:,.0f}" for c in _inc_val_cols})
+                .map(colour_cell, subset=_inc_val_cols),
             use_container_width=True, hide_index=True,
         )
 
