@@ -14,10 +14,12 @@ def get_conn() -> sqlite3.Connection:
 def _migrate(conn: sqlite3.Connection) -> None:
     """Add new columns to existing tables without losing data."""
     migrations = [
-        "ALTER TABLE accounts ADD COLUMN account_group TEXT DEFAULT 'investment'",
-        "ALTER TABLE accounts ADD COLUMN price_source  TEXT DEFAULT 'live'",
-        "ALTER TABLE accounts ADD COLUMN active        INTEGER DEFAULT 1",
-        "ALTER TABLE positions ADD COLUMN stored_price REAL",
+        "ALTER TABLE accounts  ADD COLUMN account_group TEXT DEFAULT 'investment'",
+        "ALTER TABLE accounts  ADD COLUMN price_source  TEXT DEFAULT 'live'",
+        "ALTER TABLE accounts  ADD COLUMN active        INTEGER DEFAULT 1",
+        "ALTER TABLE positions ADD COLUMN stored_price  REAL",
+        "ALTER TABLE positions ADD COLUMN data_source   TEXT",
+        "ALTER TABLE transactions ADD COLUMN data_source TEXT",
     ]
     for sql in migrations:
         try:
@@ -72,7 +74,7 @@ def insert_transactions(records: list[dict]) -> int:
         return 0
     df = pd.DataFrame(records)
     required = ["id", "account_id", "date", "category", "subcategory",
-                "amount", "currency", "symbol", "description", "source_file"]
+                "amount", "currency", "symbol", "description", "data_source", "source_file"]
     for col in required:
         if col not in df.columns:
             df[col] = None
@@ -85,9 +87,9 @@ def insert_transactions(records: list[dict]) -> int:
         cursor = conn.executemany(
             "INSERT OR IGNORE INTO transactions "
             "(id, account_id, date, category, subcategory, amount, "
-            " currency, symbol, description, source_file) "
+            " currency, symbol, description, data_source, source_file) "
             "VALUES (:id, :account_id, :date, :category, :subcategory, :amount, "
-            "        :currency, :symbol, :description, :source_file)",
+            "        :currency, :symbol, :description, :data_source, :source_file)",
             rows,
         )
         conn.commit()
@@ -118,7 +120,7 @@ def insert_positions(records: list[dict]) -> int:
     df = pd.DataFrame(records)
     cols = ["account_id", "ticker", "name", "shares", "cost_basis", "stored_price",
             "sector", "industry", "asset_type", "iv_rank", "perf_ytd",
-            "atr_pct", "source_file"]
+            "atr_pct", "data_source", "source_file"]
     for col in cols:
         if col not in df.columns:
             df[col] = None
@@ -131,9 +133,9 @@ def insert_positions(records: list[dict]) -> int:
         cursor = conn.executemany(
             "INSERT OR REPLACE INTO positions "
             "(account_id, ticker, name, shares, cost_basis, stored_price, sector, industry, "
-            " asset_type, iv_rank, perf_ytd, atr_pct, source_file) "
+            " asset_type, iv_rank, perf_ytd, atr_pct, data_source, source_file) "
             "VALUES (:account_id, :ticker, :name, :shares, :cost_basis, :stored_price, :sector, "
-            "        :industry, :asset_type, :iv_rank, :perf_ytd, :atr_pct, :source_file)",
+            "        :industry, :asset_type, :iv_rank, :perf_ytd, :atr_pct, :data_source, :source_file)",
             rows,
         )
         conn.commit()
@@ -302,6 +304,55 @@ def load_crypto_db() -> pd.DataFrame:
                 "FROM crypto_positions",
                 conn,
             )
+    except Exception:
+        return pd.DataFrame()
+
+
+# ── Instruments ───────────────────────────────────────────────────────────────
+
+def upsert_instruments(records: list[dict]) -> int:
+    """Insert or replace instrument master records. Returns rows written."""
+    if not records:
+        return 0
+    df = pd.DataFrame(records)
+    cols = ["symbol", "asset_class", "underlying", "name", "exchange", "currency",
+            "sector", "industry", "expiry", "strike", "call_put",
+            "tick_size", "point_value", "tradable"]
+    for col in cols:
+        if col not in df.columns:
+            df[col] = None
+    rows = (
+        df[cols]
+        .where(pd.notna(df[cols]), None)
+        .to_dict(orient="records")
+    )
+    with get_conn() as conn:
+        cursor = conn.executemany(
+            "INSERT OR REPLACE INTO instruments "
+            "(symbol, asset_class, underlying, name, exchange, currency, "
+            " sector, industry, expiry, strike, call_put, "
+            " tick_size, point_value, tradable) "
+            "VALUES (:symbol, :asset_class, :underlying, :name, :exchange, :currency, "
+            "        :sector, :industry, :expiry, :strike, :call_put, "
+            "        :tick_size, :point_value, :tradable)",
+            rows,
+        )
+        conn.commit()
+        return cursor.rowcount
+
+
+def load_instruments(asset_class: str | None = None) -> pd.DataFrame:
+    """Load instruments master table, optionally filtered by asset_class."""
+    if not DB_PATH.exists():
+        return pd.DataFrame()
+    try:
+        with get_conn() as conn:
+            if asset_class:
+                return pd.read_sql_query(
+                    "SELECT * FROM instruments WHERE asset_class = ?",
+                    conn, params=(asset_class,)
+                )
+            return pd.read_sql_query("SELECT * FROM instruments", conn)
     except Exception:
         return pd.DataFrame()
 

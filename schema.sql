@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     currency     TEXT DEFAULT 'USD',
     symbol       TEXT,
     description  TEXT,
+    data_source  TEXT,            -- mcp | csv
     source_file  TEXT,
     created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -28,6 +29,28 @@ CREATE TABLE IF NOT EXISTS transactions (
 CREATE INDEX IF NOT EXISTS idx_txn_date     ON transactions(date);
 CREATE INDEX IF NOT EXISTS idx_txn_account  ON transactions(account_id);
 CREATE INDEX IF NOT EXISTS idx_txn_category ON transactions(category);
+
+CREATE TABLE IF NOT EXISTS instruments (
+    symbol        TEXT NOT NULL,
+    asset_class   TEXT NOT NULL,   -- equity | option | future | crypto
+    underlying    TEXT,            -- options/futures: root symbol
+    name          TEXT,
+    exchange      TEXT,
+    currency      TEXT DEFAULT 'USD',
+    sector        TEXT,            -- equity only (yfinance)
+    industry      TEXT,            -- equity only (yfinance)
+    expiry        TEXT,            -- options/futures: YYYY-MM-DD
+    strike        REAL,            -- options only
+    call_put      TEXT,            -- options only: C | P
+    tick_size     REAL,            -- futures only
+    point_value   REAL,            -- futures only ($ per point)
+    tradable      TEXT,            -- webull: OC (buy+sell) | CO (close only) | NT (not tradable)
+    fetched_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (symbol, asset_class)
+);
+
+CREATE INDEX IF NOT EXISTS idx_instr_asset_class ON instruments(asset_class);
+CREATE INDEX IF NOT EXISTS idx_instr_underlying   ON instruments(underlying);
 
 CREATE TABLE IF NOT EXISTS positions (
     account_id    TEXT NOT NULL REFERENCES accounts(account_id),
@@ -42,6 +65,7 @@ CREATE TABLE IF NOT EXISTS positions (
     iv_rank       REAL,
     perf_ytd      REAL,
     atr_pct       REAL,
+    data_source   TEXT,   -- mcp | csv | yfinance
     source_file   TEXT,
     ingested_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (account_id, ticker)
