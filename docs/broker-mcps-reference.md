@@ -63,11 +63,58 @@
 ---
 
 ## 3. TradeStation MCP
-> `https://mcp.tradestation.com/v2/mcp` · Status: **Not Connected** (needs auth)
+> `https://mcp.tradestation.com/v2/mcp` · Status: **Connected**
 
-> Tools are not yet available — connect via the MCP settings page to load TradeStation tools.
+### Session Setup
+| Tool | Description | Suggested Prompt |
+|------|-------------|-----------------|
+| `ask-tradestation` | Required first call — loads account context and session rules | "Start a TradeStation session" |
+| `get-trading-environment` | Returns current environment (Live / Sim) — must be shown to user | "What trading environment am I in on TradeStation?" |
+| `set-trading-environment` | Switch between Live and Simulation trading | "Switch TradeStation to simulation mode" |
 
-**Expected capabilities (based on TradeStation's API):** equity and futures orders, options chains, historical bars, account balances, streaming quotes, and advanced order routing.
+### Accounts & Balances
+| Tool | Description | Suggested Prompt |
+|------|-------------|-----------------|
+| `get-accounts` | List all accessible brokerage accounts with types and status | "Show my TradeStation accounts" |
+| `get-balances-summary` | Aggregate balances by account type with top winners/losers | "Show my TradeStation balance summary" |
+| `get-balances-details` | Detailed real-time + BOD balances per account; optional 90-day history | "Show detailed balances for my TradeStation margin account" |
+| `get-portfolio-asset-breakdown` | Portfolio breakdown by asset class (stocks, options, futures) | "Break down my TradeStation portfolio by asset type" |
+
+### Positions
+| Tool | Description | Suggested Prompt |
+|------|-------------|-----------------|
+| `get-positions-summary` | High-level positions summary across all accounts | "Show a summary of my TradeStation positions" |
+| `get-positions-details` | Detailed positions with filters (symbol, gaining/losing, position ID) | "Show my losing positions on TradeStation" |
+
+### Orders
+| Tool | Description | Suggested Prompt |
+|------|-------------|-----------------|
+| `get-orders-overview` | Overview of current open orders grouped by status/type | "Show an overview of my open TradeStation orders" |
+| `get-orders-detailed` | Full detail on current open orders with optional filters | "Show details for my open AAPL orders on TradeStation" |
+| `get-historical-orders-overview` | Summary of historical orders (up to 89 days) grouped by dimension | "Show an overview of my TradeStation order history" |
+| `get-historical-orders-detailed` | Full historical order detail with filters (symbol, date, type, status) | "Show all filled TSLA orders on TradeStation this month" |
+| `place-order` | Place equity, futures, or options orders | "Buy 10 shares of NVDA at market on TradeStation" |
+| `confirm-order` | Preview/confirm an order before submitting | "Preview my TradeStation order before placing it" |
+| `replace-order` | Modify an existing open order | "Change my AAPL limit order to $180 on TradeStation" |
+| `cancel-order` | Cancel an open order | "Cancel my open MSFT order on TradeStation" |
+
+### Market Data
+| Tool | Description | Suggested Prompt |
+|------|-------------|-----------------|
+| `get-quotes` | Real-time quotes for one or more symbols | "Get quotes for SPY and QQQ on TradeStation" |
+| `get-bars` | OHLCV historical bars (any interval: minute, daily, weekly) | "Get 30-day daily bars for AAPL on TradeStation" |
+
+### Options
+| Tool | Description | Suggested Prompt |
+|------|-------------|-----------------|
+| `get-option-expirations` | List all available expiration dates for a symbol | "What option expirations are available for SPY?" |
+| `get-option-strikes` | Available strikes for a symbol and expiration | "Show me AAPL option strikes for May 16" |
+| `get-option-quotes` | Real-time quotes for specific option contracts | "Get quotes for AAPL $200 calls expiring May 16" |
+| `get-option-chain-snapshot` | Full options chain snapshot with Greeks and IV | "Show me the full SPY options chain for next Friday" |
+| `get-option-spread-types` | List supported spread types for strategy orders | "What option spread types does TradeStation support?" |
+| `get-option-risk-reward` | Risk/reward analysis for an option strategy | "What's the risk/reward on my SPY bull call spread?" |
+
+**Strengths:** Full options chain with Greeks, 89-day order history, futures support, Live/Sim environment switching, risk/reward analysis, order preview before placement.
 
 ---
 
@@ -183,17 +230,20 @@
 
 | Capability | Robinhood | Tradier | TradeStation | Schwab | Webull |
 |-----------|:---------:|:-------:|:------------:|:------:|:------:|
-| Stock trading | ✅ | ✅ | ⬜ | ✅ | ✅ |
-| Options (single leg) | ❌ | ✅ | ⬜ | ❌ | ✅ |
-| Options (multi-leg) | ❌ | ✅ | ⬜ | ❌ | ✅ |
-| Options Greeks | ❌ | ✅ | ⬜ | ❌ | ❌ |
-| Advanced orders (OCO/OTO) | ❌ | ✅ | ⬜ | ❌ | ✅ |
-| Futures trading | ❌ | ❌ | ⬜ | ✅ | ✅ |
-| Futures spreads | ❌ | ❌ | ⬜ | ✅ | ❌ |
-| Crypto trading | ❌ | ❌ | ⬜ | ❌ | ✅ |
-| Algo orders | ❌ | ❌ | ⬜ | ❌ | ✅ |
-| Level 2 / Footprint | ❌ | ❌ | ⬜ | ❌ | ✅ |
-| Economic event data | ❌ | ❌ | ⬜ | ❌ | ✅ |
-| Batch orders | ✅ | ❌ | ⬜ | ❌ | ❌ |
-
-> ⬜ = Not connected yet (TradeStation)
+| Stock trading | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Options (single leg) | ❌ | ✅ | ✅ | ❌ | ✅ |
+| Options (multi-leg) | ❌ | ✅ | ✅ | ❌ | ✅ |
+| Options Greeks | ❌ | ✅ | ✅ | ❌ | ❌ |
+| Options risk/reward analysis | ❌ | ❌ | ✅ | ❌ | ❌ |
+| Advanced orders (OCO/OTO) | ❌ | ✅ | ✅ | ❌ | ✅ |
+| Order preview before placing | ❌ | ❌ | ✅ | ❌ | ✅ |
+| Live / Sim environment toggle | ❌ | ❌ | ✅ | ❌ | ❌ |
+| Order history (days back) | ❌ | ~90d | 89d | ✅ | ✅ |
+| Futures trading | ❌ | ❌ | ✅ | ✅ | ✅ |
+| Futures spreads | ❌ | ❌ | ❌ | ✅ | ❌ |
+| Crypto trading | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Algo orders | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Level 2 / Footprint | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Economic event data | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Batch orders | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Historical balance (90d) | ❌ | ❌ | ✅ | ❌ | ❌ |
