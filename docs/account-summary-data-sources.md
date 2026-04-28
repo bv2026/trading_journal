@@ -10,6 +10,7 @@
 |--------|:-------------:|:------:|:--:|:------:|:-------:|:--------:|:--------:|
 | **Market_Value** | trayd `get_positions` → `market_value` | webull `get_account_positions` | TS `get-positions-details` | schwab `get_equity_positions` | Tradier `get_positions` | CSV → yf price × shares | CSV → yf price × qty |
 | **Total_Cost** | trayd `get_positions` → `avg_cost × qty` | webull `get_account_positions` | TS `get-positions-details` | schwab `get_equity_positions` | Tradier `get_positions` → `cost_basis` | CSV | CSV |
+| **Sector** | yf `ticker.info['sector']` | yf | yf | yf | yf | yf | N/A |
 | **PnL** | CALC: MV − Cost | CALC | CALC | CALC | CALC | CALC | CALC |
 | **Return_%** | CALC: PnL ÷ Cost | CALC | CALC | CALC | CALC | CALC | CALC |
 | **Margin** | trayd `get_portfolio` → cash (negative = margin used) | webull `get_account_balance` | TS `get-balances-details` | schwab `get_account_summary` | Tradier `get_account_balances` | CSV (Fidelity balance export) | N/A ($0) |
@@ -23,6 +24,13 @@
 ---
 
 ## Notes
+
+### Sector
+- Source: **yfinance `ticker.info['sector']`** — applies to equity tickers only across all brokers
+- Options, futures, crypto: no sector (shown as "—" or excluded from sector charts)
+- ETFs: yfinance returns the ETF's own classification (e.g. SPY → "Financial Services"), not its underlying holdings breakdown — the current code collapses these into an "ETF" bucket, which is correct
+- Sector is fetched once per unique ticker and cached; not re-fetched on every price refresh
+- No MCP provides sector/industry data — yfinance remains the only source regardless of broker
 
 ### Market Value & Cost
 - All MCP position responses embed both current price and cost basis — no separate price fetch needed
