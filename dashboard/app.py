@@ -196,8 +196,12 @@ tab_portfolio, tab_yearly, tab_breakdown, tab_positions, tab_txns, tab_perf = st
 with tab_portfolio:
 
     # ── Load positions data ────────────────────────────────────────────────────
-    pos_all = _load_positions()
+    pos_all  = _load_positions()
+    opts_all = _load_options()
+    futs_all = _load_futures()
     has_positions = not pos_all.empty
+    has_opts = not opts_all.empty
+    has_futs = not futs_all.empty
 
     if has_positions:
         _is_margin = pos_all["Ticker"].str.upper() == "MARGIN"
@@ -376,21 +380,23 @@ with tab_portfolio:
         )
 
         for acct in acct_order:
-            acct_pos = pos[pos["Account"] == acct].copy()
+            acct_pos  = pos[pos["Account"] == acct].copy()
             if acct_pos.empty:
                 continue
-            acct_mv  = acct_pos["MARKET VALUE"].sum()
-            acct_pnl = acct_pos["totalReturn"].sum()
-            acct_ret = (acct_pnl / acct_pos["COST"].sum() * 100
-                        if acct_pos["COST"].sum() else 0)
+            acct_mv     = acct_pos["MARKET VALUE"].sum()
+            acct_pnl    = acct_pos["totalReturn"].sum()
+            acct_ret    = (acct_pnl / acct_pos["COST"].sum() * 100
+                           if acct_pos["COST"].sum() else 0)
             acct_margin = abs(float(
                 margin_df[margin_df["Account"] == acct]["MARKET VALUE"].sum()
             ))
+            acct_opts   = opts_all[opts_all["Account"] == acct] if has_opts else pd.DataFrame()
             label = (
                 f"**{acct}** — {len(acct_pos)} positions · "
                 f"MV ${acct_mv:,.0f} · "
                 f"P&L ${acct_pnl:+,.0f} ({acct_ret:+.1f}%) · "
                 f"Margin ${acct_margin:,.0f}"
+                + (f" · Options ${acct_opts['MARKET VALUE'].sum():,.0f}" if not acct_opts.empty else "")
             )
             with st.expander(label, expanded=False):
                 _cost_safe = acct_pos["COST"].replace(0, float("nan"))
@@ -408,6 +414,17 @@ with tab_portfolio:
                     use_container_width=True,
                     hide_index=True,
                 )
+                if not acct_opts.empty:
+                    st.markdown("**Options**")
+                    opt_show = [c for c in ["symbol", "underlying", "expiry", "strike",
+                                            "call_put", "qty", "price", "MARKET VALUE"]
+                                if c in acct_opts.columns]
+                    st.dataframe(
+                        acct_opts[opt_show].reset_index(drop=True)
+                            .style.format({"MARKET VALUE": "${:,.2f}", "price": "${:.2f}",
+                                           "strike": "${:.2f}"}),
+                        use_container_width=True, hide_index=True,
+                    )
 
         st.divider()
 
@@ -451,6 +468,47 @@ with tab_portfolio:
             use_container_width=True, hide_index=True,
         )
         st.divider()
+
+    # ── Options Summary ───────────────────────────────────────────────────────
+    if has_opts:
+        import datetime as _odt
+        st.subheader("Options Summary")
+        _opt_mv_total = opts_all["MARKET VALUE"].sum()
+        _today = _odt.date.today()
+        oc1, oc2, oc3 = st.columns(3)
+        oc1.metric("Open Positions", len(opts_all))
+        oc2.metric("Total Market Value", f"${_opt_mv_total:,.0f}")
+        if "expiry" in opts_all.columns:
+            _expiring = opts_all[pd.to_datetime(opts_all["expiry"], errors="coerce").dt.date
+                                 <= (_today + _odt.timedelta(days=7))]
+            oc3.metric("Expiring This Week", len(_expiring))
+        opt_disp_cols = [c for c in ["Account", "symbol", "underlying", "expiry",
+                                      "strike", "call_put", "qty", "price", "MARKET VALUE"]
+                         if c in opts_all.columns]
+        st.dataframe(
+            opts_all[opt_disp_cols]
+                .sort_values("expiry" if "expiry" in opts_all.columns else opt_disp_cols[0])
+                .reset_index(drop=True)
+                .style.format({"MARKET VALUE": "${:,.2f}", "price": "${:.2f}", "strike": "${:.2f}"}),
+            use_container_width=True, hide_index=True,
+        )
+        st.divider()
+
+    # ── Futures Summary ───────────────────────────────────────────────────────
+    if has_futs:
+        st.subheader("Futures Summary")
+        _fut_mv_total = futs_all["MARKET VALUE"].sum()
+        fc1, fc2 = st.columns(2)
+        fc1.metric("Open Contracts", len(futs_all))
+        fc2.metric("Net Market Value", f"${_fut_mv_total:+,.0f}")
+        fut_disp_cols = [c for c in ["Account", "symbol", "qty", "price", "MARKET VALUE"]
+                         if c in futs_all.columns]
+        st.dataframe(
+            futs_all[fut_disp_cols].reset_index(drop=True)
+                .style.format({"MARKET VALUE": "${:+,.2f}", "price": "${:,.4f}"})
+                .map(colour_cell, subset=["MARKET VALUE"]),
+            use_container_width=True, hide_index=True,
+        )
 
 
 # ═══ TAB 2 — Yearly Summary ═══════════════════════════════════════════════════
@@ -616,13 +674,24 @@ with tab_breakdown:
 
 # ═══ TAB 4 — Positions ════════════════════════════════════════════════════════
 with tab_positions:
+    _all_brokers = sorted(df_all["broker"].dropna().unique()) if "broker" in df_all.columns else []
+    _sel_brokers = st.multiselect("Broker filter", _all_brokers, default=_all_brokers,
+                                   key="pos_broker_filter")
+    _acct_broker = (df_all[["account_id", "broker"]].drop_duplicates()
+                    .set_index("account_id")["broker"])
+
+    def _filter_pos(frame: pd.DataFrame) -> pd.DataFrame:
+        if frame.empty or "Account" not in frame.columns:
+            return frame
+        return frame[frame["Account"].map(_acct_broker).isin(_sel_brokers)].copy()
+
     _ptab_eq, _ptab_opt, _ptab_fut, _ptab_cry = st.tabs(
         ["Equity", "Options", "Futures", "Crypto"]
     )
 
     # ── Equity sub-tab ─────────────────────────────────────────────────────────
     with _ptab_eq:
-        pos_raw = _load_positions()
+        pos_raw = _filter_pos(_load_positions())
         if pos_raw.empty:
             st.info("No equity positions — run ingest after adding positions-{account}.csv files to activity/.")
         else:
@@ -686,7 +755,7 @@ with tab_positions:
 
     # ── Options sub-tab ────────────────────────────────────────────────────────
     with _ptab_opt:
-        opt_df = _load_options()
+        opt_df = _filter_pos(_load_options())
         if opt_df.empty:
             st.info("No options positions in the database.")
         else:
@@ -726,7 +795,7 @@ with tab_positions:
 
     # ── Futures sub-tab ────────────────────────────────────────────────────────
     with _ptab_fut:
-        fut_df = _load_futures()
+        fut_df = _filter_pos(_load_futures())
         if fut_df.empty:
             st.info("No futures positions in the database.")
         else:
@@ -765,7 +834,7 @@ with tab_positions:
 
     # ── Crypto sub-tab ─────────────────────────────────────────────────────────
     with _ptab_cry:
-        cry_df = _load_crypto()
+        cry_df = _filter_pos(_load_crypto())
         if cry_df.empty:
             st.info("No crypto positions in the database.")
         else:
@@ -808,9 +877,8 @@ with tab_txns:
                                     sorted(df["category"].unique()),
                                     default=sorted(df["category"].unique()))
     with col2:
-        acct_filter = st.multiselect("Account",
-                                     sorted(df["account_id"].unique()),
-                                     default=sorted(df["account_id"].unique()))
+        _txn_brokers = sorted(df["broker"].dropna().unique()) if "broker" in df.columns else []
+        broker_filter = st.multiselect("Broker", _txn_brokers, default=_txn_brokers)
     with col3:
         yr_filter = st.multiselect("Year",
                                    sorted(df["date"].dt.year.unique().astype(int), reverse=True),
@@ -819,7 +887,9 @@ with tab_txns:
         search = st.text_input("Search description",
                                placeholder="AAPL, margin, staking …")
 
-    txn = df[df["category"].isin(cat_filter) & df["account_id"].isin(acct_filter)].copy()
+    txn = df[df["category"].isin(cat_filter)].copy()
+    if "broker" in txn.columns:
+        txn = txn[txn["broker"].isin(broker_filter)]
     if yr_filter:
         txn = txn[txn["date"].dt.year.isin(yr_filter)]
     if search:

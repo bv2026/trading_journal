@@ -37,6 +37,17 @@ from src.fetchers import webull as webull_fetcher
 from src.fetchers import robinhood as rh_fetcher
 from src.fetchers import schwab as schwab_fetcher
 
+
+def _enrich() -> None:
+    """Run sector/industry enrichment after any MCP write.  Failures are non-fatal."""
+    try:
+        from src.enrichment import enrich_sectors
+        n = enrich_sectors()
+        if n:
+            print(f"  [enrich] {n} instrument(s) enriched with sector/industry data")
+    except Exception as exc:
+        print(f"  [enrich] WARNING: sector enrichment failed: {exc}")
+
 # ── Margin helpers ─────────────────────────────────────────────────────────────
 
 def _get_existing_margin(account_id: str) -> float:
@@ -146,6 +157,7 @@ def write_tradier(
     instr_recs = tradier_fetcher.normalize_instruments(eq_recs, opt_recs)
     instr_written = db.upsert_instruments(instr_recs) if instr_recs else 0
 
+    _enrich()
     print(f"[{account_id}] equity={eq_written}  options={opt_written}  "
           f"txns={txn_written}  instruments={instr_written}")
     return {"equity_count": eq_written, "option_count": opt_written,
@@ -220,6 +232,7 @@ def write_tradestation(
         margin = csv_margin
     _insert_margin_sentinel(account_id, margin)
 
+    _enrich()
     print(f"[{account_id}] equity={eq_written}  options={opt_written}  "
           f"futures={fut_written}  instruments={instr_written}  margin=${margin:,.0f}")
     return {"equity_count": eq_written, "option_count": opt_written,
@@ -310,6 +323,7 @@ def write_webull(
         for k in ("equity", "options", "futures", "crypto", "instruments"):
             totals[k] += per_account[journal_id].get(k, 0)
 
+    _enrich()
     return {"per_account": per_account, "totals": totals}
 
 
@@ -374,6 +388,7 @@ def write_robinhood(
         margin = csv_margin
     _insert_margin_sentinel(account_id, margin)
 
+    _enrich()
     print(f"[{account_id}] equity={eq_written}  instruments={instr_written}  margin=${margin:,.0f}")
     return {"equity_count": eq_written, "instrument_count": instr_written, "margin": margin}
 
@@ -457,6 +472,7 @@ def write_schwab(
         margin = csv_margin
     _insert_margin_sentinel(account_id, margin)
 
+    _enrich()
     print(f"[{account_id}] equity={eq_written}  options={opt_written}  "
           f"futures={fut_written}  txns={txn_written}  instruments={instr_written}  "
           f"margin=${margin:,.0f}")

@@ -19,7 +19,6 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ALTER TABLE accounts  ADD COLUMN active        INTEGER DEFAULT 1",
         "ALTER TABLE positions ADD COLUMN stored_price  REAL",
         "ALTER TABLE positions ADD COLUMN data_source   TEXT",
-        "ALTER TABLE transactions ADD COLUMN data_source TEXT",
         "ALTER TABLE options_positions ADD COLUMN data_source TEXT",
     ]
     for sql in migrations:

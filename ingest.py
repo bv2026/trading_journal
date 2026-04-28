@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from src import db
 from src.parsers import robinhood, webull, tradestation, schwab, tradier, coinbase, fidelity
-from src.parsers import positions_csv, static_positions_csv
+from src.parsers import positions_csv
 
 ACTIVITY = Path(__file__).parent / "activity"
 
@@ -87,17 +87,6 @@ POSITION_FILES = [
     (ACTIVITY / "positions-coinbase.csv",  "COINBASE"),
 ]
 
-# Options/futures/crypto are now written via MCP (write_tradier, write_schwab, etc.)
-# Add CSV entries here only for brokers without MCP option support.
-OPTIONS_FILES: list[tuple[Path, str]] = []
-
-FUTURES_FILES: list[tuple[Path, str]] = [
-    # (ACTIVITY / "futures-ts.csv", "TS-FUT"),
-]
-
-CRYPTO_FILES: list[tuple[Path, str]] = [
-    # (ACTIVITY / "crypto-coinbase.csv", "COINBASE"),
-]
 
 
 def _compute_snapshot_map() -> dict[str, dict]:
@@ -223,45 +212,6 @@ def run(reset: bool = False) -> None:
 
     if pos_total:
         print(f"\nPositions — {pos_total} rows written across accounts.")
-
-    # ── Options positions ─────────────────────────────────────────────────────
-    for path, acct in OPTIONS_FILES:
-        if not path.exists():
-            continue
-        try:
-            recs = static_positions_csv.parse(str(path), acct, "options")
-        except Exception as exc:
-            print(f"  ERROR options {acct}: {exc}")
-            continue
-        db.delete_options_by_account(acct)
-        written = db.insert_options(recs)
-        print(f"  OK    options  {acct}: {written} rows")
-
-    # ── Futures positions ─────────────────────────────────────────────────────
-    for path, acct in FUTURES_FILES:
-        if not path.exists():
-            continue
-        try:
-            recs = static_positions_csv.parse(str(path), acct, "futures")
-        except Exception as exc:
-            print(f"  ERROR futures {acct}: {exc}")
-            continue
-        db.delete_futures_by_account(acct)
-        written = db.insert_futures(recs)
-        print(f"  OK    futures  {acct}: {written} rows")
-
-    # ── Crypto positions ──────────────────────────────────────────────────────
-    for path, acct in CRYPTO_FILES:
-        if not path.exists():
-            continue
-        try:
-            recs = static_positions_csv.parse(str(path), acct, "crypto")
-        except Exception as exc:
-            print(f"  ERROR crypto  {acct}: {exc}")
-            continue
-        db.delete_crypto_by_account(acct)
-        written = db.insert_crypto(recs)
-        print(f"  OK    crypto   {acct}: {written} rows")
 
     # ── Sector/industry enrichment ────────────────────────────────────────────
     print("\nEnriching instrument sectors via yfinance …")

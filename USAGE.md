@@ -3,14 +3,14 @@
 ## Prerequisites
 
 - Python 3.11+
-- Dependencies installed: `pip install -r requirements.txt` (includes `mcp>=1.0.0`, `yfinance>=0.2.0`)
+- Dependencies installed: `pip install -r requirements.txt`
+  (includes `mcp>=1.0.0`, `yfinance>=0.2.0`, `streamlit`, `plotly`, `pandas`)
 
 ---
 
 ## 1. Prepare activity files
 
-Place all broker CSV exports in the `activity/` folder.
-The folder is gitignored — files never leave your machine.
+Place broker CSV exports in the `activity/` folder. The folder is gitignored — files never leave your machine.
 
 ### Transaction CSVs (ingested into `data/journal.db`)
 
@@ -28,9 +28,9 @@ The folder is gitignored — files never leave your machine.
 
 Missing files are skipped with a warning — you do not need all files present.
 
-### Equity positions CSVs (live prices fetched at runtime via yfinance)
+### Equity positions CSVs (prices fetched from yfinance at dashboard load)
 
-Export each broker's equity positions as a CSV and place it in `activity/`:
+Export each broker's equity positions and place it in `activity/`:
 
 | File | Account |
 |------|---------|
@@ -41,78 +41,54 @@ Export each broker's equity positions as a CSV and place it in `activity/`:
 | `positions-rh-kd.csv` | RH-KD |
 | `positions-webull.csv` | WEBULL |
 | `positions-fidelity.csv` | FIDELITY |
+| `positions-coinbase.csv` | COINBASE |
 
 **Required columns:**
-
 ```
 Ticker, Name, Sh/Contr, COST BASIS, sector, industry, TYPE, IV RANK, PERF YTD, ATR %
 ```
 
-Columns that are **ignored** (computed at runtime from live prices):
-`PRICE`, `COST`, `MARKET VALUE`, `totalReturn`
+Columns ignored (computed at runtime from live prices): `PRICE`, `COST`, `MARKET VALUE`, `totalReturn`
 
 **MARGIN row**: include a row with `Ticker = MARGIN` and the current margin balance in `MARKET VALUE`
 (e.g. `$(25,000.00)`). The dashboard uses this for Net Worth = Market Value − Margin.
 
 Value formatting accepted: `$1,234.56`, `$(1,234.56)` for negatives, `40%` for percentages, `N/A` for missing.
 
-### Options / futures / crypto positions CSVs (prices stored at ingest time)
+### Options, futures, and crypto positions — MCP path (preferred)
 
-These use the **Tradier-style export format** — a single CSV per account type with the
-following columns:
+Options, futures, and crypto positions are written directly from broker API responses
+via `mcp_ingest.py`. No CSV files are needed for these asset classes.
 
-```
-Symbol, Expiry, Strike, Call/Put, Description, Qty, Price, Market Value, Underlying Symbol
-```
+Ask Claude to refresh positions after markets close:
+> *"Refresh my Tradier positions and options"*
+> *"Update Schwab equity, options, and futures"*
+> *"Refresh all positions"*
 
-Optional / ignored: `Account Type`, `Day Change`
-
-Row routing is automatic based on cell content:
-
-| Row type | Criteria | Target account suffix |
-|----------|----------|-----------------------|
-| Option | non-empty `Expiry` AND non-empty `Call/Put` | `-OPT` |
-| Future | non-empty `Underlying Symbol`, empty `Call/Put` | `-FUT` |
-| Crypto | all of `Expiry`, `Strike`, `Call/Put`, `Underlying Symbol` empty | *(crypto account)* |
-
-File naming and account mapping (add entries to `OPTIONS_FILES` / `FUTURES_FILES` /
-`CRYPTO_FILES` in `ingest.py` as CSVs become available):
-
-| File | Account |
-|------|---------|
-| `options-trader.csv` | TRADIER-OPT |
-| `options-schwab.csv` | SCHWAB-OPT |
-| *(future)* `futures-ts.csv` | TS-FUT |
-| *(future)* `crypto-coinbase.csv` | COINBASE |
-
-`Qty` is signed: negative = short position.
-`Market Value` is stored as-is — no multiplier is applied (the broker has already
-computed `Qty × Price × 100` for options).
+Claude calls the `refresh_positions` MCP tool which fetches live data from each
+broker's API and writes it to the DB. Sector/industry enrichment via yfinance runs
+automatically at the end of each write.
 
 ---
 
-## 2. Account naming convention
+## 2. Account reference
 
-Account IDs follow the pattern `{BROKER}-{HOLDER}[-{TYPE}]`:
-
-- **Suffix-free** accounts (e.g. `RH-BV`, `SCHWAB`) are equity — backward compatible.
-- **Type suffix** is appended only for non-equity account types.
-
-| account_id | broker | account_type | price_source |
+| account_id | broker | asset classes | price_source |
 |---|---|---|---|
-| `RH-BV` | robinhood | equity | live |
-| `RH-KD` | robinhood | equity | live |
-| `WEBULL` | webull | equity | live |
-| `TS` | tradestation | equity | live |
-| `SCHWAB` | schwab | equity | live |
-| `TRADIER` | tradier | equity | live |
-| `FIDELITY` | fidelity | equity | live |
-| `COINBASE` | coinbase | crypto | static |
-| `TRADIER-OPT` | tradier | options | static |
-| `SCHWAB-OPT` | schwab | options | static |
+| `RH-BV` | robinhood | equity | live (yfinance) |
+| `RH-KD` | robinhood | equity | live (yfinance) |
+| `WEBULL` | webull | equity, options | live (yfinance) |
+| `WEBULL-CASH` | webull | equity | live (yfinance) |
+| `WEBULL-EVENTS` | webull | event contracts | live (yfinance) |
+| `WEBULL-FUT` | webull | futures | static (stored in DB) |
+| `TS` | tradestation | equity, options, futures | live (yfinance) |
+| `SCHWAB` | schwab | equity, options, futures | live (yfinance) |
+| `TRADIER` | tradier | equity, options | live (yfinance) |
+| `FIDELITY` | fidelity | equity | live (yfinance) |
+| `COINBASE` | coinbase | crypto | static (stored in DB) |
 
-`price_source = live` → market value computed at runtime from yfinance.
-`price_source = static` → market value stored in DB at ingest time from the CSV.
+`price_source = live` → equity market value computed from yfinance at dashboard load.
+`price_source = static` → market value stored in DB at MCP write time.
 
 ---
 
@@ -122,36 +98,35 @@ Account IDs follow the pattern `{BROKER}-{HOLDER}[-{TYPE}]`:
 python ingest.py
 ```
 
-What it does on each run:
-1. Initialises / migrates `data/journal.db` if needed
-2. Registers all accounts in the DB
-3. **Transactions** — incremental; only new records added
+What it does each run:
+1. Initialises / migrates `data/journal.db` (additive — no data loss)
+2. Registers all accounts
+3. **Transactions** — incremental; only new records added (deduplicates by content hash)
 4. **Equity positions** — full replace per account; reflects latest CSV export
-5. **Options / futures / crypto positions** — full replace per account; skips missing files
-6. **Portfolio snapshot** — records today's market value per account (live equity prices
-   fetched from yfinance; static asset values read from DB); same-day re-runs update
-   the row in place rather than duplicating it
+5. **Sector enrichment** — fills NULL sector/industry in the instruments table via yfinance, propagates to positions
+6. **Portfolio snapshot** — records today's market value per account (same-day re-runs update in place)
 
 ```bash
-# Full rebuild (clears all transactions and reloads from scratch)
+# Full rebuild — clears all transactions and reloads from scratch
 python ingest.py --reset
 ```
 
 Example output:
 ```
-Initializing database ...
-  OK    RH-BV:     0 new  (1785 already in DB)
-  OK    SCHWAB:     5 new  (480 already in DB)
-  ...
+Initializing database …
+  OK    RH-BV:       0 new  (1785 already in DB)
+  OK    SCHWAB:       5 new  (480 already in DB)
+  …
 Done — 5 new records added, 15502 already existed.
   OK    positions SCHWAB: 18 rows
   OK    positions TRADIER: 12 rows
-  OK    options  TRADIER-OPT: 4 rows
-  ...
 Positions — 187 rows written across accounts.
 
-Writing portfolio snapshot ...
-  Snapshot — 9 accounts written for 2026-04-25
+Enriching instrument sectors via yfinance …
+  Enriched 3 instrument(s) with sector/industry data.
+
+Writing portfolio snapshot …
+  Snapshot — 9 accounts written for 2026-04-28
 ```
 
 ---
@@ -160,10 +135,10 @@ Writing portfolio snapshot ...
 
 ```bash
 streamlit run dashboard/app.py
+# — or double-click launch-dashboard.vbs on Windows
 ```
 
-Opens at `http://localhost:8501`.
-Use the **Refresh** button in the sidebar after re-ingesting to reload data.
+Opens at `http://localhost:8501`. Click **Refresh** in the sidebar after re-ingesting.
 
 ---
 
@@ -173,8 +148,8 @@ Use the **Refresh** button in the sidebar after re-ingesting to reload data.
 
 | Element | Description |
 |---------|-------------|
-| **Net Worth** | Market Value − Margin Borrowed |
-| **Market Value** | Total current market value (live prices × shares) |
+| **Net Worth** | Total market value − margin borrowed |
+| **Market Value** | Sum of all equity positions (live prices) |
 | **Margin Borrowed** | Total margin outstanding across all accounts |
 | **Summary table** | Net Cash Flow · Dividends · Rewards · Div+Rewards · Margin Interest · Fees · Net Income — lifetime totals |
 
@@ -182,45 +157,49 @@ Use the **Refresh** button in the sidebar after re-ingesting to reload data.
 
 | Section | Description |
 |---------|-------------|
-| **Account Summary** | One row per account combining position data (Market Value, Cost, P&L, Return %, Margin) and transaction data (Net Cash, Dividends, Rewards, Margin Interest, Fees, Net Income) |
-| **Sector & Account allocation pies** | Market value breakdown by sector and by account |
-| **Positions by Account** | Collapsible per-account grids showing all holdings sorted by market value |
-| **Sector Summary** | Market value, cost, P&L, allocation %, return %, dividends by GICS sector |
+| **Account Summary** | One row per account: Market Value, Cost, P&L, Return %, Margin, Net Cash, Dividends, Rewards, Margin Int, Fees, Net Income |
+| **Sector Allocation** | Market value by sector (pie chart) |
+| **Positions by Account** | Collapsible per-account grids; options sub-table shown inside each expander |
+| **Sector Summary** | Market value, cost, P&L, allocation %, return %, dividends by sector |
+| **Options Summary** | Total MV, count, expiring this week; full options table |
+| **Futures Summary** | Total net MV, count; full futures table |
 
 ### Yearly Summary tab *(tab 2)*
 
-- Year-over-year table (Deposits, Withdrawals, Net Cash, Dividends, Rewards, Div+Rewards, Margin Interest, Fees, Net Income)
-- Income vs Costs stacked bar, Net Income bar, Cash Flow bar, Dividends by account bar
-- Drilldown: income by subcategory per year
+- Year-over-year table: Deposits, Withdrawals, Net Cash, Dividends, Rewards, Div+Rewards, Margin Interest, Fees, Net Income
+- Income breakdown by subcategory per year
 
 ### By Account tab *(tab 3)*
 
-- Three-column pivot tables per account: Previous Year / Current Year / ALL (lifetime)
-- Net Cash Flow, Div+Rewards, and Margin+Fees tables with bold TOTAL footer
+- Prev Year / Current Year / ALL pivot tables per account: Net Cash Flow, Div+Rewards, Margin+Fees
+- Crypto Flow section (Coinbase external movements)
 
 ### Positions tab *(tab 4)*
 
-- All holdings grouped by symbol with Market Value, Total Cost, P&L, Sector, Return %, Dividends
-- Pinned metric footer: total Market Value, Cost, P&L, Return %, Dividends
+- **Broker filter** at the top — limits all sub-tabs to selected brokers
+- **Equity** — aggregated by symbol: MV, Cost, P&L, Return %, Dividends; metric footer
+- **Options** — per-account expanders: symbol, underlying, expiry, strike, call/put, qty, price, MV
+- **Futures** — per-account expanders: symbol, qty, price, MV (color-coded)
+- **Crypto** — flat table: symbol, qty, price, cost basis, MV; P&L footer
 
 ### Transactions tab *(tab 5)*
 
-- Full filterable / searchable transaction log
-- Filter by category, account, year, or description keyword
+- Filter by category, broker, year, or description keyword
+- Full transaction log sorted by date (most recent first)
 - Download filtered results as CSV
 
 ### Performance tab *(tab 6)*
 
-- **Portfolio Summary** — Current Value, Margin, 1W Ago, $ Change, % Change per account
+- **Portfolio Summary** — Current Value, 1W Ago, $ Change, % Change per account
 - **Portfolio Returns** — 1-Week, 1-Month, 3-Month, YTD, 1-Year return % per account
 - Both tables show a TOTAL row; periods with no prior snapshot show "—"
-- Data accumulates with each `python ingest.py` run
+- Historical data accumulates with each `python ingest.py` run
 
 ---
 
 ## 6. Updating data
 
-### Standard broker accounts (Robinhood, Schwab, Webull, etc.)
+### Standard transactions (Robinhood, Schwab, Webull, etc.)
 
 1. Download a fresh CSV from your broker
 2. Replace the file in `activity/`
@@ -229,92 +208,84 @@ Use the **Refresh** button in the sidebar after re-ingesting to reload data.
 
 ### Fidelity yearly summary
 
-The Fidelity CSV contains one row per calendar year updated throughout the year.
+The Fidelity CSV has one row per calendar year, updated throughout the year.
 
 1. Export a fresh "Investment Income" CSV from Fidelity
 2. Replace `activity/fidelity_Investment_income_balance.csv`
-3. Run `python ingest.py`
+3. Run `python ingest.py` — Fidelity rows are always fully refreshed
 
-Only years from **2020 onwards** are ingested. To change this cutoff, edit
-`START_YEAR` at the top of `src/parsers/fidelity.py`.
+To change the 2020 start year, edit `START_YEAR` in `src/parsers/fidelity.py`.
 
-### Equity positions
+### Equity positions (CSV path)
 
 1. Export current positions from each broker
 2. Replace the corresponding `positions-{account}.csv` in `activity/`
 3. Run `python ingest.py` — positions are always fully replaced per account
 
-### Options / futures / crypto positions
+### Options / futures / crypto positions (MCP path)
 
-1. Export current positions from your broker in Tradier-style CSV format
-2. Place the file in `activity/` using the filename registered in `ingest.py`
-3. Run `python ingest.py`
+Ask Claude to refresh after markets close or whenever you want current data:
 
-Live equity prices are cached for 5 minutes. Static asset prices are stored in the DB
-at ingest time and do not require yfinance.
+```
+"Refresh my Tradier positions and options"
+"Update Schwab equity, options, and futures — use balance mode for margin"
+"Refresh TradeStation positions and balances"
+"Refresh all positions"
+```
+
+Claude calls `refresh_positions` which fetches live data from each broker's API,
+writes it to the DB, and runs sector enrichment automatically.
+
+**Margin modes** (pass when asking Claude to refresh):
+- `balance` *(default)* — use margin balance from broker API response
+- `computed` — gross MV (sum of positions × price) minus reported equity
+- `csv` — preserve the existing MARGIN sentinel already stored in the DB
 
 ---
 
 ## 7. Adding a new account
 
-### Equity account
+### Equity account (CSV path)
 
-1. Write a parser in `src/parsers/<broker>.py` following the pattern of existing parsers.
-   Each record dict must have:
+1. Write a parser in `src/parsers/<broker>.py`. Each record dict must have:
    ```
    id, account_id, date, category, subcategory,
    amount, currency, symbol, description, source_file
    ```
 
-2. Register it in `ingest.py`:
+2. Register in `ingest.py`:
    ```python
-   # In ACCOUNTS list
+   # ACCOUNTS list
    {"account_id": "NEW-ACCT", "broker": "newbroker", "account_type": "equity",
     "account_group": "investment", "holder": None, "price_source": "live", "active": 1},
 
-   # In PARSERS list
+   # PARSERS list
    (newbroker.parse, ACTIVITY / "newbroker.csv", "NEW-ACCT"),
 
-   # In POSITION_FILES list
+   # POSITION_FILES list
    (ACTIVITY / "positions-newacct.csv", "NEW-ACCT"),
    ```
 
 3. Run `python ingest.py`.
 
-### Options / futures / crypto account
+### Account with options / futures (MCP path)
 
-1. Export positions in Tradier-style CSV format (see Section 1)
-2. Register the account and file in `ingest.py`:
-   ```python
-   # In ACCOUNTS list — use the correct account_type and price_source
-   {"account_id": "NEW-OPT", "broker": "newbroker", "account_type": "options",
-    "account_group": "investment", "holder": None, "price_source": "static", "active": 1},
+1. Write a fetcher in `src/fetchers/<broker>.py` with `normalize_positions()`,
+   `normalize_history()`, `normalize_instruments()`, and `normalize_balances()`.
 
-   # In OPTIONS_FILES (or FUTURES_FILES / CRYPTO_FILES)
-   (ACTIVITY / "options-new.csv", "NEW-OPT"),
-   ```
+2. Add a `write_<broker>()` function in `mcp_ingest.py` following the pattern of
+   existing write functions.
 
-3. Run `python ingest.py`.
+3. Register the account in `ingest.py` ACCOUNTS and in `mcp_server.py` `refresh_positions`.
+
+4. Ask Claude to refresh: *"Refresh my new broker positions"*.
 
 ---
 
 ## 8. MCP Server (Claude Desktop integration)
 
-The MCP server exposes the portfolio database and live positions as tools
-that Claude can call from Claude Desktop.
-
-### Available tools
-
-| Tool | Description |
-|------|-------------|
-| `get_portfolio_summary` | Overall KPIs (cash flow, dividends, etc.) + live net worth across all asset classes |
-| `get_yearly_summary` | Year-over-year breakdown table |
-| `get_account_summary` | Per-account breakdown table |
-| `get_transactions` | Filterable transaction log (category, account, year, search) |
-| `get_positions` | Current holdings across equity, options, futures, and crypto; filter by account, asset_class, sector, or type |
-| `get_performance` | Account-level returns across 1W / 1M / 3M / YTD / 1Y lookback periods |
-| `run_ingest` | Re-load all broker CSVs into the database |
-| `launch_dashboard` | Start the Streamlit dashboard in the background |
+The MCP server provides read tools for querying the journal and a write tool for
+refreshing positions directly from broker APIs.
 
 ### Register with Claude Desktop
 
@@ -335,42 +306,40 @@ that Claude can call from Claude Desktop.
 
 3. Restart Claude Desktop.
 
-### Example prompts
+### Available tools
 
-**Portfolio overview**
-- *"What is my net worth today?"*
-- *"Show me my portfolio summary"*
-- *"What is my all-time net income across all accounts?"*
+| Tool | Description |
+|------|-------------|
+| `get_portfolio_summary` | Overall KPIs + live net worth across all asset classes |
+| `get_yearly_summary` | Year-over-year breakdown table |
+| `get_account_summary` | Per-account breakdown table |
+| `get_transactions` | Filterable transaction log (category, account, year, keyword) |
+| `get_positions` | Current holdings across equity, options, futures, and crypto |
+| `get_performance` | Account-level returns: 1W / 1M / 3M / YTD / 1Y |
+| `refresh_positions` | Fetch live positions from broker APIs and write to DB |
+| `run_ingest` | Re-run the CSV ingest pipeline |
+| `launch_dashboard` | Start the Streamlit dashboard in the background |
 
-**Positions & allocations**
-- *"What are my Technology positions in Schwab?"*
-- *"Show me all my options positions"*
-- *"What is my total market value including options and crypto?"*
-- *"Show me unrealized P&L by sector"*
+### `refresh_positions` parameters
 
-**Performance**
-- *"How has my portfolio performed over the last month?"*
-- *"Which account has the best YTD return?"*
-- *"Show me my 1-week return for each account"*
+Each broker's data is passed as a JSON string. Omit a broker to skip it.
 
-**Year-over-year**
-- *"Show me dividends year by year"*
-- *"Which year had the highest net income?"*
-- *"How did 2024 compare to 2023 for fees and margin interest?"*
-
-**Per-account drilldown**
-- *"How is Fidelity performing vs Robinhood?"*
-- *"Which account generates the most dividends?"*
-- *"Show me all accounts for 2024"*
-
-**Transactions**
-- *"Show me all Coinbase staking rewards"*
-- *"List my largest dividends in 2024"*
-- *"Find all margin interest charges for RH-BV"*
-
-**Data management**
-- *"Ingest the latest files"* → calls `run_ingest`
-- *"Launch the dashboard"* → calls `launch_dashboard`
+| Parameter | Broker | What to pass |
+|-----------|--------|-------------|
+| `tradier_positions` | Tradier | `get_positions` response |
+| `tradier_quotes` | Tradier | `get_market_quotes` response (for option prices) |
+| `tradier_history` | Tradier | `get_account_history` response |
+| `schwab_equity` | Schwab | `get_equity_positions` response |
+| `schwab_futures` | Schwab | `get_futures_positions` response |
+| `schwab_summary` | Schwab | `get_account_summary` response |
+| `schwab_txns` | Schwab | `get_transactions` response |
+| `ts_positions` | TradeStation | `get-positions-details` response |
+| `ts_balances` | TradeStation | `get-balances-details` response |
+| `rh_positions` | Robinhood | `get_positions` response |
+| `rh_portfolio` | Robinhood | `get_portfolio` response |
+| `webull_accounts` | Webull | `get_account_list` result text |
+| `webull_positions` | Webull | JSON map of `{wb_id: positions_text}` |
+| `margin_mode` | All | `"balance"` \| `"computed"` \| `"csv"` |
 
 ---
 
