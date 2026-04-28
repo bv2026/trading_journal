@@ -122,16 +122,18 @@ No changes until Phase 3.
 ---
 
 ### Tab NEW-C — Positions v2 *(replaces Tab 4 in Phase 3)*
+Four separate sub-tables within the tab, one per asset class. Broker filter at the top applies to all sub-tables.
+
 | # | Requirement | Notes |
 |---|-------------|-------|
-| C.1 | Single unified table: equity + options + futures + crypto | All asset types in one filterable view |
-| C.2 | Filter bar: asset type (all/equity/option/future/crypto) + broker + search by symbol | |
-| C.3 | Equity columns: ticker, broker, shares, avg cost, current price, market value, P&L $, P&L %, sector | |
-| C.4 | Options columns: symbol, broker, underlying, expiry, strike, C/P, qty, price, market value, P&L | Options-only columns hidden when filter = equity |
-| C.5 | Futures columns: symbol, broker, qty, price, market value, P&L | |
-| C.6 | Crypto columns: symbol, broker, qty, price, cost basis, market value, P&L | |
-| C.7 | Source badge on each row: MCP (green) / CSV (grey) / TOS (orange) | Small indicator, not a full column |
-| C.8 | Sort by any column; default sort: market value descending | |
+| C.1 | Broker filter at top — applies to all sub-tables | Replaces account filter |
+| C.2 | **Equity sub-table** columns: ticker, broker, shares, avg cost, current price, market value, P&L $, P&L %, sector | Default sort: market value descending |
+| C.3 | **Options sub-table** columns: symbol, broker, underlying, expiry, strike, C/P, qty, price, market value, P&L | Default sort: expiry ascending |
+| C.4 | **Futures sub-table** columns: symbol, broker, qty, price, market value, P&L | |
+| C.5 | **Crypto sub-table** columns: symbol, broker, qty, price, cost basis, market value, P&L | |
+| C.6 | Each sub-table hidden if no positions in that class | No empty tables shown |
+| C.7 | Source badge on each row: MCP (green) / CSV (grey) / TOS (orange) | Small tag, not a full column |
+| C.8 | Sub-table totals row: market value + P&L summed | Footer row per sub-table |
 
 ---
 
@@ -190,7 +192,7 @@ No changes until Phase 3.
 | Item | Reason |
 |------|--------|
 | Real-time streaming prices | MCP tools are request/response only |
-| Options Greeks in positions table | Tradier + TradeStation have them; Schwab/Webull do not — inconsistent across brokers |
+| Options Greeks | Out of scope for trading journal; will be addressed in a separate options-focused project |
 | Order placement from dashboard | Dashboard is a read-only journal |
 | TradeStation history > 89 days | API hard limit; one-time CSV backfill covers the gap |
 | Coinbase MCP (balaji-agentkit) | On-chain wallet only; no account transaction history |
