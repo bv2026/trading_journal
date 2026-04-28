@@ -150,13 +150,11 @@ st.caption(f"{len(df):,} transactions · {start_d} → {end_d} · "
 
 # ── Net Worth banner ───────────────────────────────────────────────────────────
 try:
-    _pos_hdr = _load_positions()
-    if not _pos_hdr.empty and "MARKET VALUE" in _pos_hdr.columns:
-        _is_margin_hdr = _pos_hdr["Ticker"].str.upper() == "MARGIN"
-        _mv_hdr        = pd.to_numeric(_pos_hdr["MARKET VALUE"], errors="coerce")
-        _total_mv      = float(_mv_hdr[~_is_margin_hdr].sum())
-        _total_margin  = abs(float(_mv_hdr[_is_margin_hdr].sum()))
-        _net_worth     = _total_mv - _total_margin
+    _nw_data = compute_net_worth(_load_all_positions())
+    if _nw_data["market_value"]:
+        _total_mv     = _nw_data["market_value"]
+        _total_margin = _nw_data["margin"]
+        _net_worth    = _nw_data["net_worth"]
         nw1, nw2, nw3 = st.columns(3)
         nw1.metric("Net Worth",       f"${_net_worth:,.0f}")
         nw2.metric("Market Value",    f"${_total_mv:,.0f}")
@@ -167,13 +165,10 @@ except Exception:
 
 # ── Summary table (replaces individual metric widgets) ─────────────────────────
 _kpi_row = {
-    "Net Cash Flow":     m_all["net_cash"],
-    "Dividends":         m_all["dividends"],
-    "Rewards":           m_all["rewards"],
-    "Div + Rewards":     m_all["dividends"] + m_all["rewards"],
-    "Margin Interest":   m_all["margin_int"],
-    "Fees":              m_all["fees"],
-    "Net Income":        _net_income_fn(m_all),
+    "Cash In/Out":  m_all["net_cash"],
+    "Div+Rewards":    m_all["dividends"] + m_all["rewards"],
+    "Costs":          m_all["margin_int"] + m_all["fees"],
+    "Net Income":     _net_income_fn(m_all),
 }
 _kpi_df = pd.DataFrame([_kpi_row])
 st.dataframe(
@@ -227,6 +222,23 @@ with tab_portfolio:
                      .reset_index()
                      .rename(columns={"MARKET VALUE": "Margin"})
         )
+        # Non-equity MV per account (options + futures + crypto)
+        _non_eq_frames = []
+        for _ldr in (_load_options, _load_futures, _load_crypto):
+            _nef = _ldr()
+            if not _nef.empty and "MARKET VALUE" in _nef.columns:
+                _nef = _nef[["Account", "MARKET VALUE"]].copy()
+                _nef["MARKET VALUE"] = pd.to_numeric(_nef["MARKET VALUE"], errors="coerce")
+                _non_eq_frames.append(_nef)
+        if _non_eq_frames:
+            _non_eq_mv = (
+                pd.concat(_non_eq_frames, ignore_index=True)
+                  .groupby("Account")["MARKET VALUE"].sum()
+                  .reset_index()
+                  .rename(columns={"MARKET VALUE": "Other_MV"})
+            )
+        else:
+            _non_eq_mv = pd.DataFrame(columns=["Account", "Other_MV"])
 
     # ── 1. UNIFIED ACCOUNT SUMMARY ─────────────────────────────────────────────
     tx_rows = []
@@ -236,14 +248,12 @@ with tab_portfolio:
             continue
         am = compute_metrics(ad)
         tx_rows.append({
-            "Account":      acct,
-            "Broker":       ad["broker"].iloc[0],
-            "Net Cash":     am["net_cash"],
-            "Dividends":    am["dividends"],
-            "Rewards":      am["rewards"],
-            "Margin Int":   am["margin_int"],
-            "Fees":         am["fees"],
-            "Net Income":   _net_income_fn(am),
+            "Account":        acct,
+            "Broker":         ad["broker"].iloc[0],
+            "Cash In/Out":  am["net_cash"],
+            "Div+Rewards":    am["dividends"] + am["rewards"],
+            "Costs":          am["margin_int"] + am["fees"],
+            "Net Income":     _net_income_fn(am),
         })
     summary = pd.DataFrame(tx_rows).fillna(0)
 
@@ -252,60 +262,61 @@ with tab_portfolio:
             summary
             .merge(pos_by_acct,    on="Account", how="left")
             .merge(margin_by_acct, on="Account", how="left")
+            .merge(_non_eq_mv,     on="Account", how="left")
         )
         summary["Positions"]    = summary["Positions"].fillna(0).astype(int)
-        summary["Market_Value"] = summary["Market_Value"].fillna(0)
+        summary["Equity"]       = summary["Market_Value"].fillna(0)
         summary["Total_Cost"]   = summary["Total_Cost"].fillna(0)
         summary["PnL"]          = summary["PnL"].fillna(0)
         summary["Margin"]       = summary["Margin"].fillna(0).abs()
+        summary["Other_MV"]     = summary["Other_MV"].fillna(0)
+        summary["Market Value"] = summary["Equity"] + summary["Other_MV"] - summary["Margin"]
         summary["Return_%"]     = (
             summary["PnL"] / summary["Total_Cost"].replace(0, float("nan")) * 100
         ).fillna(0).round(2)
 
         # Totals row
         _t = {
-            "Account":      "TOTAL",
-            "Broker":       "",
-            "Positions":    int(summary["Positions"].sum()),
-            "Market_Value": summary["Market_Value"].sum(),
-            "Total_Cost":   summary["Total_Cost"].sum(),
-            "PnL":          summary["PnL"].sum(),
-            "Return_%":     (summary["PnL"].sum() / summary["Total_Cost"].sum() * 100
-                             if summary["Total_Cost"].sum() else 0),
-            "Margin":       summary["Margin"].sum(),
-            "Net Cash":     summary["Net Cash"].sum(),
-            "Dividends":    summary["Dividends"].sum(),
-            "Rewards":      summary["Rewards"].sum(),
-            "Margin Int":   summary["Margin Int"].sum(),
-            "Fees":         summary["Fees"].sum(),
-            "Net Income":   summary["Net Income"].sum(),
+            "Account":        "TOTAL",
+            "Broker":         "",
+            "Positions":      int(summary["Positions"].sum()),
+            "Equity":         summary["Equity"].sum(),
+            "Total_Cost":     summary["Total_Cost"].sum(),
+            "PnL":            summary["PnL"].sum(),
+            "Return_%":       (summary["PnL"].sum() / summary["Total_Cost"].sum() * 100
+                               if summary["Total_Cost"].sum() else 0),
+            "Margin":         summary["Margin"].sum(),
+            "Market Value":   summary["Market Value"].sum(),
+            "Cash In/Out":  summary["Cash In/Out"].sum(),
+            "Div+Rewards":    summary["Div+Rewards"].sum(),
+            "Costs":          summary["Costs"].sum(),
+            "Net Income":     summary["Net Income"].sum(),
         }
         summary = pd.concat([summary, pd.DataFrame([_t])], ignore_index=True)
 
         disp_cols = ["Account", "Broker",
-                     "Market_Value", "Total_Cost", "PnL", "Return_%", "Margin",
-                     "Net Cash", "Dividends", "Rewards", "Margin Int", "Fees", "Net Income"]
-        money_cols_s = ["Market_Value", "Total_Cost", "PnL", "Margin",
-                        "Net Cash", "Dividends", "Rewards", "Margin Int", "Fees", "Net Income"]
+                     "Equity", "Margin", "Market Value",
+                     "Total_Cost", "PnL", "Return_%",
+                     "Cash In/Out", "Div+Rewards", "Costs", "Net Income"]
+        money_cols_s = ["Equity", "Margin", "Market Value",
+                        "Total_Cost", "PnL",
+                        "Cash In/Out", "Div+Rewards", "Costs", "Net Income"]
         fmt_s = {c: "${:,.0f}" for c in money_cols_s}
         fmt_s["Return_%"] = "{:+.1f}%"
-        colour_cols_s = ["PnL", "Return_%", "Net Cash", "Dividends",
-                         "Rewards", "Margin Int", "Fees", "Net Income"]
+        colour_cols_s = ["PnL", "Return_%", "Market Value",
+                         "Cash In/Out", "Div+Rewards", "Costs", "Net Income"]
     else:
         # No positions file — show transaction-only summary
         _t2 = {
-            "Account": "TOTAL", "Broker": "",
-            "Net Cash": summary["Net Cash"].sum(),
-            "Dividends": summary["Dividends"].sum(),
-            "Rewards": summary["Rewards"].sum(),
-            "Margin Int": summary["Margin Int"].sum(),
-            "Fees": summary["Fees"].sum(),
-            "Net Income": summary["Net Income"].sum(),
+            "Account":       "TOTAL", "Broker": "",
+            "Cash In/Out": summary["Cash In/Out"].sum(),
+            "Div+Rewards":   summary["Div+Rewards"].sum(),
+            "Costs":         summary["Costs"].sum(),
+            "Net Income":    summary["Net Income"].sum(),
         }
         summary = pd.concat([summary, pd.DataFrame([_t2])], ignore_index=True)
-        disp_cols = ["Account", "Broker", "Net Cash", "Dividends",
-                     "Rewards", "Margin Int", "Fees", "Net Income"]
-        money_cols_s = ["Net Cash", "Dividends", "Rewards", "Margin Int", "Fees", "Net Income"]
+        disp_cols = ["Account", "Broker", "Cash In/Out", "Div+Rewards", "Costs", "Net Income"]
+        money_cols_s = ["Cash In/Out", "Div+Rewards", "Costs", "Net Income"]
         fmt_s = {c: "${:,.2f}" for c in money_cols_s}
         colour_cols_s = money_cols_s
 
@@ -375,7 +386,7 @@ with tab_portfolio:
 
         acct_order = (
             summary[summary["Account"] != "TOTAL"]
-            .sort_values("Market_Value", ascending=False)["Account"]
+            .sort_values("Equity", ascending=False)["Account"]
             .tolist()
         )
 
