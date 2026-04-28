@@ -141,24 +141,14 @@ m_all = compute_metrics(df)
 st.title("Portfolio Journal v2")
 st.caption(f"{len(df):,} transactions · {start_d} → {end_d} · {len(accounts)} account(s)")
 
-# ── Net Worth banner — all asset classes ───────────────────────────────────────
+# ── Net Worth banner (matches v1 layout) ──────────────────────────────────────
 try:
     _all_pos = _load_all()
     nw = compute_net_worth(_all_pos)
-
-    # Per-asset-class market value
-    _eq_mv  = float(_all_pos[_all_pos.get("asset_class", pd.Series()) == "equity"]["MARKET VALUE"].sum()) if not _all_pos.empty else 0.0
-    _opt_mv = float(_all_pos[_all_pos.get("asset_class", pd.Series()) == "options"]["MARKET VALUE"].sum()) if not _all_pos.empty else 0.0
-    _fut_mv = float(_all_pos[_all_pos.get("asset_class", pd.Series()) == "futures"]["MARKET VALUE"].sum()) if not _all_pos.empty else 0.0
-    _cry_mv = float(_all_pos[_all_pos.get("asset_class", pd.Series()) == "crypto"]["MARKET VALUE"].sum()) if not _all_pos.empty else 0.0
-
-    bx1, bx2, bx3, bx4, bx5, bx6 = st.columns(6)
-    bx1.metric("Net Worth",      f"${nw['net_worth']:,.0f}")
-    bx2.metric("Equity",         f"${_eq_mv:,.0f}")
-    bx3.metric("Options",        f"${_opt_mv:,.0f}")
-    bx4.metric("Futures",        f"${_fut_mv:,.0f}")
-    bx5.metric("Crypto",         f"${_cry_mv:,.0f}")
-    bx6.metric("Margin Borrowed",f"${nw['margin']:,.0f}",
+    nw1, nw2, nw3 = st.columns(3)
+    nw1.metric("Net Worth",       f"${nw['net_worth']:,.0f}")
+    nw2.metric("Market Value",    f"${nw['market_value']:,.0f}")
+    nw3.metric("Margin Borrowed", f"${nw['margin']:,.0f}",
                delta=f"-${nw['margin']:,.0f}", delta_color="inverse")
 except Exception:
     pass
@@ -230,16 +220,6 @@ with tab_portfolio:
                      .abs().reset_index()
                      .rename(columns={"MARKET VALUE": "Margin"})
         )
-        # Options MV per account
-        _opt_by_acct = (
-            opts.groupby("Account")["MARKET VALUE"].sum()
-                .reset_index().rename(columns={"MARKET VALUE": "Options_MV"})
-        ) if has_opts else pd.DataFrame(columns=["Account", "Options_MV"])
-        # Futures MV per account
-        _fut_by_acct = (
-            futs.groupby("Account")["MARKET VALUE"].sum()
-                .reset_index().rename(columns={"MARKET VALUE": "Futures_MV"})
-        ) if has_futs else pd.DataFrame(columns=["Account", "Futures_MV"])
 
     tx_rows = []
     for acct in [a for a in all_accounts if a in accounts]:
@@ -263,11 +243,8 @@ with tab_portfolio:
         summary = (summary
             .merge(_pos_by_acct,    on="Account", how="left")
             .merge(_margin_by_acct, on="Account", how="left")
-            .merge(_opt_by_acct,    on="Account", how="left")
-            .merge(_fut_by_acct,    on="Account", how="left")
         )
-        for col in ["Positions", "Market_Value", "Total_Cost", "PnL",
-                    "Margin", "Options_MV", "Futures_MV"]:
+        for col in ["Positions", "Market_Value", "Total_Cost", "PnL", "Margin"]:
             summary[col] = summary.get(col, 0).fillna(0)
         summary["Positions"]  = summary["Positions"].astype(int)
         summary["Margin"]     = summary["Margin"].abs()
@@ -276,30 +253,28 @@ with tab_portfolio:
         ).fillna(0).round(2)
 
         _t = {
-            "Account":    "TOTAL", "Broker": "",
-            "Positions":  int(summary["Positions"].sum()),
+            "Account":      "TOTAL", "Broker": "",
+            "Positions":    int(summary["Positions"].sum()),
             "Market_Value": summary["Market_Value"].sum(),
-            "Total_Cost": summary["Total_Cost"].sum(),
-            "PnL":        summary["PnL"].sum(),
-            "Return_%":   (summary["PnL"].sum() / summary["Total_Cost"].sum() * 100
-                           if summary["Total_Cost"].sum() else 0),
-            "Margin":     summary["Margin"].sum(),
-            "Options_MV": summary["Options_MV"].sum(),
-            "Futures_MV": summary["Futures_MV"].sum(),
-            "Net Cash":   summary["Net Cash"].sum(),
-            "Dividends":  summary["Dividends"].sum(),
-            "Rewards":    summary["Rewards"].sum(),
-            "Margin Int": summary["Margin Int"].sum(),
-            "Fees":       summary["Fees"].sum(),
-            "Net Income": summary["Net Income"].sum(),
+            "Total_Cost":   summary["Total_Cost"].sum(),
+            "PnL":          summary["PnL"].sum(),
+            "Return_%":     (summary["PnL"].sum() / summary["Total_Cost"].sum() * 100
+                             if summary["Total_Cost"].sum() else 0),
+            "Margin":       summary["Margin"].sum(),
+            "Net Cash":     summary["Net Cash"].sum(),
+            "Dividends":    summary["Dividends"].sum(),
+            "Rewards":      summary["Rewards"].sum(),
+            "Margin Int":   summary["Margin Int"].sum(),
+            "Fees":         summary["Fees"].sum(),
+            "Net Income":   summary["Net Income"].sum(),
         }
         summary = pd.concat([summary, pd.DataFrame([_t])], ignore_index=True)
 
-        disp_cols  = ["Account", "Broker", "Market_Value", "Options_MV", "Futures_MV",
-                      "Total_Cost", "PnL", "Return_%", "Margin",
+        disp_cols  = ["Account", "Broker", "Market_Value", "Total_Cost", "PnL",
+                      "Return_%", "Margin", "Net Cash", "Dividends", "Rewards",
+                      "Margin Int", "Fees", "Net Income"]
+        money_cols = ["Market_Value", "Total_Cost", "PnL", "Margin",
                       "Net Cash", "Dividends", "Rewards", "Margin Int", "Fees", "Net Income"]
-        money_cols = ["Market_Value", "Options_MV", "Futures_MV", "Total_Cost", "PnL",
-                      "Margin", "Net Cash", "Dividends", "Rewards", "Margin Int", "Fees", "Net Income"]
         fmt = {c: "${:,.0f}" for c in money_cols}
         fmt["Return_%"] = "{:+.1f}%"
 
@@ -369,7 +344,7 @@ with tab_portfolio:
             # Options for this account
             acct_opts  = opts[opts["Account"] == acct] if has_opts else pd.DataFrame()
             label = (
-                f"**{acct}** — {len(acct_pos)} equity · "
+                f"**{acct}** — {len(acct_pos)} positions · "
                 f"MV ${acct_mv:,.0f} · P&L ${acct_pnl:+,.0f} ({acct_ret:+.1f}%) · "
                 f"Margin ${acct_margin:,.0f}"
                 + (f" · Options ${acct_opts['MARKET VALUE'].sum():,.0f}" if not acct_opts.empty else "")
