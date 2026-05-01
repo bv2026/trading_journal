@@ -258,7 +258,13 @@ def normalize_balances(balances_resp: dict, account_id: str = "TS") -> dict:
     Returns dict with keys: market_value, equity, cash_balance, margin.
     margin = abs(cash_balance) when cash_balance < 0.
     """
-    acct_data = balances_resp.get("accounts", {}).get(account_id, {})
+    accounts_map = balances_resp.get("accounts", {})
+    # Try journal account_id first, then the numeric TS account key, then first key
+    acct_data = (
+        accounts_map.get(account_id)
+        or next(iter(accounts_map.values()), None)
+        or {}
+    )
     combined  = acct_data.get("combined", {}) or {}
 
     cash = float(combined.get("currentCashBalance", 0) or 0)
