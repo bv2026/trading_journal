@@ -85,7 +85,7 @@ def account_map_from_list(account_list_result: str) -> dict[str, str]:
     mapping: dict[str, str] = {}
     # Lines like: "1. ID: 8AGMH...  Number: 5KM79869  Type: MARGIN  Class: INDIVIDUAL_MARGIN  Label: ..."
     for m in re.finditer(
-        r'ID:\s*(\S+)\s+Number:\s*\S+\s+Type:\s*\S+\s+Class:\s*(\S+)',
+        r'\d+\.\s+ID:\s*(\S+).*?Class:\s*(\S+)',
         account_list_result
     ):
         wb_id     = m.group(1)
