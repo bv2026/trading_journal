@@ -108,6 +108,7 @@ def write_tradier(
     positions_resp: dict,
     quotes_resp: dict | None = None,
     history_resp: dict | None = None,
+    balances_resp: dict | None = None,
     account_id: str = "TRADIER",
     *,
     dry_run: bool = False,
@@ -121,6 +122,7 @@ def write_tradier(
                         equity prices). If None, equities are written without
                         stored_price (yfinance prices them at dashboard load).
         history_resp:   Optional response from get_account_history.
+        balances_resp:  Optional response from get_account_balances (for margin).
         account_id:     Journal account ID to write to (default: "TRADIER").
         dry_run:        If True, parse and return counts but don't write to DB.
 
@@ -157,11 +159,25 @@ def write_tradier(
     instr_recs = tradier_fetcher.normalize_instruments(eq_recs, opt_recs)
     instr_written = db.upsert_instruments(instr_recs) if instr_recs else 0
 
+    # Margin sentinel
+    # Tradier's balance API exposes totalEquity but not marginBalance directly.
+    # Compute margin as gross equity MV minus account equity when balance is provided.
+    margin = 0.0
+    if balances_resp:
+        bal = tradier_fetcher.normalize_balances(balances_resp)
+        if bal["margin_balance"] != 0:
+            margin = abs(bal["margin_balance"])
+        elif bal["total_equity"] > 0:
+            gross_mv = _gross_mv_from_records(eq_recs)
+            margin = max(0.0, gross_mv - bal["total_equity"])
+        print(f"[{account_id}] balances — equity={bal['total_equity']:.2f}  margin={margin:.2f}")
+    _insert_margin_sentinel(account_id, margin)
+
     _enrich()
     print(f"[{account_id}] equity={eq_written}  options={opt_written}  "
-          f"txns={txn_written}  instruments={instr_written}")
+          f"txns={txn_written}  instruments={instr_written}  margin=${margin:,.0f}")
     return {"equity_count": eq_written, "option_count": opt_written,
-            "txn_count": txn_written, "instrument_count": instr_written}
+            "txn_count": txn_written, "instrument_count": instr_written, "margin": margin}
 
 
 # ── TradeStation ──────────────────────────────────────────────────────────────
@@ -313,6 +329,7 @@ def write_webull(
             bal = webull_fetcher.parse_balance_text(balance_by_wb_id[wb_id])
             print(f"  [{journal_id}] MV={bal['market_value']:.2f}  "
                   f"margin={bal['margin']:.2f}  net_liq={bal['net_liquidation']:.2f}")
+            _insert_margin_sentinel(journal_id, bal["margin"])
 
         print(f"  [{journal_id}] equity={eq_w}  options={opt_w}  "
               f"futures={fut_w}  crypto={cry_w}  instruments={instr_w}")
@@ -606,6 +623,7 @@ Examples:
             positions_resp=pos,
             quotes_resp=_load(args.quotes),
             history_resp=_load(args.history),
+            balances_resp=_load(args.balances),
             account_id=args.account_id or "TRADIER",
             dry_run=args.dry_run,
         )

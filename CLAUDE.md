@@ -80,7 +80,7 @@ Two parallel ingest paths feed the same SQLite database (`data/journal.db`):
 **Temp files:** `data\tmp\` (create with `mkdir -p data\tmp` if missing)  
 **Rule:** a failure in one broker must not stop the others — log and continue.
 
-### 1 — Webull (equity + options + futures)
+### 1 — Webull (equity + options + futures + balance)
 ```
 mcp__webull__get_account_list
 ```
@@ -89,12 +89,16 @@ Save raw result text → `data\tmp\wb_account_list.txt`
 For **each** Webull account ID found in that list:
 ```
 mcp__webull__get_account_positions   account_id=<wb_id>
+mcp__webull__get_account_balance     account_id=<wb_id>   (for INDIVIDUAL_MARGIN account only)
 ```
 Save each result text → `data\tmp\wb_pos_<wb_id>.txt`
 
-Build `data\tmp\wb_positions_map.json` = `{"<wb_id>": "<positions_text>", ...}` then:
+Build two maps:
+- `data\tmp\wb_positions_map.json` = `{"<wb_id>": "<positions_text>", ...}`
+- `data\tmp\wb_balances_map.json`  = `{"<margin_wb_id>": "<balance_text>"}` (INDIVIDUAL_MARGIN wb_id only)
+
 ```
-python mcp_ingest.py --broker webull --account-list data\tmp\wb_account_list.txt --positions-map data\tmp\wb_positions_map.json
+python mcp_ingest.py --broker webull --account-list data\tmp\wb_account_list.txt --positions-map data\tmp\wb_positions_map.json --balances-map data\tmp\wb_balances_map.json
 ```
 
 ### 2 — Schwab (equity + options + futures)
@@ -107,14 +111,16 @@ mcp__schwab-smartspreads-file__get_account_summary    → data\tmp\schwab_summar
 python mcp_ingest.py --broker schwab --equity data\tmp\schwab_equity.json --futures data\tmp\schwab_futures.json --summary data\tmp\schwab_summary.json
 ```
 
-### 3 — Tradier (equity + options)
+### 3 — Tradier (equity + options + balance)
 ```
-mcp__15d93091-8d01-49f7-b7ff-0837e8640ff6__get_positions       → data\tmp\tradier_pos.json
-mcp__15d93091-8d01-49f7-b7ff-0837e8640ff6__get_market_quotes   (all symbols from positions) → data\tmp\tradier_quotes.json
+mcp__15d93091-8d01-49f7-b7ff-0837e8640ff6__get_positions         → data\tmp\tradier_pos.json
+mcp__15d93091-8d01-49f7-b7ff-0837e8640ff6__get_market_quotes     (all symbols from positions) → data\tmp\tradier_quotes.json
+mcp__15d93091-8d01-49f7-b7ff-0837e8640ff6__get_account_balances  accountNumber=6YB44166 → data\tmp\tradier_balances.json
 ```
 ```
-python mcp_ingest.py --broker tradier --positions data\tmp\tradier_pos.json --quotes data\tmp\tradier_quotes.json
+python mcp_ingest.py --broker tradier --positions data\tmp\tradier_pos.json --quotes data\tmp\tradier_quotes.json --balances data\tmp\tradier_balances.json
 ```
+Note: Tradier API does not expose `marginBalance` directly — margin is computed as gross equity MV minus totalEquity.
 
 ### 4 — TradeStation (equity + options)
 ```
