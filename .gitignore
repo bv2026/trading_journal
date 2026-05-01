@@ -12,6 +12,9 @@ data/journal.db
 # Activity CSVs (broker exports — keep out of version control)
 activity/
 
+# MCP sync temp files (written during position sync, never committed)
+data/tmp/
+
 # OS / editor
 .DS_Store
 Thumbs.db
