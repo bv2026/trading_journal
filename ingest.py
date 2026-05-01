@@ -243,5 +243,17 @@ if __name__ == "__main__":
         help="Clear all transactions and reload from scratch (use after first setup "
              "or when switching from an older version of this tool).",
     )
+    parser.add_argument(
+        "--cash", type=float, metavar="AMOUNT",
+        help="Set combined cash account balance (Fidelity/PNC/Huntington/Clearview). "
+             "e.g. --cash 52400",
+    )
     args = parser.parse_args()
-    run(reset=args.reset)
+
+    if args.cash is not None:
+        from src.db import upsert_cash_balance, init_db
+        init_db()
+        upsert_cash_balance(args.cash)
+        print(f"OK Cash balance set to ${args.cash:,.2f}")
+    else:
+        run(reset=args.reset)

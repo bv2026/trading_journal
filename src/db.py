@@ -27,6 +27,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError:
             pass  # column already exists
 
+    # Cash accounts table (idempotent)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS cash_accounts (
+            account_id TEXT PRIMARY KEY,
+            name       TEXT,
+            balance    REAL DEFAULT 0,
+            updated_at TEXT
+        )
+    """)
+
 
 def init_db():
     sql = SCHEMA_PATH.read_text()
@@ -415,3 +425,38 @@ def load_transactions() -> pd.DataFrame:
         )
     df["date"] = pd.to_datetime(df["date"])
     return df
+
+
+# ── Cash accounts ─────────────────────────────────────────────────────────────
+
+def upsert_cash_balance(balance: float,
+                        account_id: str = "CASH",
+                        name: str = "Cash & Savings") -> None:
+    """Set (or update) the combined cash account balance."""
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO cash_accounts (account_id, name, balance, updated_at)
+            VALUES (?, ?, ?, date('now'))
+            ON CONFLICT(account_id) DO UPDATE SET
+                balance    = excluded.balance,
+                updated_at = excluded.updated_at
+            """,
+            (account_id, name, balance),
+        )
+        conn.commit()
+
+
+def get_cash_balance(account_id: str = "CASH") -> float:
+    """Return stored cash balance, or 0.0 if not set."""
+    if not DB_PATH.exists():
+        return 0.0
+    try:
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT balance FROM cash_accounts WHERE account_id = ?",
+                (account_id,),
+            ).fetchone()
+        return float(row[0]) if row else 0.0
+    except Exception:
+        return 0.0

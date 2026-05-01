@@ -12,7 +12,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from src.db import DB_PATH, init_db, load_transactions, load_snapshot_periods
+from src.db import DB_PATH, init_db, load_transactions, load_snapshot_periods, get_cash_balance
 
 # Ensure schema is up-to-date (creates new tables/views if this is an existing DB).
 if DB_PATH.exists():
@@ -73,6 +73,12 @@ def _load_crypto() -> pd.DataFrame:
 def _load_snapshot_periods() -> pd.DataFrame:
     """Load per-account snapshot periods from DB (cached 5 min)."""
     return load_snapshot_periods()
+
+
+@st.cache_data(ttl=300)
+def _load_cash_balance() -> float:
+    """Load combined cash account balance from DB (cached 5 min)."""
+    return get_cash_balance()
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Portfolio Journal", page_icon="📊", layout="wide")
@@ -149,12 +155,13 @@ st.caption(f"{len(df):,} transactions · {start_d} → {end_d} · "
            f"{len(accounts)} account(s)")
 
 # ── Net Worth banner ───────────────────────────────────────────────────────────
+_cash_balance = _load_cash_balance()
 try:
     _nw_data = compute_net_worth(_load_all_positions())
     if _nw_data["market_value"]:
-        _total_mv     = _nw_data["market_value"]
+        _total_mv     = _nw_data["market_value"] + _cash_balance
         _total_margin = _nw_data["margin"]
-        _net_worth    = _nw_data["net_worth"]
+        _net_worth    = _nw_data["net_worth"] + _cash_balance
         nw1, nw2, nw3 = st.columns(3)
         nw1.metric("Net Worth",       f"${_net_worth:,.0f}")
         nw2.metric("Market Value",    f"${_total_mv:,.0f}")
@@ -274,6 +281,26 @@ with tab_portfolio:
         summary["Return_%"]     = (
             summary["PnL"] / summary["Total_Cost"].replace(0, float("nan")) * 100
         ).fillna(0).round(2)
+
+        # Cash & Savings row (if balance is set)
+        if _cash_balance > 0:
+            _cash_row = {
+                "Account":      "CASH",
+                "Broker":       "Multi-Bank",
+                "Positions":    0,
+                "Equity":       0.0,
+                "Total_Cost":   0.0,
+                "PnL":          0.0,
+                "Return_%":     0.0,
+                "Margin":       0.0,
+                "Other_MV":     0.0,
+                "Market Value": _cash_balance,
+                "Cash In/Out":  0.0,
+                "Div+Rewards":  0.0,
+                "Costs":        0.0,
+                "Net Income":   0.0,
+            }
+            summary = pd.concat([summary, pd.DataFrame([_cash_row])], ignore_index=True)
 
         # Totals row
         _t = {
@@ -984,7 +1011,7 @@ with tab_perf:
 
         # ── TOTAL row values ───────────────────────────────────────────────────
         _perf["net_value"] = _perf["current_value"] - _perf["margin"]
-        _tot_net   = _perf["net_value"].sum()
+        _tot_net   = _perf["net_value"].sum() + _cash_balance
 
         def _tot_prior(col):
             _valid = _perf[col].dropna()
@@ -1005,7 +1032,17 @@ with tab_perf:
                 "% Change":      _ret(_net, _1w),
             })
 
-        _t1w = _tot_prior("value_1w")
+        # Cash & Savings row (stable balance — no historical snapshot)
+        if _cash_balance > 0:
+            _sum_rows.append({
+                "Account":       "CASH",
+                "Current Value": _cash_balance,
+                "1W Ago":        _cash_balance,
+                "$ Change":      0.0,
+                "% Change":      0.0,
+            })
+
+        _t1w = _tot_prior("value_1w") + (_cash_balance if _cash_balance > 0 else 0.0)
         _sum_rows.append({
             "Account":       "TOTAL",
             "Current Value": _tot_net,
