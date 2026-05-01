@@ -447,7 +447,7 @@ with tab_portfolio:
                     acct_pos[show]
                         .sort_values("MARKET VALUE", ascending=False)
                         .reset_index(drop=True)
-                        .style.format(fmt)
+                        .style.format(fmt, na_rep="")
                         .map(colour_cell, subset=["totalReturn", "Return_%"]),
                     use_container_width=True,
                     hide_index=True,
@@ -457,10 +457,16 @@ with tab_portfolio:
                     opt_show = [c for c in ["symbol", "underlying", "expiry", "strike",
                                             "call_put", "qty", "price", "MARKET VALUE"]
                                 if c in acct_opts.columns]
+                    _opt_df = acct_opts[opt_show].reset_index(drop=True)
+                    _opt_fmt = {}
+                    if "MARKET VALUE" in _opt_df.columns:
+                        _opt_fmt["MARKET VALUE"] = lambda x: f"${x:,.2f}" if x is not None and x == x else ""
+                    if "price" in _opt_df.columns:
+                        _opt_fmt["price"] = lambda x: f"${x:.2f}" if x is not None and x == x else ""
+                    if "strike" in _opt_df.columns:
+                        _opt_fmt["strike"] = lambda x: f"${x:.2f}" if x is not None and x == x else ""
                     st.dataframe(
-                        acct_opts[opt_show].reset_index(drop=True)
-                            .style.format({"MARKET VALUE": "${:,.2f}", "price": "${:.2f}",
-                                           "strike": "${:.2f}"}),
+                        _opt_df.style.format(_opt_fmt, na_rep=""),
                         use_container_width=True, hide_index=True,
                     )
 
@@ -527,7 +533,7 @@ with tab_portfolio:
             opts_all[opt_disp_cols]
                 .sort_values("expiry" if "expiry" in opts_all.columns else opt_disp_cols[0])
                 .reset_index(drop=True)
-                .style.format({"MARKET VALUE": "${:,.2f}", "price": "${:.2f}", "strike": "${:.2f}"}),
+                .style.format({"MARKET VALUE": "${:,.2f}", "price": "${:.2f}", "strike": "${:.2f}"}, na_rep=""),
             use_container_width=True, hide_index=True,
         )
         st.divider()
@@ -543,7 +549,7 @@ with tab_portfolio:
                          if c in futs_all.columns]
         st.dataframe(
             futs_all[fut_disp_cols].reset_index(drop=True)
-                .style.format({"MARKET VALUE": "${:+,.2f}", "price": "${:,.4f}"})
+                .style.format({"MARKET VALUE": "${:+,.2f}", "price": "${:,.4f}"}, na_rep="")
                 .map(colour_cell, subset=["MARKET VALUE"]),
             use_container_width=True, hide_index=True,
         )
@@ -688,7 +694,7 @@ with tab_breakdown:
                 in_rows.append({"Type": LABELS[sub], "Amount": v, "Txns": n})
             in_df = pd.DataFrame(in_rows)
             in_df.loc[len(in_df)] = ["Total In", total_in, ""]
-            st.dataframe(in_df.style.format({"Amount": "${:,.2f}"})
+            st.dataframe(in_df.style.format({"Amount": "${:,.2f}"}, na_rep="")
                              .apply(_bold_last_row, last_idx=in_df.index[-1], axis=1),
                          use_container_width=True, hide_index=True)
         with col_out:
@@ -700,7 +706,7 @@ with tab_breakdown:
                 out_rows.append({"Type": LABELS[sub], "Amount": v, "Txns": n})
             out_df = pd.DataFrame(out_rows)
             out_df.loc[len(out_df)] = ["Total Out", total_out, ""]
-            st.dataframe(out_df.style.format({"Amount": "${:,.2f}"})
+            st.dataframe(out_df.style.format({"Amount": "${:,.2f}"}, na_rep="")
                              .apply(_bold_last_row, last_idx=out_df.index[-1], axis=1),
                          use_container_width=True, hide_index=True)
         with col_net:
@@ -822,7 +828,7 @@ with tab_positions:
                         _grp[_show_cols]
                             .sort_values("MARKET VALUE", ascending=False)
                             .reset_index(drop=True)
-                            .style.format(_opt_fmt),
+                            .style.format(_opt_fmt, na_rep=""),
                         use_container_width=True, hide_index=True,
                     )
 
@@ -860,7 +866,7 @@ with tab_positions:
                         _grp[_show_cols]
                             .sort_values("MARKET VALUE", ascending=False)
                             .reset_index(drop=True)
-                            .style.format(_fut_fmt)
+                            .style.format(_fut_fmt, na_rep="")
                             .map(colour_cell, subset=["MARKET VALUE"]),
                         use_container_width=True, hide_index=True,
                     )
@@ -897,7 +903,7 @@ with tab_positions:
                 cry_df[_show_cols]
                     .sort_values("MARKET VALUE", ascending=False)
                     .reset_index(drop=True)
-                    .style.format(_cry_fmt),
+                    .style.format(_cry_fmt, na_rep=""),
                 use_container_width=True, hide_index=True,
             )
             st.markdown("<hr style='margin:4px 0; border-color:#6b7280'>", unsafe_allow_html=True)
