@@ -248,6 +248,11 @@ if __name__ == "__main__":
         help="Set combined cash account balance (Fidelity/PNC/Huntington/Clearview). "
              "e.g. --cash 52400",
     )
+    parser.add_argument(
+        "--snapshot-only", action="store_true",
+        help="Skip CSV parsing; recompute and write today's portfolio snapshot from "
+             "current DB positions. Use after an MCP position sync.",
+    )
     args = parser.parse_args()
 
     if args.cash is not None:
@@ -255,5 +260,14 @@ if __name__ == "__main__":
         init_db()
         upsert_cash_balance(args.cash)
         print(f"OK Cash balance set to ${args.cash:,.2f}")
+    elif args.snapshot_only:
+        db.init_db()
+        snap_map = _compute_snapshot_map()
+        if snap_map:
+            today = _date.today().isoformat()
+            db.write_portfolio_snapshot(today, snap_map)
+            print(f"Snapshot written for {today} — {len(snap_map)} accounts")
+        else:
+            print("No positions found, snapshot skipped")
     else:
         run(reset=args.reset)

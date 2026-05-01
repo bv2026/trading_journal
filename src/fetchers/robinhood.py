@@ -6,6 +6,9 @@ MCP tools this module handles:
   get_portfolio → normalize_portfolio()
   list_accounts → account_map_from_list()
 
+Active MCP server: mcp__aeae2ef5-2c58-4908-8c9d-937f5b4fbbbf__ (same trayd
+service, reconnected with a new server ID — response format is identical).
+
 Robinhood via trayd returns clean JSON (unlike Webull's text format).
 
 get_positions response shape:

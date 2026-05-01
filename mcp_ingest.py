@@ -529,10 +529,11 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python mcp_ingest.py --broker tradier --positions pos.json --quotes quotes.json
-  python mcp_ingest.py --broker schwab  --equity eq.json --summary summary.json
-  python mcp_ingest.py --broker ts      --positions pos.json --balances bal.json
+  python mcp_ingest.py --broker tradier  --positions pos.json --quotes quotes.json
+  python mcp_ingest.py --broker schwab   --equity eq.json --summary summary.json
+  python mcp_ingest.py --broker ts       --positions pos.json --balances bal.json
   python mcp_ingest.py --broker robinhood --positions pos.json --portfolio port.json
+  python mcp_ingest.py --broker webull   --account-list al.txt --positions-map pm.json
 
   # Set margin directly (no broker data needed)
   python mcp_ingest.py --set-margin RH-BV 25000
@@ -540,18 +541,22 @@ Examples:
         """,
     )
     parser.add_argument("--broker",
-                        choices=["tradier", "schwab", "tradestation", "ts", "robinhood", "rh"],
+                        choices=["tradier", "schwab", "tradestation", "ts",
+                                 "robinhood", "rh", "webull"],
                         help="Which broker's data to write.")
     parser.add_argument("--set-margin", nargs=2, metavar=("ACCOUNT", "AMOUNT"),
                         help="Set margin for ACCOUNT to AMOUNT (USD). Pass 0 to clear.")
-    parser.add_argument("--positions",  metavar="FILE", help="JSON file: positions response.")
-    parser.add_argument("--equity",     metavar="FILE", help="JSON file: equity positions (Schwab).")
-    parser.add_argument("--futures",    metavar="FILE", help="JSON file: futures positions.")
-    parser.add_argument("--quotes",     metavar="FILE", help="JSON file: market quotes.")
-    parser.add_argument("--history",    metavar="FILE", help="JSON file: account history.")
-    parser.add_argument("--balances",   metavar="FILE", help="JSON file: balances response.")
-    parser.add_argument("--summary",    metavar="FILE", help="JSON file: account summary (Schwab).")
-    parser.add_argument("--portfolio",  metavar="FILE", help="JSON file: portfolio response (RH).")
+    parser.add_argument("--positions",      metavar="FILE", help="JSON file: positions response.")
+    parser.add_argument("--equity",         metavar="FILE", help="JSON file: equity positions (Schwab).")
+    parser.add_argument("--futures",        metavar="FILE", help="JSON file: futures positions.")
+    parser.add_argument("--quotes",         metavar="FILE", help="JSON file: market quotes.")
+    parser.add_argument("--history",        metavar="FILE", help="JSON file: account history.")
+    parser.add_argument("--balances",       metavar="FILE", help="JSON file: balances response.")
+    parser.add_argument("--summary",        metavar="FILE", help="JSON file: account summary (Schwab).")
+    parser.add_argument("--portfolio",      metavar="FILE", help="JSON file: portfolio response (RH).")
+    parser.add_argument("--account-list",   metavar="FILE", help="Text file: account list result (Webull).")
+    parser.add_argument("--positions-map",  metavar="FILE", help="JSON file: {wb_id: positions_text} (Webull).")
+    parser.add_argument("--balances-map",   metavar="FILE", help="JSON file: {wb_id: balance_text} (Webull).")
     parser.add_argument("--account-id", metavar="ID",   default=None,
                         help="Override journal account_id (default per broker).")
     parser.add_argument("--margin-mode", default="balance",
@@ -582,6 +587,12 @@ Examples:
             return None
         with open(path, encoding="utf-8") as f:
             return json.load(f)
+
+    def _load_text(path: str | None) -> str | None:
+        if not path:
+            return None
+        with open(path, encoding="utf-8") as f:
+            return f.read()
 
     broker = args.broker.lower()
     result: dict = {}
@@ -637,6 +648,22 @@ Examples:
             account_id     = args.account_id or "RH-BV",
             margin_mode    = args.margin_mode,
             dry_run        = args.dry_run,
+        )
+
+    elif broker == "webull":
+        acct_list = _load_text(args.account_list)
+        if not acct_list:
+            print("ERROR: --account-list required for webull", file=sys.stderr)
+            sys.exit(1)
+        pos_map = _load(args.positions_map)
+        if not pos_map:
+            print("ERROR: --positions-map required for webull", file=sys.stderr)
+            sys.exit(1)
+        result = write_webull(
+            account_list_result = acct_list,
+            positions_by_wb_id  = pos_map,
+            balance_by_wb_id    = _load(args.balances_map),
+            dry_run             = args.dry_run,
         )
 
     print(json.dumps(result, indent=2))
