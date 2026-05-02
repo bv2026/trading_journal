@@ -191,7 +191,7 @@ with tab_portfolio:
     _kpi_df = pd.DataFrame([_kpi_row])
     st.dataframe(
         _kpi_df.style
-            .format({c: "${:,.2f}" for c in _kpi_df.columns})
+            .format({c: "${:,.0f}" for c in _kpi_df.columns})
             .map(colour_cell, subset=list(_kpi_df.columns)),
         use_container_width=True,
         hide_index=True,
@@ -409,9 +409,9 @@ with tab_portfolio:
         _pos_fmt = {
             "PRICE":        "${:.2f}",
             "Cost_Basis":   "${:.4f}",
-            "COST":         "${:,.2f}",
-            "MARKET VALUE": "${:,.2f}",
-            "totalReturn":  "${:+,.2f}",
+            "COST":         "${:,.0f}",
+            "MARKET VALUE": "${:,.0f}",
+            "totalReturn":  "${:+,.0f}",
             "Return_%":     "{:+.2f}%",
             "PERF_YTD":     "{:.2%}",
             "ATR_pct":      "{:.2%}",
@@ -744,7 +744,7 @@ with tab_positions:
                          "PnL", "Return_%", "Dividends"]
             _money_p  = ["Market_Value", "Total_Cost", "PnL", "Dividends"]
             _colour_p = ["PnL", "Return_%"]
-            _fmt_p    = {c: "${:,.2f}" for c in _money_p}
+            _fmt_p    = {c: "${:,.0f}" for c in _money_p}
             _fmt_p["Return_%"] = "{:+.2f}%"
 
             st.subheader(f"Equity — {len(sym)} holdings")
@@ -790,7 +790,7 @@ with tab_positions:
                         if _fc in _show_cols:
                             _opt_fmt[_fc] = "${:.2f}"
                     if "MARKET VALUE" in _show_cols:
-                        _opt_fmt["MARKET VALUE"] = "${:,.2f}"
+                        _opt_fmt["MARKET VALUE"] = "${:,.0f}"
                     st.dataframe(
                         _grp[_show_cols]
                             .sort_values("MARKET VALUE", ascending=False)
@@ -828,7 +828,7 @@ with tab_positions:
                     if "price" in _show_cols:
                         _fut_fmt["price"] = "${:,.2f}"
                     if "MARKET VALUE" in _show_cols:
-                        _fut_fmt["MARKET VALUE"] = "${:+,.2f}"
+                        _fut_fmt["MARKET VALUE"] = "${:+,.0f}"
                     st.dataframe(
                         _grp[_show_cols]
                             .sort_values("MARKET VALUE", ascending=False)
@@ -863,7 +863,7 @@ with tab_positions:
             _cry_fmt = {c: "${:,.4f}" for c in ["price"]} if "price" in _show_cols else {}
             for _mc in ["cost_basis", "MARKET VALUE"]:
                 if _mc in _show_cols:
-                    _cry_fmt[_mc] = "${:,.2f}"
+                    _cry_fmt[_mc] = "${:,.0f}"
 
             st.subheader(f"Crypto — {len(cry_df)} holdings")
             st.dataframe(
