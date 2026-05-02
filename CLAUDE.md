@@ -11,6 +11,13 @@ python ingest.py
 # Full rebuild from scratch
 python ingest.py --reset
 
+# Snapshot only (write today's portfolio_snapshots row without re-parsing CSVs)
+python ingest.py --snapshot-only
+
+# Set cash balance (Fidelity/PNC/Huntington/Clearview combined)
+python cash.py              # print current balance
+python cash.py 18500        # set balance
+
 # Launch dashboard
 streamlit run dashboard/app.py         # http://localhost:8501
 
@@ -48,10 +55,28 @@ Two parallel ingest paths feed the same SQLite database (`data/journal.db`):
 
 - `positions` — equity only; `price_source='live'` accounts get prices fetched from yfinance at dashboard load; `price_source='static'` accounts use `stored_price`
 - `options_positions`, `futures_positions`, `crypto_positions` — always store `market_value` at ingest time (no live fetch needed)
+- `cash_accounts` — single combined cash balance (Fidelity/PNC/Huntington/Clearview); upserted via `db.upsert_cash_balance()`
 - `instruments` — shared metadata table (sector, industry, expiry, strike, etc.) keyed on `(symbol, asset_class)`
 - `portfolio_snapshots` — one row per (date, account); queried by `v_snapshot_periods` view to compute 1W/1M/3M/YTD/1Y returns
 - `v_positions_all` view — unified UNION ALL across all 4 position tables for cross-asset queries
 - Schema migrations are handled inline in `db._migrate()` — add new `ALTER TABLE` statements there, they're idempotent
+
+## Accounts
+
+| account_id    | broker       | ingest path | asset classes            |
+|---------------|--------------|-------------|--------------------------|
+| RH-BV         | robinhood    | MCP         | equity, margin           |
+| RH-KD         | robinhood    | CSV         | equity                   |
+| WEBULL        | webull       | MCP         | equity, margin           |
+| WEBULL-CASH   | webull       | MCP         | equity (cash)            |
+| WEBULL-EVENTS | webull       | MCP         | event contracts          |
+| WEBULL-FUT    | webull       | MCP         | futures                  |
+| TS            | tradestation | MCP         | equity, margin           |
+| SCHWAB        | schwab       | MCP         | equity, futures, margin  |
+| TRADIER       | tradier      | MCP         | equity, options, margin  |
+| FIDELITY      | fidelity     | CSV         | equity                   |
+| COINBASE      | coinbase     | CSV         | crypto                   |
+| CASH          | Multi-Bank   | manual      | cash (combined)          |
 
 ## Parser conventions (`src/parsers/`)
 
@@ -67,11 +92,25 @@ Two parallel ingest paths feed the same SQLite database (`data/journal.db`):
 - Option symbols are normalized to OCC format for cross-broker consistency: `{underlying}{YYMMDD}{C/P}{8-digit strike*1000}`
 - TradeStation uses its own symbol format (`"MSFT 260717C425"`); `base.parse_ts_option()` converts to OCC
 - `base.is_currency_entry()` disambiguates currency-code tickers (e.g. `USD`) from real equities by checking cost-per-unit ≈ $1.00
+- `tradestation.normalize_balances()` falls back to first key in accounts map (TS uses numeric account ID as key, not "TS")
+- `tradier.normalize_balances()` computes margin as `gross_equity_mv - totalEquity` (Tradier API does not expose marginBalance directly)
+
+## Margin sentinel rows
+
+Each MCP-synced margin account gets a `MARGIN` row inserted into `positions` with `cost_basis = -margin_amount`. The dashboard reads this to show margin debt and compute net equity. Written by `_insert_margin_sentinel()` in `mcp_ingest.py`.
+
+Margin accuracy by broker:
+- **RH-BV**: exact — portfolio API returns cash balance
+- **TS**: exact — balances API returns `currentCashBalance`
+- **WEBULL**: exact — balance API returns `Total Cash Balance`
+- **SCHWAB**: exact — account summary returns `margin_balance`
+- **TRADIER**: approximate — computed as `gross_equity_mv - totalEquity` (off by ~$5–6K due to options impact)
 
 ## pandas 3.0 gotchas
 
 - `StringDtype` columns: always `fillna("")` before `astype(str)` or `isin([...])` checks — `"NAN"` strings will not match `"N/A"` etc.
 - MARGIN rows: coerce numerics → capture `MARGIN MARKET VALUE` into `cost_basis` → then drop runtime columns (order matters)
+- `style.format()` — always pass `na_rep=""` to prevent `TypeError: unsupported format string passed to NoneType` when columns contain None (e.g. options strike/price)
 
 ## Sync Positions (MCP → DB)
 
@@ -89,9 +128,9 @@ Save raw result text → `data\tmp\wb_account_list.txt`
 For **each** Webull account ID found in that list:
 ```
 mcp__webull__get_account_positions   account_id=<wb_id>
-mcp__webull__get_account_balance     account_id=<wb_id>   (for INDIVIDUAL_MARGIN account only)
+mcp__webull__get_account_balance     account_id=<wb_id>   (INDIVIDUAL_MARGIN account only)
 ```
-Save each result text → `data\tmp\wb_pos_<wb_id>.txt`
+Save positions text → `data\tmp\wb_pos_<wb_id>.txt`
 
 Build two maps:
 - `data\tmp\wb_positions_map.json` = `{"<wb_id>": "<positions_text>", ...}`
@@ -101,7 +140,9 @@ Build two maps:
 python mcp_ingest.py --broker webull --account-list data\tmp\wb_account_list.txt --positions-map data\tmp\wb_positions_map.json --balances-map data\tmp\wb_balances_map.json
 ```
 
-### 2 — Schwab (equity + options + futures)
+Webull INDIVIDUAL_MARGIN account ID: `8AGMH0413MK07EPRI7J4OOSVH9`
+
+### 2 — Schwab (equity + futures + balance)
 ```
 mcp__schwab-smartspreads-file__get_equity_positions   → data\tmp\schwab_equity.json
 mcp__schwab-smartspreads-file__get_futures_positions  → data\tmp\schwab_futures.json
@@ -120,21 +161,23 @@ mcp__15d93091-8d01-49f7-b7ff-0837e8640ff6__get_account_balances  accountNumber=6
 ```
 python mcp_ingest.py --broker tradier --positions data\tmp\tradier_pos.json --quotes data\tmp\tradier_quotes.json --balances data\tmp\tradier_balances.json
 ```
-Note: Tradier API does not expose `marginBalance` directly — margin is computed as gross equity MV minus totalEquity.
+Note: Tradier API does not expose `marginBalance` — margin is approximated as gross equity MV minus `totalEquity`.
 
-### 4 — TradeStation (equity + options)
+### 4 — TradeStation (equity + balance)
 ```
-mcp__2350ff9e-36f7-4e64-8285-92896085c7d0__get-positions-details  → data\tmp\ts_pos.json
-mcp__2350ff9e-36f7-4e64-8285-92896085c7d0__get-balances-details   → data\tmp\ts_bal.json
+mcp__2350ff9e-36f7-4e64-8285-92896085c7d0__get-positions-details  accounts=11908624 → data\tmp\ts_positions.json
+mcp__2350ff9e-36f7-4e64-8285-92896085c7d0__get-balances-details   accounts=11908624 → data\tmp\ts_balances.json
 ```
 ```
-python mcp_ingest.py --broker ts --positions data\tmp\ts_pos.json --balances data\tmp\ts_bal.json
+python mcp_ingest.py --broker ts --positions data\tmp\ts_positions.json --balances data\tmp\ts_balances.json
 ```
 
 ### 5 — Robinhood RH-BV only (equity; RH-KD is CSV)
+
+Robinhood requires periodic re-linking via `link_robinhood` (sessions expire). If `check_login_status` returns `robinhood_linked: false`, call `link_robinhood` with credentials — it sends a phone push notification to approve, then call `complete_robinhood_link`.
 ```
-mcp__aeae2ef5-2c58-4908-8c9d-937f5b4fbbbf__get_positions  → data\tmp\rh_pos.json
-mcp__aeae2ef5-2c58-4908-8c9d-937f5b4fbbbf__get_portfolio  → data\tmp\rh_port.json
+mcp__aeae2ef5-2c58-4908-8c9d-937f5b4fbbbf__get_positions  account_number=869439976 → data\tmp\rh_pos.json
+mcp__aeae2ef5-2c58-4908-8c9d-937f5b4fbbbf__get_portfolio  account_number=869439976 → data\tmp\rh_port.json
 ```
 ```
 python mcp_ingest.py --broker robinhood --positions data\tmp\rh_pos.json --portfolio data\tmp\rh_port.json
@@ -145,6 +188,15 @@ python mcp_ingest.py --broker robinhood --positions data\tmp\rh_pos.json --portf
 python ingest.py --snapshot-only
 ```
 Report rows written per broker and any errors. Hit **Refresh** in the dashboard to see updated positions.
+
+## Cash balance (manual)
+
+Fidelity CMA + PNC + Huntington + Clearview are combined into a single `CASH` account. Update whenever balances change:
+```bash
+python cash.py 18500        # set combined balance
+python cash.py              # check current
+python ingest.py --cash 18500  # alternative via ingest flag
+```
 
 ## Compact Instructions
 
