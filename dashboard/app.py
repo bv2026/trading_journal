@@ -1198,7 +1198,35 @@ with tab_settings:
             if not _acct_df.empty:
                 save_account_settings(_edited_rows)
 
-            st.success("Settings saved.")
+            # Immediately apply futures equity overrides — write _FUTURES_ADJ_ row
+            # so the dashboard reflects the new value without requiring a full sync.
+            from src.db import get_conn, insert_futures, delete_futures_by_account
+            for _r in _edited_rows:
+                if _r["account_id"] in _FUTURES_EQUITY_ACCOUNTS:
+                    _fe = _r.get("futures_equity_override")
+                    # Remove any existing adj row first
+                    with get_conn() as _conn:
+                        _conn.execute(
+                            "DELETE FROM futures_positions WHERE account_id=? AND symbol='_FUTURES_ADJ_'",
+                            (_r["account_id"],),
+                        )
+                        _conn.commit()
+                    # Write new adj row if value > 0
+                    if _fe and _fe > 0:
+                        insert_futures([{
+                            "account_id":   _r["account_id"],
+                            "symbol":       "_FUTURES_ADJ_",
+                            "underlying":   None,
+                            "description":  "Futures account equity adjustment",
+                            "qty":          0,
+                            "price":        None,
+                            "market_value": _fe,
+                            "data_source":  "manual",
+                            "source_file":  None,
+                        }])
+
             st.cache_data.clear()
+            st.success("Settings saved.")
+            st.rerun()
         except Exception as _exc:
             st.error(f"Save failed: {_exc}")

@@ -497,7 +497,7 @@ def write_schwab(
     # the actual Schwab Futures sub-account equity by the margin basis and settled P&L.
     # When futures_account_value is provided, write a correction row so the dashboard
     # Account Summary shows the correct total.
-    if futures_account_value is not None and fut_recs:
+    if futures_account_value is not None:
         notional_sum = sum(r.get("market_value") or 0.0 for r in fut_recs)
         adj = futures_account_value - notional_sum
         if abs(adj) > 0.01:
