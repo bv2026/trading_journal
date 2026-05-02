@@ -192,7 +192,8 @@ CREATE VIEW IF NOT EXISTS v_yearly_summary AS
 
 -- ── v_snapshot_latest ────────────────────────────────────────────────────────
 -- Most recent snapshot per account.
-CREATE VIEW IF NOT EXISTS v_snapshot_latest AS
+DROP VIEW IF EXISTS v_snapshot_latest;
+CREATE VIEW v_snapshot_latest AS
     SELECT s.account_id, s.market_value, s.cost_basis, s.margin, s.snapshot_date
     FROM portfolio_snapshots s
     INNER JOIN (
@@ -202,18 +203,19 @@ CREATE VIEW IF NOT EXISTS v_snapshot_latest AS
             AND s.snapshot_date = latest.max_date;
 
 -- ── v_snapshot_periods ───────────────────────────────────────────────────────
--- Per-account market value at standard lookback periods.
+-- Per-account net value (market_value - margin) at standard lookback periods.
 -- NULL = no snapshot exists for that period yet.
-CREATE VIEW IF NOT EXISTS v_snapshot_periods AS
+DROP VIEW IF EXISTS v_snapshot_periods;
+CREATE VIEW v_snapshot_periods AS
     SELECT
         cur.account_id,
         cur.snapshot_date AS current_date,
-        cur.market_value  AS current_value,
-        w1.market_value   AS value_1w,
-        m1.market_value   AS value_1m,
-        m3.market_value   AS value_3m,
-        m12.market_value  AS value_1y,
-        ytd.market_value  AS value_ytd_start
+        (cur.market_value - COALESCE(cur.margin, 0)) AS current_value,
+        (w1.market_value  - COALESCE(w1.margin,  0)) AS value_1w,
+        (m1.market_value  - COALESCE(m1.margin,  0)) AS value_1m,
+        (m3.market_value  - COALESCE(m3.margin,  0)) AS value_3m,
+        (m12.market_value - COALESCE(m12.margin, 0)) AS value_1y,
+        (ytd.market_value - COALESCE(ytd.margin, 0)) AS value_ytd_start
     FROM v_snapshot_latest cur
     LEFT JOIN portfolio_snapshots w1
         ON w1.account_id = cur.account_id

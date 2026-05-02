@@ -37,6 +37,24 @@ def _migrate(conn: sqlite3.Connection) -> None:
         )
     """)
 
+    # Margin overrides table — persists manual margin entries across syncs
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS margin_overrides (
+            account_id TEXT PRIMARY KEY,
+            margin     REAL DEFAULT 0,
+            updated_at TEXT
+        )
+    """)
+
+    # Futures equity overrides — persists Schwab futures sub-account value across syncs
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS futures_equity_overrides (
+            account_id    TEXT PRIMARY KEY,
+            futures_equity REAL DEFAULT 0,
+            updated_at    TEXT
+        )
+    """)
+
 
 def init_db():
     sql = SCHEMA_PATH.read_text()
@@ -460,3 +478,164 @@ def get_cash_balance(account_id: str = "CASH") -> float:
         return float(row[0]) if row else 0.0
     except Exception:
         return 0.0
+
+
+# ── Margin overrides ──────────────────────────────────────────────────────────
+
+def upsert_margin_override(account_id: str, margin: float) -> None:
+    """Set (or update) a persistent margin override for an account.
+
+    When set, write_tradier / write_schwab will use this value instead of
+    computing margin from API data, so the override survives re-syncs.
+    Pass margin=0 to clear the override (computed margin will resume).
+    """
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO margin_overrides (account_id, margin, updated_at)
+            VALUES (?, ?, date('now'))
+            ON CONFLICT(account_id) DO UPDATE SET
+                margin     = excluded.margin,
+                updated_at = excluded.updated_at
+            """,
+            (account_id, margin),
+        )
+        conn.commit()
+
+
+def get_margin_override(account_id: str) -> float | None:
+    """Return the stored margin override for an account, or None if not set.
+
+    Returns None (not 0) when no override exists so callers can distinguish
+    "not set" from "explicitly set to 0".
+    """
+    if not DB_PATH.exists():
+        return None
+    try:
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT margin FROM margin_overrides WHERE account_id = ?",
+                (account_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return float(row[0])
+    except Exception:
+        return None
+
+
+def upsert_futures_equity_override(account_id: str, futures_equity: float) -> None:
+    """Persist the futures sub-account equity for an account (e.g. Schwab)."""
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO futures_equity_overrides (account_id, futures_equity, updated_at)
+            VALUES (?, ?, date('now'))
+            ON CONFLICT(account_id) DO UPDATE SET
+                futures_equity = excluded.futures_equity,
+                updated_at     = excluded.updated_at
+            """,
+            (account_id, futures_equity),
+        )
+        conn.commit()
+
+
+def get_futures_equity_override(account_id: str) -> float | None:
+    """Return stored futures equity override, or None if not set."""
+    if not DB_PATH.exists():
+        return None
+    try:
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT futures_equity FROM futures_equity_overrides WHERE account_id = ?",
+                (account_id,),
+            ).fetchone()
+        return float(row[0]) if row is not None else None
+    except Exception:
+        return None
+
+
+def load_account_settings() -> pd.DataFrame:
+    """Load all accounts with their current margin override and futures equity override."""
+    if not DB_PATH.exists():
+        return pd.DataFrame()
+    try:
+        with get_conn() as conn:
+            return pd.read_sql_query(
+                """
+                SELECT
+                    a.account_id,
+                    a.broker,
+                    a.account_type,
+                    a.account_group,
+                    a.holder,
+                    a.price_source,
+                    a.active,
+                    mo.margin          AS margin_override,
+                    fe.futures_equity  AS futures_equity_override
+                FROM accounts a
+                LEFT JOIN margin_overrides       mo ON mo.account_id = a.account_id
+                LEFT JOIN futures_equity_overrides fe ON fe.account_id = a.account_id
+                ORDER BY a.account_id
+                """,
+                conn,
+            )
+    except Exception:
+        return pd.DataFrame()
+
+
+def save_account_settings(rows: list[dict]) -> None:
+    """Bulk-save account active/price_source and margin/futures overrides.
+
+    Each dict must have: account_id, active, price_source,
+    margin_override (float|None), futures_equity_override (float|None).
+    """
+    with get_conn() as conn:
+        for r in rows:
+            conn.execute(
+                "UPDATE accounts SET active=?, price_source=? WHERE account_id=?",
+                (r["active"], r["price_source"], r["account_id"]),
+            )
+            if r.get("margin_override") is not None:
+                conn.execute(
+                    """INSERT INTO margin_overrides (account_id, margin, updated_at)
+                       VALUES (?, ?, date('now'))
+                       ON CONFLICT(account_id) DO UPDATE SET
+                           margin=excluded.margin, updated_at=excluded.updated_at""",
+                    (r["account_id"], r["margin_override"]),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM margin_overrides WHERE account_id=?",
+                    (r["account_id"],),
+                )
+            if r.get("futures_equity_override") is not None:
+                conn.execute(
+                    """INSERT INTO futures_equity_overrides (account_id, futures_equity, updated_at)
+                       VALUES (?, ?, date('now'))
+                       ON CONFLICT(account_id) DO UPDATE SET
+                           futures_equity=excluded.futures_equity,
+                           updated_at=excluded.updated_at""",
+                    (r["account_id"], r["futures_equity_override"]),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM futures_equity_overrides WHERE account_id=?",
+                    (r["account_id"],),
+                )
+        conn.commit()
+
+
+def get_accounts_by_type(account_type: str) -> list[str]:
+    """Return account_ids with the given account_type (e.g. 'crypto', 'futures')."""
+    if not DB_PATH.exists():
+        return []
+    try:
+        with get_conn() as conn:
+            rows = conn.execute(
+                "SELECT account_id FROM accounts WHERE account_type = ?",
+                (account_type,),
+            ).fetchall()
+        return [r[0] for r in rows]
+    except Exception:
+        return []

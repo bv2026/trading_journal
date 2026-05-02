@@ -51,6 +51,14 @@ Two parallel ingest paths feed the same SQLite database (`data/journal.db`):
 1. Calls `enrich_sectors()` to fill NULL `sector`/`industry` on the `instruments` table via yfinance
 2. Writes a `portfolio_snapshots` row for today — this is what powers the Performance tab returns
 
+`ingest.py` also defines three empty list constants for future CSV-based static position imports (currently unused but required by tests that monkey-patch them):
+```python
+OPTIONS_FILES: list[tuple] = []
+FUTURES_FILES: list[tuple] = []
+CRYPTO_FILES:  list[tuple] = []
+```
+Each entry would be `(path, account_id)` parsed via `static_positions_csv.parse(path, acct, asset_type)`.
+
 ## Database schema key points
 
 - `positions` — equity only; `price_source='live'` accounts get prices fetched from yfinance at dashboard load; `price_source='static'` accounts use `stored_price`
@@ -58,8 +66,10 @@ Two parallel ingest paths feed the same SQLite database (`data/journal.db`):
 - `cash_accounts` — single combined cash balance (Fidelity/PNC/Huntington/Clearview); upserted via `db.upsert_cash_balance()`
 - `instruments` — shared metadata table (sector, industry, expiry, strike, etc.) keyed on `(symbol, asset_class)`
 - `portfolio_snapshots` — one row per (date, account); queried by `v_snapshot_periods` view to compute 1W/1M/3M/YTD/1Y returns
+- `v_snapshot_periods` — all period columns (`current_value`, `value_1w`, `value_1m`, etc.) are **net of margin** (`market_value - COALESCE(margin, 0)`); ensures Performance tab comparisons are apples-to-apples
 - `v_positions_all` view — unified UNION ALL across all 4 position tables for cross-asset queries
 - Schema migrations are handled inline in `db._migrate()` — add new `ALTER TABLE` statements there, they're idempotent
+- Views are `DROP VIEW IF EXISTS; CREATE VIEW` (not `CREATE VIEW IF NOT EXISTS`) so they always recreate on `init_db()`
 
 ## Accounts
 
@@ -105,6 +115,23 @@ Margin accuracy by broker:
 - **WEBULL**: exact — balance API returns `Total Cash Balance`
 - **SCHWAB**: exact — account summary returns `margin_balance`
 - **TRADIER**: approximate — computed as `gross_equity_mv - totalEquity` (off by ~$5–6K due to options impact)
+
+## Dashboard — Portfolio tab layout
+
+The Portfolio tab (first tab in `dashboard/app.py`) renders in this order:
+1. **Net Worth banner** — total net worth KPI row (equity + options + futures + crypto + cash − margin)
+2. **Account Summary** — 6 columns: Account, Broker, Market Value, Cost Basis, Margin, Net Equity; one row per account + CASH row at bottom; CASH row has Market Value = Cost Basis (zero P/L)
+3. **Asset Class Breakdown** — Stocks / Options / Futures / Crypto / Cash rows + TOTAL, with Allocation %
+4. **Sector Breakdown** (pie chart + table) — sectors collapsed as below
+5. **Futures by Commodity** — futures grouped by root symbol (e.g. `/GCZ26` → `/GC`); shows Contracts and Net MV
+
+Sector collapse rules (applied in display layer, not stored in DB):
+- `SECTOR_OVERRIDES` in `src/positions.py` maps specific tickers: BND→"Fixed Income", VTI→"Broad Market", VEA/VWO→"International"
+- Dashboard collapses `{"Fixed Income", "Broad Market", "International"}` → `"ETF"`
+- Any row with `TYPE == "ETF"` also maps to `"ETF"` (except `"Income ETF"` which is preserved)
+- `"Unknown"` → `"Other"`
+
+Futures root extraction: regex `r'(/[A-Z]+)(?=[A-Z]\d{2})'` strips contract-month letter + 2-digit year suffix (e.g. `/GCZ26` → `/GC`, `/VXMH27` → `/VXM`).
 
 ## pandas 3.0 gotchas
 
@@ -197,6 +224,25 @@ python cash.py 18500        # set combined balance
 python cash.py              # check current
 python ingest.py --cash 18500  # alternative via ingest flag
 ```
+
+## Test coverage
+
+426 tests passing across 10 files:
+
+| File | Tests | Scope |
+|------|-------|-------|
+| `tests/unit/test_parsers.py` | ~80 | CSV parsers (robinhood, coinbase, schwab, tradier, ts) |
+| `tests/unit/test_parsers_missing.py` | 62 | parsers with previously missing coverage (schwab, tradier, ts, webull, fidelity) |
+| `tests/unit/test_fetcher_base.py` | 38 | `src/fetchers/base.py` — OCC parsing, currency detection, ID hashing |
+| `tests/unit/test_fetcher_schwab.py` | 37 | `src/fetchers/schwab.py` — all normalize_* functions |
+| `tests/unit/test_portfolio_tab.py` | 29 | Dashboard portfolio logic — sector collapse, futures root, account summary, net worth |
+| `tests/unit/test_positions.py` | ~30 | `src/positions.py` — load_positions_from_db, sector overrides |
+| `tests/integration/test_db_helpers.py` | 19 | `src/db.py` — clear_transactions, instruments, cash_balance, _migrate |
+| `tests/integration/test_snapshot_performance.py` | 13 | `v_snapshot_periods` — net-of-margin returns, multi-account, NULL history |
+| `tests/integration/test_positions_db.py` | ~60 | positions table CRUD |
+| `tests/integration/test_static_positions_db.py` | ~58 | options/futures/crypto tables CRUD |
+
+Run all: `python -m pytest tests/ -q`
 
 ## Compact Instructions
 

@@ -12,7 +12,9 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from src.db import DB_PATH, init_db, load_transactions, load_snapshot_periods, get_cash_balance
+from src.db import (DB_PATH, init_db, load_transactions, load_snapshot_periods,
+                    get_cash_balance, get_accounts_by_type, upsert_cash_balance,
+                    load_account_settings, save_account_settings)
 
 # Ensure schema is up-to-date (creates new tables/views if this is an existing DB).
 if DB_PATH.exists():
@@ -147,63 +149,65 @@ if not show_internal:
     df = df[df["subcategory"] != "internal_transfer"]
 df = df[df["category"] != "other"]
 
-# ── Header KPIs ────────────────────────────────────────────────────────────────
-# Metric / styling helpers live in src.metrics (imported at top of file).
 m_all = compute_metrics(df)
-st.title("Portfolio Journal")
-st.caption(f"{len(df):,} transactions · {start_d} → {end_d} · "
-           f"{len(accounts)} account(s)")
-
-# ── Net Worth banner ───────────────────────────────────────────────────────────
 _cash_balance = _load_cash_balance()
-try:
-    _nw_data = compute_net_worth(_load_all_positions())
-    if _nw_data["market_value"]:
-        _total_mv     = _nw_data["market_value"] + _cash_balance
-        _total_margin = _nw_data["margin"]
-        _net_worth    = _nw_data["net_worth"] + _cash_balance
-        nw1, nw2, nw3 = st.columns(3)
-        nw1.metric("Net Worth",       f"${_net_worth:,.0f}")
-        nw2.metric("Market Value",    f"${_total_mv:,.0f}")
-        nw3.metric("Margin Borrowed", f"${_total_margin:,.0f}",
-                   delta=f"-${_total_margin:,.0f}", delta_color="inverse")
-except Exception:
-    pass  # Net worth banner is best-effort; failures must not crash the page
 
-# ── Summary table (replaces individual metric widgets) ─────────────────────────
-_kpi_row = {
-    "Cash In/Out":  m_all["net_cash"],
-    "Div+Rewards":    m_all["dividends"] + m_all["rewards"],
-    "Costs":          m_all["margin_int"] + m_all["fees"],
-    "Net Income":     _net_income_fn(m_all),
-}
-_kpi_df = pd.DataFrame([_kpi_row])
-st.dataframe(
-    _kpi_df.style
-        .format({c: "${:,.2f}" for c in _kpi_df.columns})
-        .map(colour_cell, subset=list(_kpi_df.columns)),
-    use_container_width=True,
-    hide_index=True,
-)
+st.title("Portfolio Journal")
+st.caption(f"{len(df):,} transactions · {start_d} → {end_d} · {len(accounts)} account(s)")
 
 st.divider()
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
-tab_portfolio, tab_yearly, tab_breakdown, tab_positions, tab_txns, tab_perf = st.tabs([
-    "Portfolio", "Yearly Summary", "By Account", "Positions", "Transactions", "Performance"
+tab_portfolio, tab_yearly, tab_breakdown, tab_positions, tab_txns, tab_perf, tab_settings = st.tabs([
+    "Portfolio", "Yearly Summary", "By Account", "Positions", "Transactions", "Performance", "Settings"
 ])
 
 
 # ═══ TAB 1 — Portfolio ════════════════════════════════════════════════════════
 with tab_portfolio:
+    import re as _re
+
+    # ── Net Worth banner ───────────────────────────────────────────────────────
+    try:
+        _nw_data = compute_net_worth(_load_all_positions())
+        if _nw_data["market_value"]:
+            _total_mv     = _nw_data["market_value"] + _cash_balance
+            _total_margin = _nw_data["margin"]
+            _net_worth    = _nw_data["net_worth"] + _cash_balance
+            nw1, nw2, nw3 = st.columns(3)
+            nw1.metric("Net Worth",       f"${_net_worth:,.0f}")
+            nw2.metric("Market Value",    f"${_total_mv:,.0f}")
+            nw3.metric("Margin Borrowed", f"${_total_margin:,.0f}",
+                       delta=f"-${_total_margin:,.0f}", delta_color="inverse")
+    except Exception:
+        pass
+
+    _kpi_row = {
+        "Cash In/Out": m_all["net_cash"],
+        "Div+Rewards":   m_all["dividends"] + m_all["rewards"],
+        "Costs":         m_all["margin_int"] + m_all["fees"],
+        "Net Income":    _net_income_fn(m_all),
+    }
+    _kpi_df = pd.DataFrame([_kpi_row])
+    st.dataframe(
+        _kpi_df.style
+            .format({c: "${:,.2f}" for c in _kpi_df.columns})
+            .map(colour_cell, subset=list(_kpi_df.columns)),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.divider()
 
     # ── Load positions data ────────────────────────────────────────────────────
     pos_all  = _load_positions()
     opts_all = _load_options()
     futs_all = _load_futures()
+    cry_all  = _load_crypto()
     has_positions = not pos_all.empty
     has_opts = not opts_all.empty
     has_futs = not futs_all.empty
+    has_crypto = not cry_all.empty
 
     if has_positions:
         _is_margin = pos_all["Ticker"].str.upper() == "MARGIN"
@@ -218,8 +222,7 @@ with tab_portfolio:
         )
         pos_by_acct = (
             pos.groupby("Account")
-               .agg(Positions   =("Ticker",       "count"),
-                    Market_Value=("MARKET VALUE", "sum"),
+               .agg(Market_Value=("MARKET VALUE", "sum"),
                     Total_Cost  =("COST",         "sum"),
                     PnL         =("totalReturn",  "sum"))
                .reset_index()
@@ -247,128 +250,136 @@ with tab_portfolio:
         else:
             _non_eq_mv = pd.DataFrame(columns=["Account", "Other_MV"])
 
-    # ── 1. UNIFIED ACCOUNT SUMMARY ─────────────────────────────────────────────
-    tx_rows = []
-    for acct in [a for a in all_accounts if a in accounts]:
-        ad = df[df["account_id"] == acct]
-        if ad.empty:
-            continue
-        am = compute_metrics(ad)
-        tx_rows.append({
-            "Account":        acct,
-            "Broker":         ad["broker"].iloc[0],
-            "Cash In/Out":  am["net_cash"],
-            "Div+Rewards":    am["dividends"] + am["rewards"],
-            "Costs":          am["margin_int"] + am["fees"],
-            "Net Income":     _net_income_fn(am),
-        })
-    summary = pd.DataFrame(tx_rows).fillna(0)
-
-    if has_positions:
-        summary = (
-            summary
-            .merge(pos_by_acct,    on="Account", how="left")
-            .merge(margin_by_acct, on="Account", how="left")
-            .merge(_non_eq_mv,     on="Account", how="left")
-        )
-        summary["Positions"]    = summary["Positions"].fillna(0).astype(int)
-        summary["Equity"]       = summary["Market_Value"].fillna(0)
-        summary["Total_Cost"]   = summary["Total_Cost"].fillna(0)
-        summary["PnL"]          = summary["PnL"].fillna(0)
-        summary["Margin"]       = summary["Margin"].fillna(0).abs()
-        summary["Other_MV"]     = summary["Other_MV"].fillna(0)
-        summary["Market Value"] = summary["Equity"] + summary["Other_MV"] - summary["Margin"]
-        summary["Return_%"]     = (
-            summary["PnL"] / summary["Total_Cost"].replace(0, float("nan")) * 100
-        ).fillna(0).round(2)
-
-        # Cash & Savings row (if balance is set)
-        if _cash_balance > 0:
-            _cash_row = {
-                "Account":      "CASH",
-                "Broker":       "Multi-Bank",
-                "Positions":    0,
-                "Equity":       0.0,
-                "Total_Cost":   0.0,
-                "PnL":          0.0,
-                "Return_%":     0.0,
-                "Margin":       0.0,
-                "Other_MV":     0.0,
-                "Market Value": _cash_balance,
-                "Cash In/Out":  0.0,
-                "Div+Rewards":  0.0,
-                "Costs":        0.0,
-                "Net Income":   0.0,
-            }
-            summary = pd.concat([summary, pd.DataFrame([_cash_row])], ignore_index=True)
-
-        # Totals row
-        _t = {
-            "Account":        "TOTAL",
-            "Broker":         "",
-            "Positions":      int(summary["Positions"].sum()),
-            "Equity":         summary["Equity"].sum(),
-            "Total_Cost":     summary["Total_Cost"].sum(),
-            "PnL":            summary["PnL"].sum(),
-            "Return_%":       (summary["PnL"].sum() / summary["Total_Cost"].sum() * 100
-                               if summary["Total_Cost"].sum() else 0),
-            "Margin":         summary["Margin"].sum(),
-            "Market Value":   summary["Market Value"].sum(),
-            "Cash In/Out":  summary["Cash In/Out"].sum(),
-            "Div+Rewards":    summary["Div+Rewards"].sum(),
-            "Costs":          summary["Costs"].sum(),
-            "Net Income":     summary["Net Income"].sum(),
-        }
-        summary = pd.concat([summary, pd.DataFrame([_t])], ignore_index=True)
-
-        disp_cols = ["Account", "Broker",
-                     "Equity", "Margin", "Market Value",
-                     "Total_Cost", "PnL", "Return_%",
-                     "Cash In/Out", "Div+Rewards", "Costs", "Net Income"]
-        money_cols_s = ["Equity", "Margin", "Market Value",
-                        "Total_Cost", "PnL",
-                        "Cash In/Out", "Div+Rewards", "Costs", "Net Income"]
-        fmt_s = {c: "${:,.0f}" for c in money_cols_s}
-        fmt_s["Return_%"] = "{:+.1f}%"
-        colour_cols_s = ["PnL", "Return_%", "Market Value",
-                         "Cash In/Out", "Div+Rewards", "Costs", "Net Income"]
-    else:
-        # No positions file — show transaction-only summary
-        _t2 = {
-            "Account":       "TOTAL", "Broker": "",
-            "Cash In/Out": summary["Cash In/Out"].sum(),
-            "Div+Rewards":   summary["Div+Rewards"].sum(),
-            "Costs":         summary["Costs"].sum(),
-            "Net Income":    summary["Net Income"].sum(),
-        }
-        summary = pd.concat([summary, pd.DataFrame([_t2])], ignore_index=True)
-        disp_cols = ["Account", "Broker", "Cash In/Out", "Div+Rewards", "Costs", "Net Income"]
-        money_cols_s = ["Cash In/Out", "Div+Rewards", "Costs", "Net Income"]
-        fmt_s = {c: "${:,.2f}" for c in money_cols_s}
-        colour_cols_s = money_cols_s
-
+    # ── 1. ACCOUNT SUMMARY ────────────────────────────────────────────────────
     st.subheader("Account Summary")
-    st.dataframe(
-        summary[disp_cols].style
-            .format(fmt_s)
-            .map(colour_cell, subset=colour_cols_s)
-            .apply(_bold_last_row, last_idx=summary.index[-1], axis=1),
-        use_container_width=True, hide_index=True,
-    )
+    if has_positions:
+        _broker_map = (
+            df_all[["account_id", "broker"]].drop_duplicates()
+            .set_index("account_id")["broker"].to_dict()
+        )
+        _acct_rows = []
+        for acct in [a for a in all_accounts if a in accounts]:
+            _eq_mv   = float(pos_by_acct.loc[pos_by_acct["Account"] == acct, "Market_Value"].sum())
+            _cost    = float(pos_by_acct.loc[pos_by_acct["Account"] == acct, "Total_Cost"].sum())
+            _margin  = abs(float(margin_by_acct.loc[margin_by_acct["Account"] == acct, "Margin"].sum()))
+            _other   = float(_non_eq_mv.loc[_non_eq_mv["Account"] == acct, "Other_MV"].sum())
+            _mv      = _eq_mv + _other
+            _acct_rows.append({
+                "Account":    acct,
+                "Broker":     _broker_map.get(acct, ""),
+                "Market Value": _mv,
+                "Cost Basis": _cost,
+                "Margin":     _margin,
+                "Net Equity": _mv - _margin,
+            })
+        if _cash_balance > 0:
+            _acct_rows.append({
+                "Account":    "CASH",
+                "Broker":     "Multi-Bank",
+                "Market Value": _cash_balance,
+                "Cost Basis": _cash_balance,
+                "Margin":     0.0,
+                "Net Equity": _cash_balance,
+            })
+        _acct_sum = pd.DataFrame(_acct_rows)
+        _tot = {
+            "Account":    "TOTAL", "Broker": "",
+            "Market Value": _acct_sum["Market Value"].sum(),
+            "Cost Basis": _acct_sum["Cost Basis"].sum(),
+            "Margin":     _acct_sum["Margin"].sum(),
+            "Net Equity": _acct_sum["Net Equity"].sum(),
+        }
+        _acct_sum = pd.concat([_acct_sum, pd.DataFrame([_tot])], ignore_index=True)
+        _money_acct = ["Market Value", "Cost Basis", "Margin", "Net Equity"]
+        st.dataframe(
+            _acct_sum.style
+                .format({c: "${:,.0f}" for c in _money_acct})
+                .map(colour_cell, subset=["Net Equity"])
+                .apply(_bold_last_row, last_idx=_acct_sum.index[-1], axis=1),
+            use_container_width=True, hide_index=True,
+        )
 
-    st.divider()
+        st.divider()
 
-    # ── 2. SECTOR ALLOCATION CHART ────────────────────────────────────────────
+        # ── 2. ASSET CLASS BREAKDOWN ──────────────────────────────────────────
+        st.subheader("Asset Class Breakdown")
+        # Crypto accounts (e.g. COINBASE) are stored in the positions/equity table,
+        # not in crypto_positions.  Separate them out so they show as "Crypto" here.
+        _crypto_accts = set(get_accounts_by_type("crypto"))
+        _is_crypto_pos = pos["Account"].isin(_crypto_accts) if _crypto_accts else pd.Series(False, index=pos.index)
+        _cry_from_pos  = float(pos.loc[_is_crypto_pos, "MARKET VALUE"].sum())
+        _stocks_mv = float(pos.loc[~_is_crypto_pos, "MARKET VALUE"].sum())
+        _opts_mv   = float(opts_all["MARKET VALUE"].fillna(0).sum()) if has_opts else 0.0
+        _futs_mv   = float(futs_all["MARKET VALUE"].fillna(0).sum()) if has_futs else 0.0
+        _cry_mv    = _cry_from_pos + (float(cry_all["MARKET VALUE"].fillna(0).sum()) if has_crypto else 0.0)
+        _total_asset_mv = _stocks_mv + _opts_mv + _futs_mv + _cry_mv + _cash_balance
+        _asset_rows = [
+            {"Asset Class": "Stocks",  "Market Value": _stocks_mv},
+            {"Asset Class": "Options", "Market Value": _opts_mv},
+            {"Asset Class": "Futures", "Market Value": _futs_mv},
+            {"Asset Class": "Crypto",  "Market Value": _cry_mv},
+            {"Asset Class": "Cash",    "Market Value": _cash_balance},
+            {"Asset Class": "TOTAL",   "Market Value": _total_asset_mv},
+        ]
+        _asset_df = pd.DataFrame(_asset_rows)
+        _asset_df["Allocation"] = (
+            _asset_df["Market Value"] / _total_asset_mv * 100
+            if _total_asset_mv else 0
+        ).round(1)
+        st.dataframe(
+            _asset_df.style
+                .format({"Market Value": "${:,.0f}", "Allocation": "{:.1f}%"})
+                .apply(_bold_last_row, last_idx=_asset_df.index[-1], axis=1),
+            use_container_width=True, hide_index=True,
+        )
+
+        st.divider()
+
+        # ── 3. FUTURES BY COMMODITY ───────────────────────────────────────────
+        if has_futs:
+            st.subheader("Futures by Commodity")
+            def _fut_root(ticker: str) -> str:
+                # Strip contract-month letter + 2-digit year: /GCZ26 → /GC, /VXMH27 → /VXM
+                m = _re.match(r'(/[A-Z]+)(?=[A-Z]\d{2})', str(ticker))
+                return m.group(1) if m else str(ticker)
+
+            _futs_grp = futs_all[futs_all["Ticker"] != "_FUTURES_ADJ_"].copy()
+            _futs_grp["MARKET VALUE"] = pd.to_numeric(_futs_grp["MARKET VALUE"], errors="coerce")
+            _futs_grp["Root"] = _futs_grp["Ticker"].apply(_fut_root)
+            _futs_grp["qty"]  = pd.to_numeric(_futs_grp.get("qty", pd.Series(dtype=float)), errors="coerce")
+            _fut_by_commodity = (
+                _futs_grp.groupby("Root")
+                    .agg(Contracts=("qty", "count"), Net_MV=("MARKET VALUE", "sum"))
+                    .reset_index()
+                    .rename(columns={"Root": "Commodity"})
+                    .sort_values("Net_MV", key=lambda x: x.abs(), ascending=False)
+                    .reset_index(drop=True)
+            )
+            st.dataframe(
+                _fut_by_commodity.style
+                    .format({"Net_MV": "${:+,.0f}"})
+                    .map(colour_cell, subset=["Net_MV"]),
+                use_container_width=True, hide_index=True,
+            )
+            st.divider()
+
+    # ── 4. SECTOR ALLOCATION CHART ────────────────────────────────────────────
     if has_positions:
         total_mv = pos["MARKET VALUE"].sum()
 
-        st.subheader("Sector Allocation")
-        # Collapse ETFs: keep "Income ETF" as-is; everything else with TYPE=="ETF"
-        # becomes "ETF" so the chart shows exactly two ETF buckets.
+        # Collapse: "Fixed Income", "Broad Market", "International" → "ETF";
+        # TYPE=="ETF" rows (excluding "Income ETF") → "ETF";
+        # "Unknown" → "Other"
+        _ETF_SECTORS = {"Fixed Income", "Broad Market", "International"}
         _sec_display = pos["sector"].copy()
+        _is_etf_sector = _sec_display.isin(_ETF_SECTORS)
+        _sec_display = _sec_display.where(~_is_etf_sector, "ETF")
         if "TYPE" in pos.columns:
-            _is_etf = pos["TYPE"].str.upper().eq("ETF") & (_sec_display != "Income ETF")
-            _sec_display = _sec_display.where(~_is_etf, "ETF")
+            _is_etf_type = pos["TYPE"].str.upper().eq("ETF") & (_sec_display != "Income ETF")
+            _sec_display = _sec_display.where(~_is_etf_type, "ETF")
+        _sec_display = _sec_display.replace("Unknown", "Other")
+
+        st.subheader("Sector Allocation")
         sec_grp = (
             pd.Series(_sec_display.values, name="sector")
             .to_frame()
@@ -391,7 +402,7 @@ with tab_portfolio:
 
         st.divider()
 
-    # ── 3. POSITIONS BY ACCOUNT ────────────────────────────────────────────────
+    # ── 5. POSITIONS BY ACCOUNT ────────────────────────────────────────────────
     if has_positions:
         st.subheader("Positions by Account")
 
@@ -412,13 +423,13 @@ with tab_portfolio:
                      "totalReturn", "Return_%", "PERF_YTD", "IV_Rank", "ATR_pct"]
 
         acct_order = (
-            summary[summary["Account"] != "TOTAL"]
-            .sort_values("Equity", ascending=False)["Account"]
+            _acct_sum[_acct_sum["Account"] != "TOTAL"]
+            .sort_values("Market Value", ascending=False)["Account"]
             .tolist()
         )
 
         for acct in acct_order:
-            acct_pos  = pos[pos["Account"] == acct].copy()
+            acct_pos = pos[pos["Account"] == acct].copy()
             if acct_pos.empty:
                 continue
             acct_mv     = acct_pos["MARKET VALUE"].sum()
@@ -472,9 +483,8 @@ with tab_portfolio:
 
         st.divider()
 
-    # ── 4. SECTOR SUMMARY TABLE ────────────────────────────────────────────────
+    # ── 6. SECTOR SUMMARY TABLE ────────────────────────────────────────────────
     if has_positions:
-        # Use the same collapsed sector labels as the pie chart
         _sec_tbl_src = pos.copy()
         _sec_tbl_src["sector"] = _sec_display.values
         sec_tbl = (
@@ -488,7 +498,6 @@ with tab_portfolio:
         sec_tbl["Alloc_%"]  = (sec_tbl["Market_Value"] / total_mv * 100).round(2)
         sec_tbl["Return_%"] = (sec_tbl["PnL"] / sec_tbl["Total_Cost"] * 100).round(2)
 
-        # Join lifetime dividends aggregated to collapsed sector level
         _pos_with_collapsed = pos[["Ticker", "sector"]].copy()
         _pos_with_collapsed["sector"] = _sec_display.values
         _sec_divs = (
@@ -509,48 +518,6 @@ with tab_portfolio:
                          "PnL": "${:+,.0f}", "Alloc_%": "{:.2f}%",
                          "Return_%": "{:+.2f}%", "Dividends": "${:,.0f}"})
                 .map(colour_cell, subset=["PnL", "Return_%", "Dividends"]),
-            use_container_width=True, hide_index=True,
-        )
-        st.divider()
-
-    # ── Options Summary ───────────────────────────────────────────────────────
-    if has_opts:
-        import datetime as _odt
-        st.subheader("Options Summary")
-        _opt_mv_total = opts_all["MARKET VALUE"].sum()
-        _today = _odt.date.today()
-        oc1, oc2, oc3 = st.columns(3)
-        oc1.metric("Open Positions", len(opts_all))
-        oc2.metric("Total Market Value", f"${_opt_mv_total:,.0f}")
-        if "expiry" in opts_all.columns:
-            _expiring = opts_all[pd.to_datetime(opts_all["expiry"], errors="coerce").dt.date
-                                 <= (_today + _odt.timedelta(days=7))]
-            oc3.metric("Expiring This Week", len(_expiring))
-        opt_disp_cols = [c for c in ["Account", "symbol", "underlying", "expiry",
-                                      "strike", "call_put", "qty", "price", "MARKET VALUE"]
-                         if c in opts_all.columns]
-        st.dataframe(
-            opts_all[opt_disp_cols]
-                .sort_values("expiry" if "expiry" in opts_all.columns else opt_disp_cols[0])
-                .reset_index(drop=True)
-                .style.format({"MARKET VALUE": "${:,.2f}", "price": "${:.2f}", "strike": "${:.2f}"}, na_rep=""),
-            use_container_width=True, hide_index=True,
-        )
-        st.divider()
-
-    # ── Futures Summary ───────────────────────────────────────────────────────
-    if has_futs:
-        st.subheader("Futures Summary")
-        _fut_mv_total = futs_all["MARKET VALUE"].sum()
-        fc1, fc2 = st.columns(2)
-        fc1.metric("Open Contracts", len(futs_all))
-        fc2.metric("Net Market Value", f"${_fut_mv_total:+,.0f}")
-        fut_disp_cols = [c for c in ["Account", "Ticker", "description", "qty", "price", "MARKET VALUE"]
-                         if c in futs_all.columns]
-        st.dataframe(
-            futs_all[fut_disp_cols].reset_index(drop=True)
-                .style.format({"MARKET VALUE": "${:+,.2f}", "price": "${:,.4f}"}, na_rep="")
-                .map(colour_cell, subset=["MARKET VALUE"]),
             use_container_width=True, hide_index=True,
         )
 
@@ -1113,3 +1080,125 @@ with tab_perf:
             hide_index=True,
         )
 
+
+# ═══ TAB 7 — Settings ════════════════════════════════════════════════════════
+with tab_settings:
+    st.subheader("Settings")
+    st.caption("Changes take effect immediately after Save. Margin/price source are used on next sync.")
+
+    # Accounts whose margin comes from the broker API — shown read-only
+    _API_MARGIN_ACCOUNTS = {"RH-BV", "WEBULL", "WEBULL-CASH", "WEBULL-EVENTS",
+                            "WEBULL-FUT", "TS", "SCHWAB"}
+    # Accounts that can have a futures equity override
+    _FUTURES_EQUITY_ACCOUNTS = {"SCHWAB"}
+
+    _acct_df = load_account_settings()
+
+    # ── Section 1: Cash Balance ───────────────────────────────────────────────
+    st.markdown("##### Cash Balance")
+    st.caption("Combined balance across Fidelity CMA, PNC, Huntington, Clearview.")
+    _cur_cash = get_cash_balance()
+    _new_cash = st.number_input(
+        "Cash & Savings ($)",
+        min_value=0.0,
+        value=float(_cur_cash),
+        step=100.0,
+        format="%.2f",
+        key="settings_cash",
+    )
+
+    st.divider()
+
+    # ── Section 2: Account Settings ───────────────────────────────────────────
+    st.markdown("##### Account Settings")
+    st.caption("Active and price source are applied immediately. "
+               "Margin override is used as fallback when the broker API does not return margin data.")
+
+    if _acct_df.empty:
+        st.info("No accounts found. Run `python ingest.py` first.")
+    else:
+        _edited_rows = []
+        for _, _row in _acct_df.iterrows():
+            _acct = str(_row["account_id"])
+            with st.expander(_acct, expanded=False):
+                _c1, _c2, _c3 = st.columns([1, 1, 2])
+
+                _active = _c1.checkbox(
+                    "Active",
+                    value=bool(_row.get("active", 1)),
+                    key=f"active_{_acct}",
+                )
+                _price_src = _c2.selectbox(
+                    "Price Source",
+                    options=["live", "static"],
+                    index=0 if str(_row.get("price_source", "live")) == "live" else 1,
+                    key=f"price_src_{_acct}",
+                )
+
+                _has_api_margin = _acct in _API_MARGIN_ACCOUNTS
+                _cur_margin_override = _row.get("margin_override")
+                _cur_margin_override = float(_cur_margin_override) if pd.notna(_cur_margin_override) else None
+
+                if _has_api_margin:
+                    _c3.text_input(
+                        "Margin (from API — read only)",
+                        value="Set automatically during sync",
+                        disabled=True,
+                        key=f"margin_ro_{_acct}",
+                    )
+                    _margin_override = None
+                else:
+                    _margin_override = _c3.number_input(
+                        "Margin Override ($)",
+                        min_value=0.0,
+                        value=float(_cur_margin_override) if _cur_margin_override is not None else 0.0,
+                        step=100.0,
+                        format="%.2f",
+                        key=f"margin_{_acct}",
+                        help="Set to 0 to clear the override.",
+                    )
+                    _margin_override = _margin_override if _margin_override > 0 else None
+
+                _futures_override = None
+                if _acct in _FUTURES_EQUITY_ACCOUNTS:
+                    st.markdown("**Futures Sub-Account Equity**")
+                    st.caption("Schwab Futures Account Value from the Schwab balance page. "
+                               "Used because the futures sub-account is not returned by the API.")
+                    _cur_fe = _row.get("futures_equity_override")
+                    _cur_fe = float(_cur_fe) if pd.notna(_cur_fe) else 0.0
+                    _futures_override = st.number_input(
+                        "Futures Equity ($)",
+                        min_value=0.0,
+                        value=_cur_fe,
+                        step=100.0,
+                        format="%.2f",
+                        key=f"futures_eq_{_acct}",
+                        help="Set to 0 to clear.",
+                    )
+                    _futures_override = _futures_override if _futures_override > 0 else None
+
+                _edited_rows.append({
+                    "account_id":              _acct,
+                    "active":                  int(_active),
+                    "price_source":            _price_src,
+                    "margin_override":         _margin_override,
+                    "futures_equity_override": _futures_override,
+                })
+
+    st.divider()
+
+    # ── Save All ──────────────────────────────────────────────────────────────
+    if st.button("💾 Save All", type="primary"):
+        try:
+            # Cash balance
+            if _new_cash != _cur_cash:
+                upsert_cash_balance(_new_cash)
+
+            # Account settings
+            if not _acct_df.empty:
+                save_account_settings(_edited_rows)
+
+            st.success("Settings saved.")
+            st.cache_data.clear()
+        except Exception as _exc:
+            st.error(f"Save failed: {_exc}")

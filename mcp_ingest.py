@@ -93,12 +93,19 @@ def _insert_margin_sentinel(account_id: str, margin: float) -> None:
 
 
 def _gross_mv_from_records(eq_recs: list[dict]) -> float:
-    """Sum shares × stored_price across equity records (used for computed margin)."""
+    """Sum shares × stored_price across equity records (used for computed margin).
+
+    Falls back to cost_basis when stored_price is None (e.g. a symbol that had no
+    quote in the MCP response — e.g. Tradier's USD position which is not returned
+    by get_market_quotes even though it is a real equity position).
+    """
     total = 0.0
     for r in eq_recs:
-        shares = r.get("shares") or 0
-        price  = r.get("stored_price") or 0
-        total += float(shares) * float(price)
+        shares = float(r.get("shares") or 0)
+        price  = r.get("stored_price")
+        if price is None:
+            price = r.get("cost_basis")   # per-share cost as fallback
+        total += shares * float(price or 0)
     return total
 
 
@@ -159,18 +166,23 @@ def write_tradier(
     instr_recs = tradier_fetcher.normalize_instruments(eq_recs, opt_recs)
     instr_written = db.upsert_instruments(instr_recs) if instr_recs else 0
 
-    # Margin sentinel
-    # Tradier's balance API exposes totalEquity but not marginBalance directly.
-    # Compute margin as gross equity MV minus account equity when balance is provided.
-    margin = 0.0
-    if balances_resp:
-        bal = tradier_fetcher.normalize_balances(balances_resp)
-        if bal["margin_balance"] != 0:
-            margin = abs(bal["margin_balance"])
-        elif bal["total_equity"] > 0:
-            gross_mv = _gross_mv_from_records(eq_recs)
-            margin = max(0.0, gross_mv - bal["total_equity"])
-        print(f"[{account_id}] balances — equity={bal['total_equity']:.2f}  margin={margin:.2f}")
+    # Margin sentinel — check for a persistent override first
+    override = db.get_margin_override(account_id)
+    if override is not None:
+        margin = override
+        print(f"[{account_id}] margin override active — using ${margin:,.0f}")
+    else:
+        # Tradier's balance API exposes totalEquity but not marginBalance directly.
+        # Compute margin as gross equity MV minus account equity when balance is provided.
+        margin = 0.0
+        if balances_resp:
+            bal = tradier_fetcher.normalize_balances(balances_resp)
+            if bal["margin_balance"] != 0:
+                margin = abs(bal["margin_balance"])
+            elif bal["total_equity"] > 0:
+                gross_mv = _gross_mv_from_records(eq_recs)
+                margin = max(0.0, gross_mv - bal["total_equity"])
+            print(f"[{account_id}] balances — equity={bal['total_equity']:.2f}  margin={margin:.2f}")
     _insert_margin_sentinel(account_id, margin)
 
     _enrich()
@@ -420,22 +432,29 @@ def write_schwab(
     account_id: str = "SCHWAB",
     *,
     margin_mode: str = "balance",
+    futures_account_value: float | None = None,
     dry_run: bool = False,
 ) -> dict:
     """
     Normalize Schwab MCP responses and write them to the journal DB.
 
     Args:
-        equity_resp:   Response from get_equity_positions MCP tool.
-        futures_resp:  Optional response from get_futures_positions.
-        summary_resp:  Optional response from get_account_summary (for balance info).
-        txn_resp:      Optional response from get_transactions (60-day window).
-        account_id:    Journal account_id (default: "SCHWAB").
-        margin_mode:   How to determine margin debt to store:
-                         "balance"  — use abs(margin_balance) from summary response (default).
-                         "computed" — gross_MV (sum positions×price) minus equity.
-                         "csv"      — preserve whatever MARGIN sentinel is in the DB.
-        dry_run:       Parse only; do not write to DB.
+        equity_resp:           Response from get_equity_positions MCP tool.
+        futures_resp:          Optional response from get_futures_positions.
+        summary_resp:          Optional response from get_account_summary (for balance info).
+        txn_resp:              Optional response from get_transactions (60-day window).
+        account_id:            Journal account_id (default: "SCHWAB").
+        margin_mode:           How to determine margin debt to store:
+                                 "balance"  — use abs(margin_balance) from summary (default).
+                                 "computed" — gross_MV minus equity.
+                                 "csv"      — preserve existing MARGIN sentinel.
+        futures_account_value: Actual Schwab Futures Account Value from the balance page
+                               (e.g. 5415.0).  When provided, an adjustment row
+                               "_FUTURES_ADJ_" is written so that sum(futures MV) equals
+                               this value.  Without this, the sum of notional leg MVs
+                               differs from the sub-account equity by the unrealized
+                               futures P&L + initial margin basis.
+        dry_run:               Parse only; do not write to DB.
 
     Returns:
         Dict with keys: equity_count, option_count, futures_count, txn_count,
@@ -469,14 +488,49 @@ def write_schwab(
     db.delete_futures_by_account(account_id)
     fut_written = db.insert_futures(fut_recs) if fut_recs else 0
 
+    # Use persisted futures equity override if no value passed explicitly
+    if futures_account_value is None:
+        futures_account_value = db.get_futures_equity_override(account_id)
+
+    # Futures account value adjustment row.
+    # The sum of individual notional MVs (signed_qty × mark × multiplier) differs from
+    # the actual Schwab Futures sub-account equity by the margin basis and settled P&L.
+    # When futures_account_value is provided, write a correction row so the dashboard
+    # Account Summary shows the correct total.
+    if futures_account_value is not None and fut_recs:
+        notional_sum = sum(r.get("market_value") or 0.0 for r in fut_recs)
+        adj = futures_account_value - notional_sum
+        if abs(adj) > 0.01:
+            db.insert_futures([{
+                "account_id":   account_id,
+                "symbol":       "_FUTURES_ADJ_",
+                "underlying":   None,
+                "description":  "Futures account equity adjustment",
+                "qty":          0,
+                "price":        None,
+                "market_value": adj,
+                "data_source":  "computed",
+                "source_file":  None,
+                "_expiry":      None,
+                "_multiplier":  None,
+                "_trade_price": None,
+                "_spread_name": None,
+            }])
+            fut_written += 1
+            print(f"[{account_id}] futures adj — notional={notional_sum:+,.2f}  "
+                  f"target={futures_account_value:,.2f}  adj={adj:+,.2f}")
+
     txn_written = db.insert_transactions(txn_recs) if txn_recs else 0
 
     instr_recs = schwab_fetcher.normalize_instruments(eq_recs, opt_recs, fut_recs)
     instr_written = db.upsert_instruments(instr_recs) if instr_recs else 0
 
-    # Margin sentinel
-    margin = 0.0
-    if summary_resp:
+    # Margin sentinel — check for a persistent override first
+    override = db.get_margin_override(account_id)
+    if override is not None:
+        margin = override
+        print(f"[{account_id}] margin override active — using ${margin:,.0f}")
+    elif summary_resp:
         bal = schwab_fetcher.normalize_balances(summary_resp)
         if margin_mode == "computed":
             gross_mv = _gross_mv_from_records(eq_recs)
@@ -487,6 +541,8 @@ def write_schwab(
               f"equity={bal['equity']:.2f}  margin={margin:.2f}  mode={margin_mode}")
     elif margin_mode == "csv":
         margin = csv_margin
+    else:
+        margin = 0.0
     _insert_margin_sentinel(account_id, margin)
 
     _enrich()
@@ -500,17 +556,19 @@ def write_schwab(
 
 # ── Margin override ────────────────────────────────────────────────────────────
 
-def set_margin(account_id: str, amount: float) -> dict:
+def set_margin(account_id: str, amount: float, *, persist: bool = True) -> dict:
     """
-    Directly set the margin debt for an account.
+    Set the margin debt for an account.
 
-    Writes (or replaces) the MARGIN sentinel row in the positions table.
-    Pass amount=0 to clear margin for the account.
+    When persist=True (default), also writes to margin_overrides so the value
+    survives future syncs.  Pass amount=0 to clear both the sentinel and the
+    override (computed margin will resume on next sync).
 
     Args:
-        account_id: Journal account_id (e.g. "RH-BV", "SCHWAB", "TS").
-        amount:     Margin balance in USD (positive number, e.g. 25000).
-                    Pass 0 to remove the margin sentinel.
+        account_id: Journal account_id (e.g. "TRADIER", "SCHWAB").
+        amount:     Margin balance in USD (positive number, e.g. 36072).
+                    Pass 0 to clear the override and remove the margin sentinel.
+        persist:    Write to margin_overrides table so the value survives syncs.
 
     Returns:
         Dict with account_id, amount, and action taken.
@@ -527,13 +585,20 @@ def set_margin(account_id: str, amount: float) -> dict:
                 "DELETE FROM positions WHERE account_id=? AND ticker='MARGIN'",
                 (account_id,),
             )
+            conn.execute(
+                "DELETE FROM margin_overrides WHERE account_id=?",
+                (account_id,),
+            )
             conn.commit()
-        print(f"[{account_id}] MARGIN sentinel cleared")
+        print(f"[{account_id}] MARGIN sentinel and override cleared")
         return {"account_id": account_id, "amount": 0.0, "action": "cleared"}
 
+    if persist:
+        db.upsert_margin_override(account_id, amount)
     _insert_margin_sentinel(account_id, amount)
-    print(f"[{account_id}] MARGIN set to ${amount:,.0f}")
-    return {"account_id": account_id, "amount": amount, "action": "set"}
+    action = "set+persisted" if persist else "set"
+    print(f"[{account_id}] MARGIN set to ${amount:,.0f}  (persist={persist})")
+    return {"account_id": account_id, "amount": amount, "action": action}
 
 
 # ── CLI helper ─────────────────────────────────────────────────────────────────
@@ -579,6 +644,10 @@ Examples:
     parser.add_argument("--margin-mode", default="balance",
                         choices=["balance", "computed", "csv"],
                         help="How to derive margin debt (default: balance).")
+    parser.add_argument("--futures-equity", metavar="AMOUNT", type=float, default=None,
+                        help="Schwab Futures Account Value from balance page (e.g. 5415). "
+                             "When provided, writes a correction row so futures sum "
+                             "equals this value instead of the notional leg total.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Parse only; do not write to DB.")
 
@@ -634,12 +703,13 @@ Examples:
             print("ERROR: --equity (or --positions) required for schwab", file=sys.stderr)
             sys.exit(1)
         result = write_schwab(
-            equity_resp  = eq,
-            futures_resp = _load(args.futures),
-            summary_resp = _load(args.summary) or _load(args.balances),
-            account_id   = args.account_id or "SCHWAB",
-            margin_mode  = args.margin_mode,
-            dry_run      = args.dry_run,
+            equity_resp           = eq,
+            futures_resp          = _load(args.futures),
+            summary_resp          = _load(args.summary) or _load(args.balances),
+            account_id            = args.account_id or "SCHWAB",
+            margin_mode           = args.margin_mode,
+            futures_account_value = args.futures_equity,
+            dry_run               = args.dry_run,
         )
 
     elif broker in ("tradestation", "ts"):

@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from src import db
 from src.parsers import robinhood, webull, tradestation, schwab, tradier, coinbase, fidelity
 from src.parsers import positions_csv
+from src.parsers import static_positions_csv
 
 ACTIVITY = Path(__file__).parent / "activity"
 
@@ -86,6 +87,12 @@ POSITION_FILES = [
     (ACTIVITY / "positions-fidelity.csv",  "FIDELITY"),
     (ACTIVITY / "positions-coinbase.csv",  "COINBASE"),
 ]
+
+# Static options/futures/crypto position CSVs (broker CSV exports).
+# Each tuple is (path, account_id). Parsed via static_positions_csv.
+OPTIONS_FILES: list[tuple] = []
+FUTURES_FILES: list[tuple] = []
+CRYPTO_FILES:  list[tuple] = []
 
 
 
@@ -212,6 +219,26 @@ def run(reset: bool = False) -> None:
 
     if pos_total:
         print(f"\nPositions — {pos_total} rows written across accounts.")
+
+    # ── Static options / futures / crypto positions ───────────────────────────
+    _static_map = [
+        (OPTIONS_FILES, "options", db.delete_options_by_account, db.insert_options),
+        (FUTURES_FILES, "futures", db.delete_futures_by_account, db.insert_futures),
+        (CRYPTO_FILES,  "crypto",  db.delete_crypto_by_account,  db.insert_crypto),
+    ]
+    for file_list, asset_type, del_fn, ins_fn in _static_map:
+        for path, acct in file_list:
+            if not Path(path).exists():
+                print(f"  SKIP  {asset_type} {acct}: file not found")
+                continue
+            try:
+                recs = static_positions_csv.parse(str(path), acct, asset_type)
+            except Exception as exc:
+                print(f"  ERROR {asset_type} {acct}: {exc}")
+                continue
+            del_fn(acct)
+            written = ins_fn(recs)
+            print(f"  OK    {asset_type} {acct}: {written} rows")
 
     # ── Sector/industry enrichment ────────────────────────────────────────────
     print("\nEnriching instrument sectors via yfinance …")
