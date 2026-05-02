@@ -545,7 +545,7 @@ with tab_portfolio:
         fc1, fc2 = st.columns(2)
         fc1.metric("Open Contracts", len(futs_all))
         fc2.metric("Net Market Value", f"${_fut_mv_total:+,.0f}")
-        fut_disp_cols = [c for c in ["Account", "symbol", "qty", "price", "MARKET VALUE"]
+        fut_disp_cols = [c for c in ["Account", "Ticker", "description", "qty", "price", "MARKET VALUE"]
                          if c in futs_all.columns]
         st.dataframe(
             futs_all[fut_disp_cols].reset_index(drop=True)
@@ -854,7 +854,7 @@ with tab_positions:
                 _label   = f"**{_acct}** — {len(_grp)} contracts · Net MV ${_acct_mv:+,.0f}"
                 with st.expander(_label, expanded=True):
                     _show_cols = [c for c in
-                                  ["symbol", "underlying", "description", "qty",
+                                  ["Ticker", "underlying", "description", "qty",
                                    "price", "MARKET VALUE"]
                                   if c in _grp.columns]
                     _fut_fmt = {}
