@@ -21,6 +21,7 @@ if _project_root not in _sys.path:
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -32,14 +33,16 @@ import httpx
 # ---------------------------------------------------------------------------
 
 BASE_URL = "https://api.tradier.com/v1"
-ACCOUNT_NUMBER = "6YB44166"
-ACCESS_TOKEN = "nCU7yailI9bUNgPp3Aspj7VC5GR1"
+ACCOUNT_NUMBER = os.environ.get("TRADIER_ACCOUNT_NUMBER", "6YB44166")
+ACCESS_TOKEN = os.environ.get("TRADIER_ACCESS_TOKEN") or os.environ.get("TRADIER_MCP_BEARER_TOKEN")
 
 # Also save to data/tmp/ for the ingest pipeline
 DATA_DIR = Path(_project_root) / "data" / "tmp"
 
 
 def _headers() -> dict[str, str]:
+    if not ACCESS_TOKEN:
+        raise RuntimeError("Set TRADIER_ACCESS_TOKEN or TRADIER_MCP_BEARER_TOKEN before calling Tradier live API.")
     return {
         "Authorization": f"Bearer {ACCESS_TOKEN}",
         "Accept": "application/json",

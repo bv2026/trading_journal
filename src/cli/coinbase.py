@@ -19,24 +19,34 @@ _project_root = str(_Path(__file__).resolve().parents[2])
 if _project_root not in _sys.path:
     _sys.path.insert(0, _project_root)
 
-# Add coinbase MCP source to path
-_coinbase_src = r"C:\work\coinbase-api\src"
-if _coinbase_src not in _sys.path:
-    _sys.path.insert(0, _coinbase_src)
-
 import argparse
 import json
 import os
 import sys
 from typing import Any
 
-# Set env vars for coinbase config (same as claude_desktop_config.json)
-os.environ.setdefault(
-    "COINBASE_API_KEY_NAME",
-    "organizations/6074317f-6c56-4822-b99c-f5b40321d37a/apiKeys/9430b569-f13f-4452-979a-863f6676628b",
-)
-os.environ.setdefault("COINBASE_API_PRIVATE_KEY_FILE", r"C:\work\KEYS\cdp_api_key.json")
-os.environ.setdefault("COINBASE_API_BASE_URL", "https://api.coinbase.com")
+
+def _load_coinbase_mcp_env() -> None:
+    """Load Coinbase MCP PYTHONPATH/env from Claude Desktop config when present."""
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        return
+    cfg_path = _Path(appdata) / "Claude" / "claude_desktop_config.json"
+    if not cfg_path.exists():
+        return
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    server = (cfg.get("mcpServers") or {}).get("coinbase-derivatives-mcp") or {}
+    for key, value in (server.get("env") or {}).items():
+        os.environ.setdefault(key, str(value))
+    for path in os.environ.get("PYTHONPATH", "").split(os.pathsep):
+        if path and path not in _sys.path:
+            _sys.path.insert(0, path)
+
+
+_load_coinbase_mcp_env()
 
 from coinbase_derivatives_mcp.config import load_config
 from coinbase_derivatives_mcp.client import CoinbaseClient
