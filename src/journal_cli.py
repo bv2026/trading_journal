@@ -368,7 +368,6 @@ def housekeeping_menu() -> None:
         print("6. Launch dashboard")
         print("7. Stop dashboard")
         print("8. Run tests")
-        print("9. DB account summary (legacy)")
         print("0. Back")
 
         choice = input("Select: ").strip()
@@ -392,119 +391,36 @@ def housekeeping_menu() -> None:
             _stop_dashboard()
         elif choice == "8":
             _run_command("Run tests", [sys.executable, "-m", "pytest", "tests/", "-q"])
-        elif choice == "9":
-            show_overview()
         else:
-            print("Choose 0-9.")
+            print("Choose 0-8.")
 
 
-def _load_all_broker_modules():
-    """Import and return all broker CLI modules."""
-    from src.cli import robinhood, tradestation, tradier, webull, schwab, coinbase, fidelity
-    return [
-        ("Robinhood",     robinhood,     "live"),
-        ("TradeStation",  tradestation,  "cached"),
-        ("Tradier",       tradier,       "live"),
-        ("Webull",        webull,        "cached"),
-        ("Schwab",        schwab,        "cached"),
-        ("Coinbase",      coinbase,      "live"),
-        ("Fidelity",      fidelity,      "csv"),
-    ]
-
-
-def show_broker_balances() -> None:
-    """Show balances from all brokers via CLI modules."""
-    brokers = _load_all_broker_modules()
-    print(f"\n{'='*60}")
-    print(f"  Account Balances (via broker CLI modules)")
-    print(f"{'='*60}")
-
-    for name, mod, source in brokers:
-        try:
-            if hasattr(mod, "fetch_balances"):
-                bal = mod.fetch_balances()
-                if name == "Tradier":
-                    mod.display_balances(bal, header=f"{name} [{source}]")
-                elif name == "Coinbase":
-                    mod.display_balances(bal, header=f"{name} [{source}]")
-            elif hasattr(mod, "load_balances"):
-                bal = mod.load_balances()
-                if bal:
-                    mod.display_balances(bal, header=f"{name} [{source}]")
-                else:
-                    print(f"\n  {name}: no cached data")
-            elif hasattr(mod, "load_balance"):
-                # Webull — show margin account balance
-                bal = mod.load_balance(mod.MARGIN_ACCOUNT_ID)
-                if bal:
-                    mod.display_balance(bal, header=f"{name} [{source}]")
-                else:
-                    print(f"\n  {name}: no cached data")
-            elif hasattr(mod, "load_summary"):
-                summary = mod.load_summary()
-                if summary:
-                    mod.display_summary(summary, header=f"{name} [{source}]")
-                else:
-                    print(f"\n  {name}: no cached data")
-            elif hasattr(mod, "load_positions") and name == "Fidelity":
-                positions = mod.load_positions()
-                if positions:
-                    total = sum(mod._num(p.get("shares", 0)) * mod._num(p.get("stored_price", 0) or p.get("cost_basis", 0)) for p in positions)
-                    print(f"\n  {name} [{source}]: ${total:>12,.2f} market value ({len(positions)} positions)")
-                else:
-                    print(f"\n  {name}: no data")
-            else:
-                print(f"\n  {name}: no balance function available")
-        except Exception as e:
-            print(f"\n  {name}: error — {e}")
-
-    # Cash balance from DB
-    cash = db.get_cash_balance()
-    if cash > 0:
-        print(f"\n  Cash (Multi-Bank): ${cash:>12,.2f}")
-
-
-def show_broker_positions() -> None:
-    """Pick a broker, show positions via its CLI module."""
-    brokers = _load_all_broker_modules()
-    while True:
-        print("\nSelect Broker")
-        for i, (name, _, source) in enumerate(brokers, 1):
-            print(f"  {i}. {name} [{source}]")
-        print("  0. Back")
-
-        choice = input("\n  Select: ").strip()
-        if choice in {"0", "q", "Q", ""}:
-            return
-        if not choice.isdigit() or not (1 <= int(choice) <= len(brokers)):
-            continue
-
-        name, mod, source = brokers[int(choice) - 1]
-        try:
-            mod.broker_menu()
-        except Exception as e:
-            print(f"\n  Error: {e}")
+def _broker_live_view() -> None:
+    """Launch the standalone broker CLI menu (live API + cached data)."""
+    from src.cli.menu import main_menu
+    main_menu()
 
 
 def main() -> int:
     db.init_db()
     while True:
         print("\nTrading Journal CLI")
-        print("1. Account balances (live + cached)")
-        print("2. Positions by broker")
-        print("3. All positions (DB)")
+        print("1. Account balances")
+        print("2. Positions by account")
+        print("3. All positions")
         print("4. Set cash balance")
         print("5. MCP health")
         print("6. Housekeeping")
+        print("7. Broker Live View")
         print("0. Exit")
 
         choice = input("Select: ").strip()
         if choice in {"0", "q", "Q"}:
             return 0
         if choice == "1":
-            show_broker_balances()
+            show_overview()
         elif choice == "2":
-            show_broker_positions()
+            show_account_menu()
         elif choice == "3":
             show_positions()
         elif choice == "4":
@@ -513,8 +429,10 @@ def main() -> int:
             show_mcp_health(force=True)
         elif choice == "6":
             housekeeping_menu()
+        elif choice == "7":
+            _broker_live_view()
         else:
-            print("Choose 0-6.")
+            print("Choose 0-7.")
 
 
 if __name__ == "__main__":
