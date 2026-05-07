@@ -192,10 +192,6 @@ def normalize_futures(positions_resp: dict | list, account_id: str = "COINBASE")
         pnl = _float(_first(row, "unrealized_pnl", "unrealizedPnl", "pnl")) or 0.0
         position_pnl += pnl
         price = _float(_first(row, "mark_price", "current_price", "price"))
-        entry_price = _float(_first(row, "avg_entry_price", "entry_price", "average_entry_price"))
-        notional = _float(_first(row, "notional_value", "notional"))
-        if notional is None and entry_price is not None:
-            notional = abs(qty) * entry_price
         underlying = symbol.split("-", 1)[0]
 
         records.append({
@@ -206,7 +202,9 @@ def normalize_futures(positions_resp: dict | list, account_id: str = "COINBASE")
             "qty":          qty,
             "price":        price,
             "market_value": pnl,
-            "cost_basis":   notional,
+            # Account-level futures value is P&L/collateral, not contract
+            # notional. Do not use avg_entry_price * contracts as cost basis.
+            "cost_basis":   0.0,
             "source_file":  None,
         })
 

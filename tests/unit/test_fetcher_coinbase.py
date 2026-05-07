@@ -118,7 +118,7 @@ def test_normalize_coinbase_futures_adds_realized_funding_adjustment():
     assert by_symbol["COINBASE-FUTURES-PNL-ADJ"]["market_value"] == 1011.5
 
 
-def test_normalize_coinbase_futures_derives_cost_basis_from_entry_price():
+def test_normalize_coinbase_futures_does_not_use_notional_as_cost_basis():
     rows = normalize_futures({
         "positions": [
             {
@@ -132,7 +132,7 @@ def test_normalize_coinbase_futures_derives_cost_basis_from_entry_price():
         ],
     })
 
-    assert rows[0]["cost_basis"] == 158000.0
+    assert rows[0]["cost_basis"] == 0.0
 
 
 def test_normalize_instruments_deduplicates():
