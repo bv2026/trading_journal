@@ -4,7 +4,7 @@ Sector/industry enrichment via yfinance.
 Populates NULL sector and industry in the instruments master table for equity
 symbols, then copies those values back into the positions table.
 
-Called automatically at the end of ingest.py runs so the dashboard always has
+Called automatically at the end of src.ingest runs so the dashboard always has
 sector data for MCP-sourced positions (which arrive with sector=NULL).
 """
 import logging

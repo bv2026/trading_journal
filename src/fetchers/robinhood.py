@@ -50,8 +50,12 @@ list_accounts response shape:
 
 Account mapping:
   Robinhood account numbers map to journal account_ids via ACCOUNT_NUMBER_MAP
-  below. RH-KD requires separate trayd credentials and falls back to CSV ingest.
+  below, data/config/robinhood_accounts.json, or ROBINHOOD_ACCOUNT_MAP.
 """
+import json
+import os
+from pathlib import Path
+
 from .base import is_currency_entry
 
 # ── Account number → journal account_id ──────────────────────────────────────
@@ -60,6 +64,32 @@ ACCOUNT_NUMBER_MAP: dict[str, str] = {
     "869439976": "RH-BV",
     # "RH-KD account number": "RH-KD",  # add when linked
 }
+ACCOUNT_MAP_PATH = Path(__file__).resolve().parents[2] / "data" / "config" / "robinhood_accounts.json"
+
+
+def load_account_number_map() -> dict[str, str]:
+    """Load Robinhood account-number to journal account-id mappings.
+
+    Defaults live in ACCOUNT_NUMBER_MAP. Operators can add/update mappings in
+    data/config/robinhood_accounts.json or via ROBINHOOD_ACCOUNT_MAP JSON.
+    """
+    mapping = dict(ACCOUNT_NUMBER_MAP)
+    if ACCOUNT_MAP_PATH.exists():
+        try:
+            data = json.loads(ACCOUNT_MAP_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                mapping.update({str(k): str(v) for k, v in data.items()})
+        except (OSError, json.JSONDecodeError):
+            pass
+    env_value = os.environ.get("ROBINHOOD_ACCOUNT_MAP")
+    if env_value:
+        try:
+            data = json.loads(env_value)
+            if isinstance(data, dict):
+                mapping.update({str(k): str(v) for k, v in data.items()})
+        except json.JSONDecodeError:
+            pass
+    return mapping
 
 
 def account_map_from_list(accounts_resp: dict) -> dict[str, str]:
@@ -75,7 +105,7 @@ def account_map_from_list(accounts_resp: dict) -> dict[str, str]:
         number = str(acct.get("account_number", "")).strip()
         if not number:
             continue
-        journal_id = ACCOUNT_NUMBER_MAP.get(number, f"RH-{number}")
+        journal_id = load_account_number_map().get(number, f"RH-{number}")
         mapping[number] = journal_id
     return mapping
 

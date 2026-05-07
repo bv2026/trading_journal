@@ -231,6 +231,8 @@ def load_positions_from_db() -> pd.DataFrame:
     is_static = pd.Series(False, index=pos.index)
     if "Price_Source" in pos.columns:
         is_static = pos["Price_Source"].str.lower().eq("static")
+    if "Account_Type" in pos.columns:
+        is_static = is_static | pos["Account_Type"].str.lower().eq("crypto")
 
     live_mask    = ~is_margin & ~is_static
     live_tickers = pos.loc[live_mask, "Ticker"].dropna().unique().tolist()
@@ -366,7 +368,13 @@ def compute_net_worth(positions_df: pd.DataFrame) -> dict[str, float]:
         return {"market_value": 0.0, "margin": 0.0, "net_worth": 0.0}
 
     mv_col = pd.to_numeric(positions_df["MARKET VALUE"], errors="coerce")
-    is_margin = positions_df.get("Ticker", pd.Series(dtype=str)) == "MARGIN"
+    is_margin = (
+        positions_df.get("Ticker", pd.Series(dtype=str))
+        .fillna("")
+        .astype(str)
+        .str.upper()
+        .eq("MARGIN")
+    )
 
     total_mv     = float(mv_col[~is_margin].sum())
     total_margin = abs(float(mv_col[is_margin].sum()))

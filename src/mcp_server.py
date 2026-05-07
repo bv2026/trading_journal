@@ -2,7 +2,7 @@
 Trading Journal MCP Server
 
 Exposes the portfolio journal database as Claude-callable tools.
-Register in Claude Desktop config (see USAGE.md) then ask Claude
+Register in Claude Desktop config (see docs/USAGE.md) then ask Claude
 questions like "what were my total dividends in 2024?" directly in chat.
 
 Tools:
@@ -24,10 +24,10 @@ import subprocess
 from pathlib import Path
 
 # Ensure project root is on the path so src.* imports work.
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import mcp_ingest as _ingest
+from src import mcp_ingest as _ingest
 
 import pandas as pd
 from mcp.server.fastmcp import FastMCP
@@ -299,7 +299,7 @@ def get_performance(account_id: str | None = None) -> str:
     """
     snap = load_snapshot_periods()
     if snap.empty:
-        return ("No snapshot data yet. Run `python ingest.py` at least once "
+        return ("No snapshot data yet. Run `python -m src.ingest` at least once "
                 "to record the first snapshot.  Historical periods accumulate "
                 "with each subsequent run.")
 
@@ -401,11 +401,7 @@ def run_ingest(reset: bool = False) -> str:
                every CSV currently in activity/ (full rebuild).  Use once
                after first setup or if you want a clean slate.
     """
-    ingest_script = ROOT / "ingest.py"
-    if not ingest_script.exists():
-        return "Error: ingest.py not found."
-
-    cmd = [sys.executable, str(ingest_script)]
+    cmd = [sys.executable, "-m", "src.ingest"]
     if reset:
         cmd.append("--reset")
 
@@ -464,6 +460,7 @@ def refresh_positions(
     ts_balances_json: str | None = None,
     rh_positions_json: str | None = None,
     rh_portfolio_json: str | None = None,
+    coinbase_positions_json: str | None = None,
     webull_account_list: str | None = None,
     webull_positions_json: str | None = None,
     webull_balances_json: str | None = None,
@@ -491,6 +488,7 @@ def refresh_positions(
         ts_balances_json:       JSON string from TradeStation get-balances-details.
         rh_positions_json:      JSON string from trayd get_positions (Robinhood).
         rh_portfolio_json:      JSON string from trayd get_portfolio.
+        coinbase_positions_json: JSON string from Coinbase MCP balances/positions.
         webull_account_list:    Raw result text from webull get_account_list.
         webull_positions_json:  JSON string: {"webull_account_id": "positions text", ...}.
         webull_balances_json:   JSON string: {"webull_account_id": "balance text", ...}.
@@ -554,6 +552,15 @@ def refresh_positions(
             summary["RH-BV"] = result
         except Exception as exc:
             summary["RH-BV"] = {"error": str(exc)}
+
+    if coinbase_positions_json:
+        try:
+            result = _ingest.write_coinbase(
+                positions_resp = json.loads(coinbase_positions_json),
+            )
+            summary["COINBASE"] = result
+        except Exception as exc:
+            summary["COINBASE"] = {"error": str(exc)}
 
     if webull_account_list and webull_positions_json:
         try:

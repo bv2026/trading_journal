@@ -17,6 +17,7 @@ from src.db import (
     clear_transactions, upsert_instruments, load_instruments,
     upsert_cash_balance, get_cash_balance,
     load_transactions,
+    upsert_account_balances, load_account_balances,
 )
 
 
@@ -115,6 +116,20 @@ class TestInstruments:
         df = load_instruments("equity")
         assert df.iloc[0]["name"] == "Apple New"
 
+    def test_upsert_preserves_metadata_when_incoming_null(self, tmp_db, monkeypatch):
+        monkeypatch.setattr(db_module, "DB_PATH", tmp_db)
+        upsert_instruments([self._equity("AAPL", name="Apple Inc")])
+        upsert_instruments([{
+            "symbol": "AAPL", "asset_class": "equity", "underlying": None,
+            "name": None, "exchange": None, "currency": "USD",
+            "sector": None, "industry": None, "expiry": None,
+            "strike": None, "call_put": None, "tick_size": None,
+            "point_value": None, "tradable": None,
+        }])
+        df = load_instruments("equity")
+        assert df.iloc[0]["name"] == "Apple Inc"
+        assert df.iloc[0]["sector"] == "Technology"
+
     def test_empty_input_returns_zero(self, tmp_db, monkeypatch):
         monkeypatch.setattr(db_module, "DB_PATH", tmp_db)
         assert upsert_instruments([]) == 0
@@ -163,6 +178,40 @@ class TestCashBalance:
     def test_not_yet_set_returns_zero(self, tmp_db, monkeypatch):
         monkeypatch.setattr(db_module, "DB_PATH", tmp_db)
         assert get_cash_balance() == 0.0
+
+
+class TestAccountBalances:
+    def test_upsert_and_load_preserves_cost_basis(self, tmp_db, monkeypatch):
+        monkeypatch.setattr(db_module, "DB_PATH", tmp_db)
+        written = upsert_account_balances([{
+            "account_id": "RH-BV",
+            "market_value": 100_000.0,
+            "cost_basis": 82_500.0,
+            "margin": 20_000.0,
+            "net_equity": 80_000.0,
+            "source": "Live MCP",
+            "detail": "OK",
+        }])
+        assert written == 1
+
+        df = load_account_balances()
+        row = df[df["account_id"] == "RH-BV"].iloc[0]
+        assert row["market_value"] == pytest.approx(100_000.0)
+        assert row["cost_basis"] == pytest.approx(82_500.0)
+        assert row["margin"] == pytest.approx(20_000.0)
+        assert row["net_equity"] == pytest.approx(80_000.0)
+
+    def test_legacy_record_without_cost_basis_is_allowed(self, tmp_db, monkeypatch):
+        monkeypatch.setattr(db_module, "DB_PATH", tmp_db)
+        upsert_account_balances([{
+            "account_id": "WEBULL",
+            "market_value": 50_000.0,
+            "margin": 5_000.0,
+            "net_equity": 45_000.0,
+        }])
+        df = load_account_balances()
+        row = df[df["account_id"] == "WEBULL"].iloc[0]
+        assert pd.isna(row["cost_basis"])
 
 
 # ── _migrate idempotency ──────────────────────────────────────────────────────

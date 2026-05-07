@@ -153,6 +153,7 @@ def parse(filepath: str, account_id: str) -> list[dict]:
             "iv_rank":      _val("IV_Rank"),
             "perf_ytd":     _val("PERF_YTD"),
             "atr_pct":      _val("ATR_pct"),
+            "data_source":  "csv",
             "source_file":  str(path.name),
         })
 

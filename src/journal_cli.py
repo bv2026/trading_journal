@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import sys
 import subprocess
+import asyncio
+import json
+import logging
 from pathlib import Path
 
 import pandas as pd
@@ -33,9 +36,22 @@ MCP_POSITION_ACCOUNTS = {
     "COINBASE",
 }
 
+ACCOUNT_HEALTH_BROKERS = {
+    "COINBASE": "Coinbase",
+    "RH-BV": "Robinhood",
+    "TS": "TradeStation",
+    "SCHWAB": "Schwab",
+    "TRADIER": "Tradier",
+    "WEBULL": "Webull",
+    "WEBULL-CASH": "Webull",
+    "WEBULL-EVENTS": "Webull",
+    "WEBULL-FUT": "Webull",
+}
+
 MONEY_COLS = {"Market Value", "Cost Basis", "Margin", "Net Equity", "MARKET VALUE", "COST", "totalReturn"}
 PRICE_COLS = {"PRICE", "price", "Cost_Basis"}
 _HEALTH_CACHE: pd.DataFrame | None = None
+_BALANCE_ERRORS: dict[str, str] = {}
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -57,6 +73,15 @@ def _num(v, decimals: int = 4) -> str:
         return str(v)
 
 
+def _as_float(value, default: float = 0.0) -> float:
+    if value in (None, ""):
+        return default
+    try:
+        return float(str(value).replace(",", "").replace("$", ""))
+    except (TypeError, ValueError):
+        return default
+
+
 def _print_df(df: pd.DataFrame, *, max_rows: int = 200) -> None:
     if df.empty:
         print("No rows.")
@@ -74,7 +99,7 @@ def _print_df(df: pd.DataFrame, *, max_rows: int = 200) -> None:
         print(f"... {len(df) - max_rows:,} more rows omitted")
 
 
-def show_mcp_health(*, force: bool = False) -> pd.DataFrame:
+def show_mcp_health(*, force: bool = False, compact: bool = False) -> pd.DataFrame:
     global _HEALTH_CACHE
 
     print("\nMCP health")
@@ -91,19 +116,66 @@ def show_mcp_health(*, force: bool = False) -> pd.DataFrame:
         health = _HEALTH_CACHE.copy()
     if "Tools" in health.columns:
         health["Tools"] = health["Tools"].astype(str)
-    _print_df(health)
+    if compact:
+        compact_cols = [col for col in ("Broker", "Accounts", "Status", "Tools") if col in health.columns]
+        _print_df(health[compact_cols])
+    else:
+        _print_df(health)
 
     bad = health[~health["Status"].isin(["OK"])] if not health.empty else health
     if not bad.empty:
-        print("\nBalances below are DB-backed and may be stale for accounts with non-OK MCP health.")
+        print("\nAccount balances prefer live/cached broker sources; journal.db is used as fallback.")
     else:
-        print("\nAll configured broker MCP servers responded. Balances below still reflect the last completed sync.")
+        print("\nAll configured broker MCP servers responded. Account balances prefer live/cached broker sources.")
     return health
+
+
+def _health_by_broker(health: pd.DataFrame | None = None) -> dict[str, dict]:
+    if health is None:
+        health = show_mcp_health()
+    if health.empty or "Broker" not in health.columns:
+        return {}
+    return {str(row["Broker"]): row.to_dict() for _, row in health.iterrows()}
+
+
+def _account_live_status(account_id: str, health_map: dict[str, dict]) -> str:
+    if account_id in _BALANCE_ERRORS:
+        return "Balance FAIL"
+    broker = ACCOUNT_HEALTH_BROKERS.get(account_id)
+    if not broker:
+        return "N/A"
+    status = str((health_map.get(broker) or {}).get("Status") or "UNKNOWN")
+    if status == "OK":
+        return "OK"
+    if status == "WARN":
+        return "WARN"
+    return f"{status}/fallback"
+
+
+def _report_live_fallbacks(health: pd.DataFrame | None = None) -> None:
+    if health is None:
+        health = _HEALTH_CACHE
+    if health is None or health.empty:
+        return
+    bad = health[~health["Status"].isin(["OK"])]
+    if bad.empty:
+        return
+    print("\nLIVE connection failures; using configured fallback source for these accounts:")
+    for _, row in bad.iterrows():
+        print(f"  {row['Accounts']}: {row['Broker']} {row['Status']} — {row['Detail']}")
 
 
 def _load_accounts() -> pd.DataFrame:
     db.init_db()
     return db.load_account_settings()
+
+
+def _report_balance_fallbacks() -> None:
+    if not _BALANCE_ERRORS:
+        return
+    print("\nLIVE balance fetch failures; showing journal.db fallback for these accounts:")
+    for account_id, detail in sorted(_BALANCE_ERRORS.items()):
+        print(f"  {account_id}: {detail}")
 
 
 def _load_positions() -> pd.DataFrame:
@@ -157,7 +229,267 @@ def _account_sources() -> dict[str, str]:
     return {account_id: _source_label(labels) for account_id, labels in sources.items()}
 
 
-def _account_summary() -> pd.DataFrame:
+def _balance_row(market_value: float, margin: float, source: str, detail: str = "") -> dict:
+    return {
+        "market_value": float(market_value),
+        "margin": float(margin),
+        "net_equity": float(market_value) - float(margin),
+        "balance_source": source,
+        "balance_detail": detail,
+    }
+
+
+def _load_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _coinbase_live_balance() -> dict | None:
+    try:
+        from scripts.sync_coinbase import _default_config_path, _load_server_env  # noqa: PLC0415
+        from src.fetchers.coinbase import normalize_futures, normalize_positions  # noqa: PLC0415
+
+        _load_server_env(_default_config_path())
+        from coinbase_derivatives_mcp.server import (  # noqa: PLC0415
+            capture_coinbase_portfolio_snapshot,
+            query_portfolio_state,
+        )
+
+        capture_coinbase_portfolio_snapshot(label="journal-cli-balance")
+        state = query_portfolio_state()
+        crypto = normalize_positions(state, "COINBASE")
+        futures = normalize_futures(state, "COINBASE")
+        market_value = sum(_as_float(row.get("market_value")) for row in crypto + futures)
+        if market_value <= 0:
+            raise RuntimeError("Coinbase live balance returned no non-zero rows")
+        return _balance_row(market_value, 0.0, "Live MCP")
+    except Exception as exc:  # noqa: BLE001 - fall back to DB
+        return {"error": str(exc)}
+
+
+def _robinhood_live_balances() -> dict[str, dict]:
+    for name in ("mcp", "httpx", "httpcore", "rich"):
+        logging.getLogger(name).setLevel(logging.ERROR)
+    try:
+        from src.cli import robinhood as rh_cli  # noqa: PLC0415
+        from src.fetchers.robinhood import account_map_from_list, normalize_portfolio  # noqa: PLC0415
+    except Exception as exc:
+        return {"_error": str(exc)}
+
+    rows: dict[str, dict] = {}
+    for profile in rh_cli.list_profiles():
+        token = rh_cli.load_bearer_token(profile)
+        if not token:
+            continue
+        try:
+            accounts = asyncio.run(rh_cli.fetch_accounts(token))
+        except Exception:
+            continue
+        account_map = account_map_from_list({"accounts": accounts})
+        for account in accounts:
+            account_number = str(account.get("account_number") or "")
+            account_id = account_map.get(account_number)
+            if not account_number or not account_id:
+                continue
+            try:
+                portfolio = asyncio.run(rh_cli.fetch_portfolio(token, account_number))
+                bal = normalize_portfolio(portfolio)
+                margin = _as_float(bal.get("margin"))
+                equity = _as_float(bal.get("equity"))
+                rows[account_id] = _balance_row(equity + margin, margin, "Live MCP", f"profile {profile}")
+            except Exception:
+                continue
+    return rows
+
+
+def _tradier_live_balance(db_margin: float) -> dict | None:
+    def rest_balance() -> dict:
+        from src.cli import tradier as tradier_cli  # noqa: PLC0415
+
+        resp = tradier_cli.fetch_balances()
+        bal = resp.get("balances", {}) or {}
+        equity = _as_float(bal.get("totalEquity") or bal.get("total_equity"))
+        cash = _as_float(bal.get("cash") or bal.get("total_cash"))
+        margin = _as_float(bal.get("marginBalance") or bal.get("margin_balance"))
+        if margin <= 0:
+            margin = abs(cash) if cash < 0 else db_margin
+        market_value = _as_float(bal.get("marketValue") or bal.get("market_value"))
+        if market_value <= 0:
+            market_value = equity + margin
+        return _balance_row(market_value, margin, "Live API")
+
+    async def mcp_balance() -> dict:
+        from mcp.client.auth import OAuthClientProvider  # noqa: PLC0415
+        from mcp.client.session import ClientSession  # noqa: PLC0415
+        from mcp.client.streamable_http import streamablehttp_client  # noqa: PLC0415
+        from mcp.shared.auth import OAuthClientMetadata  # noqa: PLC0415
+        from src.mcp_tools.auth import JsonTokenStorage, token_path  # noqa: PLC0415
+
+        auth = OAuthClientProvider(
+            server_url="https://mcp.tradier.com/mcp",
+            client_metadata=OAuthClientMetadata(
+                client_name="Trading Journal CLI",
+                redirect_uris=["http://127.0.0.1/callback"],
+                token_endpoint_auth_method="none",
+            ),
+            storage=JsonTokenStorage(token_path("tradier")),
+            timeout=30,
+        )
+        async with streamablehttp_client(
+            "https://mcp.tradier.com/mcp",
+            auth=auth,
+            timeout=30,
+            sse_read_timeout=30,
+        ) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(
+                    "get_account_balances",
+                    {"accountNumber": "6YB44166"},
+                )
+        text = result.content[0].text if result.content else "{}"
+        payload = json.loads(text)
+        if payload.get("error"):
+            raise RuntimeError(payload["error"])
+        return payload
+
+    try:
+        return rest_balance()
+    except Exception as rest_exc:  # noqa: BLE001 - try MCP auth path next
+        try:
+            resp = asyncio.run(mcp_balance())
+        except Exception as mcp_exc:  # noqa: BLE001 - fall back to DB
+            return {"error": f"REST: {rest_exc}; MCP: {mcp_exc}"}
+        bal = resp.get("balances", {}) or {}
+        equity = _as_float(bal.get("totalEquity") or bal.get("total_equity"))
+        cash = _as_float(bal.get("cash") or bal.get("total_cash"))
+        margin = _as_float(bal.get("marginBalance") or bal.get("margin_balance"))
+        if margin <= 0:
+            margin = abs(cash) if cash < 0 else db_margin
+        market_value = _as_float(bal.get("marketValue") or bal.get("market_value"))
+        if market_value <= 0:
+            market_value = equity + margin
+        return _balance_row(market_value, margin, "Live MCP")
+
+
+def _schwab_cached_balance() -> dict | None:
+    try:
+        from src.cli import schwab as schwab_cli  # noqa: PLC0415
+        from src.fetchers.schwab import normalize_balances  # noqa: PLC0415
+
+        summary = schwab_cli.load_summary()
+        if not summary:
+            return None
+        bal = normalize_balances(summary)
+        return _balance_row(
+            _as_float(bal.get("market_value")),
+            _as_float(bal.get("margin")),
+            "Claude JSON",
+            f"summary {schwab_cli._file_age_str(schwab_cli.SUMMARY_FILE)}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
+
+
+def _tradestation_cached_balance() -> dict | None:
+    try:
+        from src.cli import tradestation as ts_cli  # noqa: PLC0415
+        from src.fetchers.tradestation import normalize_balances  # noqa: PLC0415
+
+        balances = ts_cli.load_balances()
+        if not balances:
+            return None
+        bal = normalize_balances(balances, "TS")
+        return _balance_row(
+            _as_float(bal.get("market_value")),
+            _as_float(bal.get("margin")),
+            "Claude JSON",
+            f"balances {ts_cli._file_age_str(ts_cli.BALANCES_FILE)}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
+
+
+def _webull_cached_balances(db_market_values: pd.Series) -> dict[str, dict]:
+    try:
+        from src.cli import webull as wb_cli  # noqa: PLC0415
+    except Exception as exc:
+        return {"_error": str(exc)}
+
+    rows: dict[str, dict] = {}
+    for wb_account_id, info in wb_cli.ACCOUNTS.items():
+        account_id = {
+            "MARGIN": "WEBULL",
+            "CASH": "WEBULL-CASH",
+            "EVENTS": "WEBULL-EVENTS",
+            "FUTURES": "WEBULL-FUT",
+        }.get(info["short"])
+        if not account_id:
+            continue
+        bal = wb_cli.load_balance(wb_account_id) if wb_account_id == wb_cli.MARGIN_ACCOUNT_ID else {}
+        if not bal:
+            bal = wb_cli.load_balance(wb_account_id)
+        positions = wb_cli.load_positions(wb_account_id)
+        market_value = _as_float(bal.get("total_market_value")) if bal else sum(
+            _as_float(p.get("quantity")) * _as_float(p.get("last")) for p in positions
+        )
+        cash = _as_float(bal.get("total_cash")) if bal else 0.0
+        net_liquidation = _as_float(bal.get("net_liquidation")) if bal else 0.0
+        if not market_value and net_liquidation > 0:
+            market_value = net_liquidation
+        elif not market_value and cash > 0:
+            market_value = cash
+        if not market_value:
+            market_value = float(db_market_values.get(account_id, 0.0))
+        margin = abs(cash) if cash < 0 else 0.0
+        rows[account_id] = _balance_row(market_value, margin, "Claude JSON")
+    return rows
+
+
+def _broker_balance_overrides(db_mv: pd.Series, db_margin: pd.Series) -> dict[str, dict]:
+    _BALANCE_ERRORS.clear()
+    rows: dict[str, dict] = {}
+
+    coinbase = _coinbase_live_balance()
+    if coinbase and "error" not in coinbase:
+        rows["COINBASE"] = coinbase
+    elif coinbase:
+        _BALANCE_ERRORS["COINBASE"] = str(coinbase["error"])
+
+    for account_id, bal in _robinhood_live_balances().items():
+        if not account_id.startswith("_"):
+            rows[account_id] = bal
+
+    tradier = _tradier_live_balance(float(db_margin.get("TRADIER", 0.0)))
+    if tradier and "error" not in tradier:
+        rows["TRADIER"] = tradier
+    elif tradier:
+        _BALANCE_ERRORS["TRADIER"] = str(tradier["error"])
+
+    schwab = _schwab_cached_balance()
+    if schwab and "error" not in schwab:
+        rows["SCHWAB"] = schwab
+    elif schwab:
+        _BALANCE_ERRORS["SCHWAB"] = str(schwab["error"])
+
+    ts = _tradestation_cached_balance()
+    if ts and "error" not in ts:
+        rows["TS"] = ts
+    elif ts:
+        _BALANCE_ERRORS["TS"] = str(ts["error"])
+
+    for account_id, bal in _webull_cached_balances(db_mv).items():
+        if not account_id.startswith("_"):
+            rows[account_id] = bal
+
+    return rows
+
+
+def _account_summary(health: pd.DataFrame | None = None) -> pd.DataFrame:
     pos = _load_positions()
     accounts = _load_accounts()
     if accounts.empty:
@@ -165,22 +497,38 @@ def _account_summary() -> pd.DataFrame:
 
     rows: list[dict] = []
     account_sources = _account_sources()
+    health_map = _health_by_broker(health) if health is not None else {}
     if not pos.empty:
         pos = pos.copy()
         pos["MARKET VALUE"] = pd.to_numeric(pos["MARKET VALUE"], errors="coerce").fillna(0)
         is_margin = pos["Ticker"].astype(str).str.upper().eq("MARGIN")
         mv = pos[~is_margin].groupby("Account")["MARKET VALUE"].sum()
         margin = pos[is_margin].groupby("Account")["MARKET VALUE"].sum().abs()
+        cost_parts = pd.Series(0.0, index=pos.index)
+        if "COST" in pos.columns:
+            cost_parts = cost_parts + pd.to_numeric(pos["COST"], errors="coerce").fillna(0)
+        if "cost_basis" in pos.columns:
+            cost_parts = cost_parts + pd.to_numeric(pos["cost_basis"], errors="coerce").fillna(0)
+        cost_basis = cost_parts[~is_margin].groupby(pos.loc[~is_margin, "Account"]).sum()
     else:
         mv = pd.Series(dtype=float)
         margin = pd.Series(dtype=float)
+        cost_basis = pd.Series(dtype=float)
+    balance_overrides = _broker_balance_overrides(mv, margin)
 
     for _, acct in accounts.sort_values("account_id").iterrows():
         if not bool(acct.get("active", 1)):
             continue
         account_id = str(acct["account_id"])
         market_value = float(mv.get(account_id, 0.0))
+        cost_value = float(cost_basis.get(account_id, 0.0))
         margin_value = float(margin.get(account_id, 0.0))
+        balance_source = "journal.db"
+        override = balance_overrides.get(account_id)
+        if override:
+            market_value = _as_float(override.get("market_value"))
+            margin_value = _as_float(override.get("margin"))
+            balance_source = str(override.get("balance_source") or balance_source)
         source = account_sources.get(
             account_id,
             "MCP" if account_id in MCP_POSITION_ACCOUNTS else "CSV",
@@ -192,7 +540,10 @@ def _account_summary() -> pd.DataFrame:
             "Broker": acct.get("broker") or "",
             "Type": acct.get("account_type") or "",
             "Source": source,
+            "Balance Source": balance_source,
+            "Live Status": _account_live_status(account_id, health_map) if health_map else "",
             "Market Value": market_value,
+            "Cost Basis": cost_value,
             "Margin": margin_value,
             "Net Equity": market_value - margin_value,
         })
@@ -204,7 +555,10 @@ def _account_summary() -> pd.DataFrame:
             "Broker": "Multi-Bank",
             "Type": "cash",
             "Source": "Manual",
+            "Balance Source": "manual",
+            "Live Status": "N/A",
             "Market Value": cash,
+            "Cost Basis": cash,
             "Margin": 0.0,
             "Net Equity": cash,
         })
@@ -212,12 +566,27 @@ def _account_summary() -> pd.DataFrame:
     summary = pd.DataFrame(rows)
     if summary.empty:
         return summary
+    db.upsert_account_balances([
+        {
+            "account_id": row["Account"],
+            "market_value": row["Market Value"],
+            "cost_basis": row["Cost Basis"],
+            "margin": row["Margin"],
+            "net_equity": row["Net Equity"],
+            "source": row["Balance Source"],
+            "detail": row["Live Status"],
+        }
+        for row in rows
+    ])
     total = {
         "Account": "TOTAL",
         "Broker": "",
         "Type": "",
         "Source": "",
+        "Balance Source": "",
+        "Live Status": "",
         "Market Value": summary["Market Value"].sum(),
+        "Cost Basis": summary["Cost Basis"].sum(),
         "Margin": summary["Margin"].sum(),
         "Net Equity": summary["Net Equity"].sum(),
     }
@@ -225,18 +594,25 @@ def _account_summary() -> pd.DataFrame:
 
 
 def _account_ids() -> list[str]:
-    summary = _account_summary()
-    if summary.empty:
+    accounts = _load_accounts()
+    if accounts.empty:
         return []
-    return [a for a in summary["Account"].tolist() if a not in {"TOTAL", "CASH"}]
+    active = accounts[accounts["active"].fillna(1).astype(bool)]
+    return [
+        str(account_id)
+        for account_id in active["account_id"].tolist()
+        if str(account_id) != "CASH"
+    ]
 
 
 def show_overview() -> None:
-    show_mcp_health()
-    summary = _account_summary()
+    health = show_mcp_health(compact=True)
+    summary = _account_summary(health)
     print("\nAccount balances")
     print("=" * 16)
     _print_df(summary)
+    _report_live_fallbacks(health)
+    _report_balance_fallbacks()
 
     total = summary[summary["Account"] == "TOTAL"]
     market_value = float(total["Market Value"].iloc[0]) if not total.empty else 0.0
@@ -249,6 +625,8 @@ def show_overview() -> None:
 
 
 def show_account_menu() -> None:
+    health = show_mcp_health()
+    _report_live_fallbacks(health)
     accounts = _account_ids()
     if not accounts:
         print("No active accounts found.")
@@ -270,6 +648,8 @@ def show_account_menu() -> None:
 
 
 def show_positions(account_id: str | None = None) -> None:
+    health = show_mcp_health()
+    _report_live_fallbacks(health)
     pos = _load_positions()
     if pos.empty:
         print("No positions found. Run an MCP sync or CSV ingest first.")

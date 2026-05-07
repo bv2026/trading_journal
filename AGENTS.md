@@ -1,28 +1,28 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ## Commands
 
 ```bash
 # Ingest broker CSVs (incremental — only new records added)
-python ingest.py
+python -m src.ingest
 
 # Full rebuild from scratch
-python ingest.py --reset
+python -m src.ingest --reset
 
 # Snapshot only (write today's portfolio_snapshots row without re-parsing CSVs)
-python ingest.py --snapshot-only
+python -m src.ingest --snapshot-only
 
 # Set cash balance (Fidelity/PNC/Huntington/Clearview combined)
-python cash.py              # print current balance
-python cash.py 18500        # set balance
+python -m src.cash              # print current balance
+python -m src.cash 18500        # set balance
 
 # Launch dashboard
 streamlit run dashboard/app.py         # http://localhost:8501
 
-# MCP server (for Claude Desktop)
-python mcp_server.py
+# MCP server (for Codex Desktop)
+python -m src.mcp_server
 
 # Tests
 python -m pytest tests/ -q             # all tests
@@ -36,22 +36,22 @@ python -m pytest tests/unit/test_parsers.py::test_robinhood_parse -v  # single t
 
 Two parallel ingest paths feed the same SQLite database (`data/journal.db`):
 
-**CSV path** (`ingest.py` → `src/parsers/` → `src/db.py`)
+**CSV path** (`src/ingest.py` → `src/parsers/` → `src/db.py`)
 - Reads broker CSV exports from `activity/`
 - Transactions: incremental, content-based IDs via `make_id()` prevent duplicates
 - Equity positions: always fully replaced per account (`delete_positions_by_account` + `insert_positions`)
 - Fidelity is an exception — it's a yearly summary file, so it's always deleted and re-inserted even without `--reset`
 
-**MCP path** (`mcp_ingest.py` → `src/fetchers/` → `src/db.py`)
-- Claude calls broker MCP tools in-session, then passes the raw response dicts to `write_*` functions in `mcp_ingest.py`
+**MCP path** (`src/mcp_ingest.py` → `src/fetchers/` → `src/db.py`)
+- Codex calls broker MCP tools in-session, then passes the raw response dicts to `write_*` functions in `src/mcp_ingest.py`
 - `src/fetchers/` normalizes each broker's response format into DB rows; `src/fetchers/base.py` has shared OCC symbol parsing, currency detection, and ID hashing
 - All MCP writes call `enrich_sectors()` automatically after writing
 
-**After either path**, `ingest.py` also:
+**After either path**, `src/ingest.py` also:
 1. Calls `enrich_sectors()` to fill NULL `sector`/`industry` on the `instruments` table via yfinance
 2. Writes a `portfolio_snapshots` row for today — this is what powers the Performance tab returns
 
-`ingest.py` also defines three empty list constants for future CSV-based static position imports (currently unused but required by tests that monkey-patch them):
+`src/ingest.py` also defines three empty list constants for future CSV-based static position imports (currently unused but required by tests that monkey-patch them):
 ```python
 OPTIONS_FILES: list[tuple] = []
 FUTURES_FILES: list[tuple] = []
@@ -107,7 +107,7 @@ Each entry would be `(path, account_id)` parsed via `static_positions_csv.parse(
 
 ## Margin sentinel rows
 
-Each MCP-synced margin account gets a `MARGIN` row inserted into `positions` with `cost_basis = -margin_amount`. The dashboard reads this to show margin debt and compute net equity. Written by `_insert_margin_sentinel()` in `mcp_ingest.py`.
+Each MCP-synced margin account gets a `MARGIN` row inserted into `positions` with `cost_basis = -margin_amount`. The dashboard reads this to show margin debt and compute net equity. Written by `_insert_margin_sentinel()` in `src/mcp_ingest.py`.
 
 Margin accuracy by broker:
 - **RH-BV**: exact — portfolio API returns cash balance
@@ -141,9 +141,9 @@ Futures root extraction: regex `r'(/[A-Z]+)(?=[A-Z]\d{2})'` strips contract-mont
 
 ## Sync Positions (MCP → DB)
 
-**Trigger:** user says "sync positions" — run all brokers below in order, then finalize.  
-**Working dir:** `C:\work\trading-journal`  
-**Temp files:** `data\tmp\` (create with `mkdir -p data\tmp` if missing)  
+**Trigger:** user says "sync positions" — run all brokers below in order, then finalize.
+**Working dir:** `C:\work\trading-journal`
+**Temp files:** `data\tmp\` (create with `mkdir -p data\tmp` if missing)
 **Rule:** a failure in one broker must not stop the others — log and continue.
 
 ### 1 — Webull (equity + options + futures + balance)
@@ -164,7 +164,7 @@ Build two maps:
 - `data\tmp\wb_balances_map.json`  = `{"<margin_wb_id>": "<balance_text>"}` (INDIVIDUAL_MARGIN wb_id only)
 
 ```
-python mcp_ingest.py --broker webull --account-list data\tmp\wb_account_list.txt --positions-map data\tmp\wb_positions_map.json --balances-map data\tmp\wb_balances_map.json
+python -m src.mcp_ingest --broker webull --account-list data\tmp\wb_account_list.txt --positions-map data\tmp\wb_positions_map.json --balances-map data\tmp\wb_balances_map.json
 ```
 
 Webull INDIVIDUAL_MARGIN account ID: `8AGMH0413MK07EPRI7J4OOSVH9`
@@ -176,7 +176,7 @@ mcp__schwab-smartspreads-file__get_futures_positions  → data\tmp\schwab_future
 mcp__schwab-smartspreads-file__get_account_summary    → data\tmp\schwab_summary.json
 ```
 ```
-python mcp_ingest.py --broker schwab --equity data\tmp\schwab_equity.json --futures data\tmp\schwab_futures.json --summary data\tmp\schwab_summary.json
+python -m src.mcp_ingest --broker schwab --equity data\tmp\schwab_equity.json --futures data\tmp\schwab_futures.json --summary data\tmp\schwab_summary.json
 ```
 
 ### 3 — Tradier (equity + options + balance)
@@ -186,7 +186,7 @@ mcp__15d93091-8d01-49f7-b7ff-0837e8640ff6__get_market_quotes     (all symbols fr
 mcp__15d93091-8d01-49f7-b7ff-0837e8640ff6__get_account_balances  accountNumber=6YB44166 → data\tmp\tradier_balances.json
 ```
 ```
-python mcp_ingest.py --broker tradier --positions data\tmp\tradier_pos.json --quotes data\tmp\tradier_quotes.json --balances data\tmp\tradier_balances.json
+python -m src.mcp_ingest --broker tradier --positions data\tmp\tradier_pos.json --quotes data\tmp\tradier_quotes.json --balances data\tmp\tradier_balances.json
 ```
 Note: Tradier API does not expose `marginBalance` — margin is approximated as gross equity MV minus `totalEquity`.
 
@@ -196,7 +196,7 @@ mcp__2350ff9e-36f7-4e64-8285-92896085c7d0__get-positions-details  accounts=11908
 mcp__2350ff9e-36f7-4e64-8285-92896085c7d0__get-balances-details   accounts=11908624 → data\tmp\ts_balances.json
 ```
 ```
-python mcp_ingest.py --broker ts --positions data\tmp\ts_positions.json --balances data\tmp\ts_balances.json
+python -m src.mcp_ingest --broker ts --positions data\tmp\ts_positions.json --balances data\tmp\ts_balances.json
 ```
 
 ### 5 — Robinhood RH-BV only (equity; RH-KD is CSV)
@@ -207,23 +207,59 @@ mcp__aeae2ef5-2c58-4908-8c9d-937f5b4fbbbf__get_positions  account_number=8694399
 mcp__aeae2ef5-2c58-4908-8c9d-937f5b4fbbbf__get_portfolio  account_number=869439976 → data\tmp\rh_port.json
 ```
 ```
-python mcp_ingest.py --broker robinhood --positions data\tmp\rh_pos.json --portfolio data\tmp\rh_port.json
+python -m src.mcp_ingest --broker robinhood --positions data\tmp\rh_pos.json --portfolio data\tmp\rh_port.json
 ```
 
 ### 6 — Finalize
 ```
-python ingest.py --snapshot-only
+python -m src.ingest --snapshot-only
 ```
 Report rows written per broker and any errors. Hit **Refresh** in the dashboard to see updated positions.
+
+### Coinbase — spot balances
+
+Coinbase spot balances are fetched through `coinbase-derivatives-mcp`, not by
+passing a hand-built JSON file. The repeatable journal-side command is:
+```bash
+python scripts/sync_coinbase.py
+```
+It reads `coinbase-derivatives-mcp` settings from Claude Desktop config, calls
+`capture_coinbase_portfolio_snapshot`, imports normalized `query_current_balances`
+rows into `crypto_positions`, and writes today's portfolio snapshot. Use
+`python scripts/sync_coinbase.py --dry-run` to verify counts without writing `journal.db`.
 
 ## Cash balance (manual)
 
 Fidelity CMA + PNC + Huntington + Clearview are combined into a single `CASH` account. Update whenever balances change:
 ```bash
-python cash.py 18500        # set combined balance
-python cash.py              # check current
-python ingest.py --cash 18500  # alternative via ingest flag
+python -m src.cash 18500        # set combined balance
+python -m src.cash              # check current
+python -m src.ingest --cash 18500  # alternative via ingest flag
 ```
+
+## CLI health preflight
+
+`python -m src.journal_cli` runs an MCP health preflight before showing account
+balances. It reads broker MCP server definitions from Claude Desktop config and
+Codex config, initializes configured stdio servers, checks known remote HTTP MCP
+URLs, and lists tools. Remote URL overrides: `ROBINHOOD_MCP_URL`,
+`TRADESTATION_MCP_URL`, `TRADIER_MCP_URL`; optional bearer env vars:
+`ROBINHOOD_MCP_BEARER_TOKEN`, `TRADESTATION_MCP_BEARER_TOKEN`,
+`TRADIER_MCP_BEARER_TOKEN`. This confirms MCP reachability only; balances are
+still read from `data/journal.db` and reflect the last completed sync. Menu
+option `5. MCP health` reruns the check.
+
+For remote OAuth MCP authorization, use `python scripts/authorize_mcp.py <broker>
+--manual`, where broker is `robinhood`, `tradestation`, or `tradier`. The user
+opens the printed URL and pastes the final callback URL/code back into the
+terminal. Saved tokens are in `data/mcp_tokens/`; use `--reset` to clear a
+partial/expired authorization for that broker.
+
+Robinhood via Trayd supports multiple local profiles in `~/.trayd/*.json`.
+`src.cli.robinhood` enumerates profiles, calls `list_accounts`, and then calls
+account-number scoped `get_portfolio` / `get_positions`. Map Robinhood account
+numbers to journal account IDs in ignored `data/config/robinhood_accounts.json`
+or with `ROBINHOOD_ACCOUNT_MAP` JSON.
 
 ## Test coverage
 

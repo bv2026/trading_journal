@@ -2,7 +2,6 @@
 """Portfolio Journal — Streamlit dashboard.
 Run: streamlit run dashboard/app.py
 """
-import subprocess
 import sys
 from pathlib import Path
 
@@ -14,35 +13,24 @@ import plotly.express as px
 import plotly.graph_objects as go
 from src.db import (DB_PATH, init_db, load_transactions, load_snapshot_periods,
                     get_cash_balance, get_accounts_by_type, upsert_cash_balance,
-                    load_account_settings, save_account_settings)
+                    load_account_settings, save_account_settings,
+                    load_account_balances)
 
 # Ensure schema is up-to-date (creates new tables/views if this is an existing DB).
 if DB_PATH.exists():
     init_db()
 
-# ── Background ingest on startup ───────────────────────────────────────────────
-# Runs once per browser session; never blocks the UI.
+# Dashboard refresh state. Position syncs are explicit MCP/CLI actions; opening
+# the dashboard should not start a CSV ingest or mutate the database.
 _ROOT = Path(__file__).parent.parent
-if "ingest_proc" not in st.session_state:
-    st.session_state.ingest_proc = subprocess.Popen(
-        [sys.executable, str(_ROOT / "ingest.py")],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        cwd=str(_ROOT),
-    )
-    st.session_state.ingest_done = False
-
-# If ingest just finished, flush cached data and re-render with fresh DB.
-_proc: subprocess.Popen = st.session_state.ingest_proc
-if not st.session_state.ingest_done and _proc.poll() is not None:
-    st.session_state.ingest_done = True
-    st.cache_data.clear()
-    st.rerun()
+if "data_refreshed" not in st.session_state:
+    st.session_state.data_refreshed = False
 from src.metrics import compute_metrics, net_income as _net_income_fn, colour_cell, style_table, _bold_last_row
 from src.positions import (
     load_positions_from_db, compute_net_worth, load_all_positions,
     load_options_from_db, load_futures_from_db, load_crypto_from_db,
 )
+from src.mcp_tools.health import check_mcp_health
 
 @st.cache_data(ttl=300)
 def _load_positions() -> pd.DataFrame:
@@ -81,6 +69,17 @@ def _load_snapshot_periods() -> pd.DataFrame:
 def _load_cash_balance() -> float:
     """Load combined cash account balance from DB (cached 5 min)."""
     return get_cash_balance()
+
+
+@st.cache_data(ttl=300)
+def _load_account_balances() -> pd.DataFrame:
+    """Load latest broker/account balance rows persisted by the CLI."""
+    return load_account_balances()
+
+
+@st.cache_data(ttl=60)
+def _load_mcp_health() -> pd.DataFrame:
+    return pd.DataFrame(check_mcp_health())
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Portfolio Journal", page_icon="📊", layout="wide")
@@ -129,11 +128,10 @@ with st.sidebar:
 
     st.divider()
     st.caption(f"DB: `{DB_PATH.name}`")
-    if st.session_state.get("ingest_done", False):
+    if st.session_state.get("data_refreshed", False):
         st.success("Data refreshed", icon="✅")
-    else:
-        st.info("Refreshing data…", icon="🔄")
     if st.button("🔄 Refresh"):
+        st.session_state.data_refreshed = True
         st.cache_data.clear()
         st.rerun()
 
@@ -158,22 +156,28 @@ st.caption(f"{len(df):,} transactions · {start_d} → {end_d} · {len(accounts)
 st.divider()
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
-tab_portfolio, tab_yearly, tab_breakdown, tab_positions, tab_txns, tab_perf, tab_settings = st.tabs([
-    "Portfolio", "Yearly Summary", "By Account", "Positions", "Transactions", "Performance", "Settings"
+tab_portfolio, tab_yearly, tab_breakdown, tab_positions, tab_txns, tab_perf, tab_brokers, tab_settings = st.tabs([
+    "Portfolio", "Yearly Summary", "By Account", "Positions", "Transactions", "Performance", "Broker MCP", "Settings"
 ])
 
 
 # ═══ TAB 1 — Portfolio ════════════════════════════════════════════════════════
 with tab_portfolio:
     import re as _re
+    _acct_balances = _load_account_balances()
 
     # ── Net Worth banner ───────────────────────────────────────────────────────
     try:
-        _nw_data = compute_net_worth(_load_all_positions())
-        if _nw_data["market_value"]:
-            _total_mv     = _nw_data["market_value"] + _cash_balance
+        if not _acct_balances.empty:
+            _total_mv = float(pd.to_numeric(_acct_balances["market_value"], errors="coerce").fillna(0).sum())
+            _total_margin = float(pd.to_numeric(_acct_balances["margin"], errors="coerce").fillna(0).sum())
+            _net_worth = float(pd.to_numeric(_acct_balances["net_equity"], errors="coerce").fillna(0).sum())
+        else:
+            _nw_data = compute_net_worth(_load_all_positions())
+            _total_mv = _nw_data["market_value"] + _cash_balance
             _total_margin = _nw_data["margin"]
-            _net_worth    = _nw_data["net_worth"] + _cash_balance
+            _net_worth = _nw_data["net_worth"] + _cash_balance
+        if _total_mv:
             nw1, nw2, nw3 = st.columns(3)
             nw1.metric("Net Worth",       f"${_net_worth:,.0f}")
             nw2.metric("Market Value",    f"${_total_mv:,.0f}")
@@ -281,6 +285,19 @@ with tab_portfolio:
                 "Margin":     0.0,
                 "Net Equity": _cash_balance,
             })
+        if not _acct_balances.empty:
+            _acct_rows = []
+            for _, _bal in _acct_balances.iterrows():
+                _account_id = str(_bal.get("account_id") or "")
+                _broker = _bal.get("broker")
+                _acct_rows.append({
+                    "Account": _account_id,
+                    "Broker": _broker if pd.notna(_broker) else ("Multi-Bank" if _account_id == "CASH" else ""),
+                    "Market Value": float(_bal.get("market_value") or 0.0),
+                    "Cost Basis": _bal.get("cost_basis"),
+                    "Margin": float(_bal.get("margin") or 0.0),
+                    "Net Equity": float(_bal.get("net_equity") or 0.0),
+                })
         _acct_sum = pd.DataFrame(_acct_rows)
         _tot = {
             "Account":    "TOTAL", "Broker": "",
@@ -293,7 +310,7 @@ with tab_portfolio:
         _money_acct = ["Market Value", "Cost Basis", "Margin", "Net Equity"]
         st.dataframe(
             _acct_sum.style
-                .format({c: "${:,.0f}" for c in _money_acct})
+                .format({c: "${:,.0f}" for c in _money_acct}, na_rep="")
                 .map(colour_cell, subset=["Net Equity"])
                 .apply(_bold_last_row, last_idx=_acct_sum.index[-1], axis=1),
             use_container_width=True, hide_index=True,
@@ -704,7 +721,7 @@ with tab_positions:
     with _ptab_eq:
         pos_raw = _filter_pos(_load_positions())
         if pos_raw.empty:
-            st.info("No equity positions — run ingest after adding positions-{account}.csv files to activity/.")
+            st.info("No equity positions — run the broker MCP/CLI sync first; CSV position files are fallback imports.")
         else:
             _pos = pos_raw[pos_raw["Ticker"].str.upper() != "MARGIN"].copy()
             for _c in ["COST", "MARKET VALUE", "totalReturn"]:
@@ -1081,7 +1098,99 @@ with tab_perf:
         )
 
 
-# ═══ TAB 7 — Settings ════════════════════════════════════════════════════════
+# ═══ TAB 7 — Broker MCP ══════════════════════════════════════════════════════
+with tab_brokers:
+    st.subheader("Broker MCP")
+    st.caption("Health checks prove MCP reachability. Portfolio tables still use the last synced SQLite data.")
+
+    if st.button("Check MCP health", key="broker_health_refresh"):
+        _load_mcp_health.clear()
+        try:
+            st.session_state.broker_mcp_health = _load_mcp_health()
+        except Exception as _exc:
+            st.error(f"MCP health check failed: {_exc}")
+            st.session_state.broker_mcp_health = pd.DataFrame()
+
+    _health = st.session_state.get("broker_mcp_health", pd.DataFrame())
+
+    if _health.empty:
+        st.info("Click **Check MCP health** to test configured broker MCPs.")
+    else:
+        st.dataframe(
+            _health,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Status": st.column_config.TextColumn("Status"),
+                "Tools": st.column_config.NumberColumn("Tools", format="%d"),
+            },
+        )
+        _bad = _health[~_health["Status"].isin(["OK"])]
+        if not _bad.empty:
+            st.warning("Some broker MCPs are not healthy; synced DB balances may be stale for those accounts.")
+
+    st.divider()
+    st.markdown("##### CLI module review")
+    _cli_review = pd.DataFrame([
+        {
+            "Broker": "Coinbase",
+            "Dashboard use": "Safe on button click",
+            "Source": "src.cli.coinbase.fetch_balances",
+            "Note": "Loads credentials from coinbase-derivatives-mcp config.",
+        },
+        {
+            "Broker": "Tradier",
+            "Dashboard use": "Safe on button click when token env is set",
+            "Source": "src.cli.tradier.fetch_balances/fetch_positions",
+            "Note": "No hard-coded token; requires TRADIER_ACCESS_TOKEN or TRADIER_MCP_BEARER_TOKEN.",
+        },
+        {
+            "Broker": "Robinhood",
+            "Dashboard use": "Needs auth/token cleanup before embedding",
+            "Source": "src.cli.robinhood",
+            "Note": "Interactive OAuth and profile prompts should stay CLI-only for now.",
+        },
+        {
+            "Broker": "Webull / Schwab / TradeStation / Fidelity",
+            "Dashboard use": "Prefer DB/cached JSON views",
+            "Source": "src.cli.* loaders",
+            "Note": "Modules are terminal-first; convert fetch/load functions before adding live buttons.",
+        },
+    ])
+    st.dataframe(_cli_review, use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.markdown("##### Live checks")
+    st.caption("These actions call broker APIs only when clicked.")
+
+    _live_cols = st.columns(2)
+    with _live_cols[0]:
+        if st.button("Fetch Coinbase balances", key="live_coinbase_balances"):
+            try:
+                from src.cli.coinbase import fetch_balances as _fetch_coinbase_balances
+
+                _rows = _fetch_coinbase_balances()
+                _cb_df = pd.DataFrame(_rows)
+                _cols = [c for c in ["asset", "total", "price_usd", "usd_value", "venue"] if c in _cb_df.columns]
+                if _cb_df.empty:
+                    st.info("Coinbase returned no balances.")
+                else:
+                    st.dataframe(_cb_df[_cols], use_container_width=True, hide_index=True)
+            except Exception as _exc:
+                st.error(f"Coinbase live fetch failed: {_exc}")
+
+    with _live_cols[1]:
+        if st.button("Fetch Tradier balances", key="live_tradier_balances"):
+            try:
+                from src.cli.tradier import fetch_balances as _fetch_tradier_balances
+
+                _bal = _fetch_tradier_balances()
+                st.json(_bal)
+            except Exception as _exc:
+                st.error(f"Tradier live fetch failed: {_exc}")
+
+
+# ═══ TAB 8 — Settings ════════════════════════════════════════════════════════
 with tab_settings:
     st.subheader("Settings")
     st.caption("Changes take effect immediately after Save. Margin/price source are used on next sync.")

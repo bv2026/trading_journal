@@ -58,7 +58,7 @@ Value formatting accepted: `$1,234.56`, `$(1,234.56)` for negatives, `40%` for p
 ### Options, futures, and crypto positions — MCP path (preferred)
 
 Options, futures, and crypto positions are written directly from broker API responses
-via `mcp_ingest.py`. No CSV files are needed for these asset classes.
+via `src/mcp_ingest.py`. No CSV files are needed for these asset classes.
 
 Ask Claude to refresh positions after markets close:
 > *"Refresh my Tradier positions and options"*
@@ -95,7 +95,7 @@ automatically at the end of each write.
 ## 3. Run ingest
 
 ```bash
-python ingest.py
+python -m src.ingest
 ```
 
 What it does each run:
@@ -108,7 +108,7 @@ What it does each run:
 
 ```bash
 # Full rebuild — clears all transactions and reloads from scratch
-python ingest.py --reset
+python -m src.ingest --reset
 ```
 
 Example output:
@@ -135,7 +135,7 @@ Writing portfolio snapshot …
 
 ```bash
 streamlit run dashboard/app.py
-# — or double-click launch-dashboard.vbs on Windows
+# Or use python -m src.journal_cli -> Housekeeping -> Launch dashboard
 ```
 
 Opens at `http://localhost:8501`. Click **Refresh** in the sidebar after re-ingesting.
@@ -193,7 +193,7 @@ Opens at `http://localhost:8501`. Click **Refresh** in the sidebar after re-inge
 - **Portfolio Summary** — Current Value, 1W Ago, $ Change, % Change per account
 - **Portfolio Returns** — 1-Week, 1-Month, 3-Month, YTD, 1-Year return % per account
 - Both tables show a TOTAL row; periods with no prior snapshot show "—"
-- Historical data accumulates with each `python ingest.py` run
+- Historical data accumulates with each `python -m src.ingest` run
 
 ---
 
@@ -203,7 +203,7 @@ Opens at `http://localhost:8501`. Click **Refresh** in the sidebar after re-inge
 
 1. Download a fresh CSV from your broker
 2. Replace the file in `activity/`
-3. Run `python ingest.py`
+3. Run `python -m src.ingest`
 4. Click **Refresh** in the dashboard sidebar
 
 ### Fidelity yearly summary
@@ -212,7 +212,7 @@ The Fidelity CSV has one row per calendar year, updated throughout the year.
 
 1. Export a fresh "Investment Income" CSV from Fidelity
 2. Replace `activity/fidelity_Investment_income_balance.csv`
-3. Run `python ingest.py` — Fidelity rows are always fully refreshed
+3. Run `python -m src.ingest` — Fidelity rows are always fully refreshed
 
 To change the 2020 start year, edit `START_YEAR` in `src/parsers/fidelity.py`.
 
@@ -220,7 +220,7 @@ To change the 2020 start year, edit `START_YEAR` in `src/parsers/fidelity.py`.
 
 1. Export current positions from each broker
 2. Replace the corresponding `positions-{account}.csv` in `activity/`
-3. Run `python ingest.py` — positions are always fully replaced per account
+3. Run `python -m src.ingest` — positions are always fully replaced per account
 
 ### Options / futures / crypto positions (MCP path)
 
@@ -253,7 +253,7 @@ writes it to the DB, and runs sector enrichment automatically.
    amount, currency, symbol, description, source_file
    ```
 
-2. Register in `ingest.py`:
+2. Register in `src/ingest.py`:
    ```python
    # ACCOUNTS list
    {"account_id": "NEW-ACCT", "broker": "newbroker", "account_type": "equity",
@@ -266,17 +266,17 @@ writes it to the DB, and runs sector enrichment automatically.
    (ACTIVITY / "positions-newacct.csv", "NEW-ACCT"),
    ```
 
-3. Run `python ingest.py`.
+3. Run `python -m src.ingest`.
 
 ### Account with options / futures (MCP path)
 
 1. Write a fetcher in `src/fetchers/<broker>.py` with `normalize_positions()`,
    `normalize_history()`, `normalize_instruments()`, and `normalize_balances()`.
 
-2. Add a `write_<broker>()` function in `mcp_ingest.py` following the pattern of
+2. Add a `write_<broker>()` function in `src/mcp_ingest.py` following the pattern of
    existing write functions.
 
-3. Register the account in `ingest.py` ACCOUNTS and in `mcp_server.py` `refresh_positions`.
+3. Register the account in `src/ingest.py` ACCOUNTS and in `src/mcp_server.py` `refresh_positions`.
 
 4. Ask Claude to refresh: *"Refresh my new broker positions"*.
 
@@ -297,7 +297,7 @@ refreshing positions directly from broker APIs.
   "mcpServers": {
     "trading-journal": {
       "command": "C:\\Users\\vsbra\\AppData\\Local\\Programs\\Python\\Python314\\python.exe",
-      "args": ["C:\\work\\trading-journal\\mcp_server.py"],
+      "args": ["-m", "src.mcp_server"],
       "cwd": "C:\\work\\trading-journal"
     }
   }

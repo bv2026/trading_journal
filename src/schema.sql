@@ -134,6 +134,17 @@ CREATE TABLE IF NOT EXISTS portfolio_snapshots (
 CREATE INDEX IF NOT EXISTS idx_snap_date    ON portfolio_snapshots(snapshot_date);
 CREATE INDEX IF NOT EXISTS idx_snap_account ON portfolio_snapshots(account_id);
 
+CREATE TABLE IF NOT EXISTS account_balances (
+    account_id      TEXT PRIMARY KEY REFERENCES accounts(account_id),
+    market_value    REAL NOT NULL DEFAULT 0,
+    cost_basis      REAL,
+    margin          REAL NOT NULL DEFAULT 0,
+    net_equity      REAL NOT NULL DEFAULT 0,
+    source          TEXT,
+    detail          TEXT,
+    as_of           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- ── v_positions_all ──────────────────────────────────────────────────────────
 -- Unified view across all 4 position tables. equity market_value is NULL here
 -- because it requires a live price fetch; all other asset classes store it.

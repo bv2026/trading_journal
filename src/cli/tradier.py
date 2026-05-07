@@ -34,17 +34,30 @@ import httpx
 
 BASE_URL = "https://api.tradier.com/v1"
 ACCOUNT_NUMBER = os.environ.get("TRADIER_ACCOUNT_NUMBER", "6YB44166")
-ACCESS_TOKEN = os.environ.get("TRADIER_ACCESS_TOKEN") or os.environ.get("TRADIER_MCP_BEARER_TOKEN")
 
 # Also save to data/tmp/ for the ingest pipeline
 DATA_DIR = Path(_project_root) / "data" / "tmp"
+SECRET_TOKEN_FILE = Path(_project_root) / "data" / "secrets" / "tradier_token.txt"
+
+
+def _load_access_token() -> str | None:
+    token = os.environ.get("TRADIER_ACCESS_TOKEN") or os.environ.get("TRADIER_MCP_BEARER_TOKEN")
+    if token:
+        return token.strip()
+    if SECRET_TOKEN_FILE.exists():
+        try:
+            return SECRET_TOKEN_FILE.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+    return None
 
 
 def _headers() -> dict[str, str]:
-    if not ACCESS_TOKEN:
+    access_token = _load_access_token()
+    if not access_token:
         raise RuntimeError("Set TRADIER_ACCESS_TOKEN or TRADIER_MCP_BEARER_TOKEN before calling Tradier live API.")
     return {
-        "Authorization": f"Bearer {ACCESS_TOKEN}",
+        "Authorization": f"Bearer {access_token}",
         "Accept": "application/json",
     }
 

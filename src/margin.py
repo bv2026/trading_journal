@@ -5,16 +5,16 @@ Margin overrides persist across syncs — use for accounts where the broker API
 doesn't return reliable margin data (e.g. Tradier).
 
 Usage:
-    python margin.py                    # list all overrides
-    python margin.py TRADIER            # show override for one account
-    python margin.py TRADIER 36072      # set override to $36,072
-    python margin.py TRADIER 36,072     # commas OK
-    python margin.py TRADIER 0          # clear override (computed margin resumes)
+    python -m src.margin                    # list all overrides
+    python -m src.margin TRADIER            # show override for one account
+    python -m src.margin TRADIER 36072      # set override to $36,072
+    python -m src.margin TRADIER 36,072     # commas OK
+    python -m src.margin TRADIER 0          # clear override (computed margin resumes)
 """
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.db import get_margin_override, upsert_margin_override, init_db, get_conn
 
@@ -30,7 +30,7 @@ def _list_all() -> None:
         rows = []
     if not rows:
         print("No margin overrides set.")
-        print("Usage:  python margin.py <ACCOUNT> <AMOUNT>")
+        print("Usage:  python -m src.margin <ACCOUNT> <AMOUNT>")
         return
     print(f"{'Account':<15}  {'Margin':>12}  Updated")
     print("-" * 42)
@@ -51,7 +51,7 @@ def main() -> None:
         val = get_margin_override(account_id)
         if val is None:
             print(f"No margin override set for {account_id}. "
-                  f"Run:  python margin.py {account_id} <amount>")
+                  f"Run:  python -m src.margin {account_id} <amount>")
         else:
             print(f"{account_id} margin override: ${val:,.2f}")
         return

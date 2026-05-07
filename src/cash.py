@@ -2,15 +2,15 @@
 """Quick CLI to get or set the combined cash account balance.
 
 Usage:
-    python cash.py              # print current balance
-    python cash.py 52400        # set balance to $52,400
-    python cash.py 52,400       # commas OK
-    python cash.py $52400       # dollar sign OK
+    python -m src.cash              # print current balance
+    python -m src.cash 52400        # set balance to $52,400
+    python -m src.cash 52,400       # commas OK
+    python -m src.cash $52400       # dollar sign OK
 """
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.db import get_cash_balance, upsert_cash_balance, init_db
 
@@ -23,7 +23,7 @@ def main() -> None:
         if bal:
             print(f"Current cash balance: ${bal:,.2f}")
         else:
-            print("No cash balance set. Run:  python cash.py <amount>")
+            print("No cash balance set. Run:  python -m src.cash <amount>")
         return
 
     raw = sys.argv[1].replace(",", "").replace("$", "").strip()
@@ -31,7 +31,7 @@ def main() -> None:
         amount = float(raw)
     except ValueError:
         print(f"Error: '{sys.argv[1]}' is not a valid number.")
-        print("Usage:  python cash.py <amount>   e.g.  python cash.py 52400")
+        print("Usage:  python -m src.cash <amount>   e.g.  python -m src.cash 52400")
         sys.exit(1)
 
     upsert_cash_balance(amount)

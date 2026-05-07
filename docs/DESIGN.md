@@ -1,4 +1,4 @@
-# Trading Journal — Architecture & Design
+﻿# Trading Journal â€” Architecture & Design
 
 ## Overview
 
@@ -13,13 +13,13 @@ and Claude Desktop MCP integration.
 ```
 activity/                   Broker CSV exports (gitignored)
   archive/                  Retired files kept for reference
-data/journal.db             SQLite — all tables
+data/journal.db             SQLite â€” all tables
 src/
   db.py                     DB helpers: init, migrate, upsert, insert, load
   metrics.py                compute_metrics, colour_cell, style_table
   positions.py              load_positions_from_db, load_all_positions, yfinance price fetch
-  enrichment.py             enrich_sectors() — fills NULL sector/industry via yfinance
-  parsers/                  CSV parsers — transactions + equity positions
+  enrichment.py             enrich_sectors() â€” fills NULL sector/industry via yfinance
+  parsers/                  CSV parsers â€” transactions + equity positions
     positions_csv.py        per-account equity positions CSV
     robinhood.py
     webull.py
@@ -28,7 +28,7 @@ src/
     tradier.py
     coinbase.py
     fidelity.py             yearly summary (2020+)
-  fetchers/                 MCP response normalizers — broker API → DB records
+  fetchers/                 MCP response normalizers â€” broker API â†’ DB records
     base.py                 OCC parsing, TS option parsing, currency detection, ID hashing
     tradier.py              normalize_positions, normalize_history, normalize_instruments, normalize_balances
     tradestation.py         normalize_positions (3-tuple), normalize_instruments, normalize_balances
@@ -37,11 +37,11 @@ src/
     schwab.py               normalize_equity, normalize_futures, normalize_transactions,
                             normalize_instruments, normalize_balances
 dashboard/
-  app.py                    Streamlit — 6 tabs
-mcp_server.py               FastMCP server (Claude Desktop)
-mcp_ingest.py               write_* functions — normalize MCP responses → DB
-ingest.py                   CSV ingest pipeline → journal.db; portfolio snapshot
-schema.sql                  All table + view definitions
+  app.py                    Streamlit â€” 6 tabs
+src/mcp_server.py           FastMCP server (Claude Desktop)
+src/mcp_ingest.py           write_* functions â€” normalize MCP responses â†’ DB
+src/ingest.py               CSV ingest pipeline â†’ journal.db; portfolio snapshot
+src/schema.sql              All table + view definitions
 tests/
   unit/                     Parser-level unit tests
   integration/              DB round-trip integration tests
@@ -123,7 +123,7 @@ options_positions (
     description  TEXT,
     qty          REAL,                      -- negative = short
     price        REAL,                      -- per-share mark price
-    market_value REAL,                      -- qty × price × 100
+    market_value REAL,                      -- qty Ã— price Ã— 100
     data_source  TEXT,                      -- mcp | csv
     source_file  TEXT,
     ingested_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -203,7 +203,7 @@ portfolio_snapshots (
 )
 ```
 
-Written at the end of every `ingest.py` run via `INSERT OR REPLACE`.
+Written at the end of every `src/ingest.py` run via `INSERT OR REPLACE`.
 
 ---
 
@@ -221,26 +221,26 @@ Written at the end of every `ingest.py` run via `INSERT OR REPLACE`.
 
 ## Ingest Pipelines
 
-### CSV ingest (`ingest.py`)
+### CSV ingest (`src/ingest.py`)
 
 ```
-python ingest.py [--reset]
-  ├── init_db()                 create/migrate all tables and views
-  ├── upsert_accounts()         register all accounts
-  ├── TRANSACTIONS (incremental)
-  │   └── for each PARSERS entry:
-  │         parse CSV → insert_transactions()   INSERT OR IGNORE
-  ├── EQUITY POSITIONS (full replace per account)
-  │   └── for each POSITION_FILES entry:
-  │         parse → delete_positions_by_account() → insert_positions()
-  ├── SECTOR ENRICHMENT
-  │   └── enrich_sectors()      fill NULL sector/industry in instruments → propagate to positions
-  └── PORTFOLIO SNAPSHOT
+python -m src.ingest [--reset]
+  â”œâ”€â”€ init_db()                 create/migrate all tables and views
+  â”œâ”€â”€ upsert_accounts()         register all accounts
+  â”œâ”€â”€ TRANSACTIONS (incremental)
+  â”‚   â””â”€â”€ for each PARSERS entry:
+  â”‚         parse CSV â†’ insert_transactions()   INSERT OR IGNORE
+  â”œâ”€â”€ EQUITY POSITIONS (full replace per account)
+  â”‚   â””â”€â”€ for each POSITION_FILES entry:
+  â”‚         parse â†’ delete_positions_by_account() â†’ insert_positions()
+  â”œâ”€â”€ SECTOR ENRICHMENT
+  â”‚   â””â”€â”€ enrich_sectors()      fill NULL sector/industry in instruments â†’ propagate to positions
+  â””â”€â”€ PORTFOLIO SNAPSHOT
         load all positions (equity via yfinance, static from DB)
         write_portfolio_snapshot(date=today)    INSERT OR REPLACE
 ```
 
-### MCP-first ingest (`mcp_ingest.py`)
+### MCP-first ingest (`src/mcp_ingest.py`)
 
 Used when Claude fetches live data directly from broker APIs:
 
@@ -251,15 +251,15 @@ write_tradestation(positions_resp, balances_resp)
 write_robinhood(positions_resp, portfolio_resp)
 write_webull(account_list, positions_by_wb_id, balance_by_wb_id)
   Each function:
-  ├── normalize_*() via src/fetchers/<broker>.py
-  ├── delete_positions_by_account() + insert_positions()
-  ├── delete_options_by_account()  + insert_options()
-  ├── delete_futures_by_account()  + insert_futures()   (where applicable)
-  ├── delete_crypto_by_account()   + insert_crypto()    (where applicable)
-  ├── insert_transactions()        (incremental)
-  ├── upsert_instruments()
-  ├── _insert_margin_sentinel()    (equity accounts with margin)
-  └── _enrich()                    → enrich_sectors()
+  â”œâ”€â”€ normalize_*() via src/fetchers/<broker>.py
+  â”œâ”€â”€ delete_positions_by_account() + insert_positions()
+  â”œâ”€â”€ delete_options_by_account()  + insert_options()
+  â”œâ”€â”€ delete_futures_by_account()  + insert_futures()   (where applicable)
+  â”œâ”€â”€ delete_crypto_by_account()   + insert_crypto()    (where applicable)
+  â”œâ”€â”€ insert_transactions()        (incremental)
+  â”œâ”€â”€ upsert_instruments()
+  â”œâ”€â”€ _insert_margin_sentinel()    (equity accounts with margin)
+  â””â”€â”€ _enrich()                    â†’ enrich_sectors()
 ```
 
 ---
@@ -272,9 +272,9 @@ Margin debt is stored as a MARGIN sentinel row in the `positions` table:
 - `market_value` is derived from `cost_basis` at dashboard load time
 
 Three modes in `write_*` functions (`margin_mode` parameter):
-- `"balance"` — use reported margin/cash from the broker's balance API response
-- `"computed"` — `gross_MV (Σ shares×price) − reported_equity`
-- `"csv"` — preserve the existing sentinel already in the DB
+- `"balance"` â€” use reported margin/cash from the broker's balance API response
+- `"computed"` â€” `gross_MV (Î£ sharesÃ—price) âˆ’ reported_equity`
+- `"csv"` â€” preserve the existing sentinel already in the DB
 
 The dashboard `load_positions_from_db()` identifies MARGIN rows and routes them
 to a separate `margin_df`; the main `pos` DataFrame excludes them.
@@ -287,10 +287,10 @@ to a separate `margin_df`; the main `pos` DataFrame excludes them.
 
 At dashboard load time:
 ```
-_fetch_live_prices(tickers) → {ticker: price}   (yfinance, cached 5 min)
-MARKET VALUE = Shares × PRICE
-COST         = Shares × Cost_Basis
-totalReturn  = MARKET VALUE − COST
+_fetch_live_prices(tickers) â†’ {ticker: price}   (yfinance, cached 5 min)
+MARKET VALUE = Shares Ã— PRICE
+COST         = Shares Ã— Cost_Basis
+totalReturn  = MARKET VALUE âˆ’ COST
 ```
 
 MARGIN rows bypass yfinance: `MARKET VALUE = cost_basis` (already negative).
@@ -308,12 +308,12 @@ No yfinance lookup needed. The dashboard reads it directly.
 1. Queries `instruments` for equities with NULL sector or industry
 2. Fetches `yfinance.Ticker(sym).info` for each in batches
 3. `UPDATE instruments SET sector=COALESCE(sector,?), industry=COALESCE(industry,?), name=COALESCE(name,?)`
-   — never overwrites existing values
-4. `_propagate_to_positions()` — copies back to `positions` rows that still have NULL
+   â€” never overwrites existing values
+4. `_propagate_to_positions()` â€” copies back to `positions` rows that still have NULL
 
 Called automatically:
-- End of `ingest.py` run
-- End of each `write_*` call in `mcp_ingest.py` (wrapped in try/except — non-fatal)
+- End of `src/ingest.py` run
+- End of each `write_*` call in `src/mcp_ingest.py` (wrapped in try/except â€” non-fatal)
 
 ---
 
@@ -321,13 +321,13 @@ Called automatically:
 
 Each fetcher normalizes a single broker's API responses into DB-ready record dicts.
 
-### `base.py` — shared utilities
+### `base.py` â€” shared utilities
 
-- `is_occ_symbol(s)` / `parse_occ(s)` — OCC option format
-- `is_ts_option_symbol(s)` / `parse_ts_option(s)` — TradeStation format; converts to OCC for storage
-- `is_currency_entry(symbol, total_cost, qty)` — distinguishes cash entries (cost≈$1/unit) from real equities
-- `make_txn_id(account_id, date, amount, description)` — content-based MD5 for deduplication
-- `parse_iso_date(ts)` — ISO-8601 → `YYYY-MM-DD`
+- `is_occ_symbol(s)` / `parse_occ(s)` â€” OCC option format
+- `is_ts_option_symbol(s)` / `parse_ts_option(s)` â€” TradeStation format; converts to OCC for storage
+- `is_currency_entry(symbol, total_cost, qty)` â€” distinguishes cash entries (costâ‰ˆ$1/unit) from real equities
+- `make_txn_id(account_id, date, amount, description)` â€” content-based MD5 for deduplication
+- `parse_iso_date(ts)` â€” ISO-8601 â†’ `YYYY-MM-DD`
 
 ### Return shapes
 
@@ -337,7 +337,7 @@ Each fetcher normalizes a single broker's API responses into DB-ready record dic
 | TradeStation | `(equity_records, option_records, futures_records)` |
 | Webull | `(equity_records, option_records, futures_records, crypto_records)` |
 | Robinhood | `equity_records` (list only; no options via MCP) |
-| Schwab | split into `normalize_equity()` → `(eq, opt)` and `normalize_futures()` → `fut` |
+| Schwab | split into `normalize_equity()` â†’ `(eq, opt)` and `normalize_futures()` â†’ `fut` |
 
 ---
 
@@ -356,13 +356,13 @@ Each fetcher normalizes a single broker's API responses into DB-ready record dic
 
 ### Caching
 
-All loaders are `@st.cache_data(ttl=300)` — 5 minute TTL.
+All loaders are `@st.cache_data(ttl=300)` â€” 5 minute TTL.
 Transaction loader is `@st.cache_data(ttl=60)`.
 Cache is cleared on background ingest completion and on sidebar Refresh button.
 
 ---
 
-## MCP Server (`mcp_server.py`)
+## MCP Server (`src/mcp_server.py`)
 
 FastMCP server. Registered tools:
 
@@ -374,7 +374,7 @@ FastMCP server. Registered tools:
 | `get_transactions` | read | Filterable transaction log |
 | `get_positions` | read | Holdings across equity/options/futures/crypto |
 | `get_performance` | read | Return % at 1W / 1M / 3M / YTD / 1Y |
-| `refresh_positions` | write | Fetch from broker APIs → normalize → write to DB |
+| `refresh_positions` | write | Fetch from broker APIs â†’ normalize â†’ write to DB |
 | `run_ingest` | write | Re-run CSV ingest pipeline |
 | `launch_dashboard` | action | Start Streamlit in background |
 
@@ -382,12 +382,12 @@ FastMCP server. Registered tools:
 
 ```
 refresh_positions(tradier_positions, tradier_quotes, ..., schwab_equity, ...)
-  ├── if tradier_*:   write_tradier(...)
-  ├── if schwab_*:    write_schwab(...)
-  ├── if ts_*:        write_tradestation(...)
-  ├── if rh_*:        write_robinhood(...)
-  ├── if webull_*:    write_webull(...)
-  └── enrich_sectors()   (always runs at end regardless of which brokers provided)
+  â”œâ”€â”€ if tradier_*:   write_tradier(...)
+  â”œâ”€â”€ if schwab_*:    write_schwab(...)
+  â”œâ”€â”€ if ts_*:        write_tradestation(...)
+  â”œâ”€â”€ if rh_*:        write_robinhood(...)
+  â”œâ”€â”€ if webull_*:    write_webull(...)
+  â””â”€â”€ enrich_sectors()   (always runs at end regardless of which brokers provided)
 ```
 
 Each `write_*` also calls `_enrich()` internally, so enrichment runs incrementally
@@ -414,8 +414,8 @@ IDs for distinct account types.
 
 All schema changes are additive. No destructive migrations.
 
-1. `schema.sql` uses `CREATE TABLE IF NOT EXISTS` and `CREATE VIEW IF NOT EXISTS` — idempotent
-2. New columns on existing tables are added in `_migrate()` via `ALTER TABLE ... ADD COLUMN` wrapped in try/except — silently skipped if already present
+1. `schema.sql` uses `CREATE TABLE IF NOT EXISTS` and `CREATE VIEW IF NOT EXISTS` â€” idempotent
+2. New columns on existing tables are added in `_migrate()` via `ALTER TABLE ... ADD COLUMN` wrapped in try/except â€” silently skipped if already present
 
 Current `_migrate()` additions:
 ```python

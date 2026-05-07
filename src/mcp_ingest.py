@@ -10,8 +10,7 @@ no Python-side MCP connection is needed.
 Usage pattern (Claude calls this via Bash after fetching from MCP):
 
     python -c "
-    import sys; sys.path.insert(0, '.')
-    from mcp_ingest import write_tradier
+    from src.mcp_ingest import write_tradier
     positions_resp = <paste positions MCP response>
     quotes_resp    = <paste quotes MCP response>
     write_tradier(positions_resp, quotes_resp)
@@ -19,7 +18,7 @@ Usage pattern (Claude calls this via Bash after fetching from MCP):
 
 Or import in a session script:
 
-    from mcp_ingest import write_tradier
+    from src.mcp_ingest import write_tradier
     write_tradier(positions_resp, quotes_resp)
 """
 
@@ -27,7 +26,7 @@ import sys
 import json
 from pathlib import Path
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src import db
@@ -36,6 +35,7 @@ from src.fetchers import tradestation as ts_fetcher
 from src.fetchers import webull as webull_fetcher
 from src.fetchers import robinhood as rh_fetcher
 from src.fetchers import schwab as schwab_fetcher
+from src.fetchers import coinbase as coinbase_fetcher
 
 
 def _enrich() -> None:
@@ -356,6 +356,49 @@ def write_webull(
     return {"per_account": per_account, "totals": totals}
 
 
+# ── Coinbase ─────────────────────────────────────────────────────────────
+
+def write_coinbase(
+    positions_resp: dict | list,
+    account_id: str = "COINBASE",
+    *,
+    dry_run: bool = False,
+) -> dict:
+    """Normalize Coinbase MCP positions and write crypto rows to the DB."""
+    db.init_db()
+
+    cry_recs = coinbase_fetcher.normalize_positions(positions_resp, account_id)
+    fut_recs = coinbase_fetcher.normalize_futures(positions_resp, account_id)
+    instr_recs = coinbase_fetcher.normalize_instruments(cry_recs, fut_recs)
+
+    if dry_run:
+        print(
+            f"[dry-run] {account_id}: {len(cry_recs)} crypto/cash rows, "
+            f"{len(fut_recs)} futures rows — nothing written"
+        )
+        return {
+            "crypto_count": len(cry_recs),
+            "futures_count": len(fut_recs),
+            "instrument_count": len(instr_recs),
+        }
+
+    # Coinbase used to be imported as static equity-style rows from positions CSVs.
+    # Clear both stores so the MCP view becomes authoritative.
+    db.delete_positions_by_account(account_id)
+    db.delete_crypto_by_account(account_id)
+    db.delete_futures_by_account(account_id)
+    cry_written = db.insert_crypto(cry_recs) if cry_recs else 0
+    fut_written = db.insert_futures(fut_recs) if fut_recs else 0
+    instr_written = db.upsert_instruments(instr_recs) if instr_recs else 0
+
+    print(f"[{account_id}] crypto={cry_written}  futures={fut_written}  instruments={instr_written}")
+    return {
+        "crypto_count": cry_written,
+        "futures_count": fut_written,
+        "instrument_count": instr_written,
+    }
+
+
 # ── Robinhood ─────────────────────────────────────────────────────────────────
 
 def write_robinhood(
@@ -611,20 +654,20 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python mcp_ingest.py --broker tradier  --positions pos.json --quotes quotes.json
-  python mcp_ingest.py --broker schwab   --equity eq.json --summary summary.json
-  python mcp_ingest.py --broker ts       --positions pos.json --balances bal.json
-  python mcp_ingest.py --broker robinhood --positions pos.json --portfolio port.json
-  python mcp_ingest.py --broker webull   --account-list al.txt --positions-map pm.json
+  python -m src.mcp_ingest --broker tradier  --positions pos.json --quotes quotes.json
+  python -m src.mcp_ingest --broker schwab   --equity eq.json --summary summary.json
+  python -m src.mcp_ingest --broker ts       --positions pos.json --balances bal.json
+  python -m src.mcp_ingest --broker robinhood --positions pos.json --portfolio port.json
+  python -m src.mcp_ingest --broker webull   --account-list al.txt --positions-map pm.json
 
   # Set margin directly (no broker data needed)
-  python mcp_ingest.py --set-margin RH-BV 25000
-  python mcp_ingest.py --set-margin SCHWAB 0        # clear margin
+  python -m src.mcp_ingest --set-margin RH-BV 25000
+  python -m src.mcp_ingest --set-margin SCHWAB 0        # clear margin
         """,
     )
     parser.add_argument("--broker",
                         choices=["tradier", "schwab", "tradestation", "ts",
-                                 "robinhood", "rh", "webull"],
+                                 "robinhood", "rh", "webull", "coinbase"],
                         help="Which broker's data to write.")
     parser.add_argument("--set-margin", nargs=2, metavar=("ACCOUNT", "AMOUNT"),
                         help="Set margin for ACCOUNT to AMOUNT (USD). Pass 0 to clear.")
@@ -671,12 +714,20 @@ Examples:
     def _load(path: str | None) -> dict | None:
         if not path:
             return None
+        if not Path(path).exists():
+            print(f"ERROR: file not found: {path}", file=sys.stderr)
+            print("Fetch the MCP response first and save it to that path.", file=sys.stderr)
+            sys.exit(1)
         with open(path, encoding="utf-8") as f:
             return json.load(f)
 
     def _load_text(path: str | None) -> str | None:
         if not path:
             return None
+        if not Path(path).exists():
+            print(f"ERROR: file not found: {path}", file=sys.stderr)
+            print("Fetch the MCP response first and save it to that path.", file=sys.stderr)
+            sys.exit(1)
         with open(path, encoding="utf-8") as f:
             return f.read()
 
@@ -752,6 +803,17 @@ Examples:
             positions_by_wb_id  = pos_map,
             balance_by_wb_id    = _load(args.balances_map),
             dry_run             = args.dry_run,
+        )
+
+    elif broker == "coinbase":
+        pos = _load(args.positions)
+        if not pos:
+            print("ERROR: --positions required for coinbase", file=sys.stderr)
+            sys.exit(1)
+        result = write_coinbase(
+            positions_resp = pos,
+            account_id     = args.account_id or "COINBASE",
+            dry_run        = args.dry_run,
         )
 
     print(json.dumps(result, indent=2))

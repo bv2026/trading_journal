@@ -122,6 +122,22 @@ class TestDbLayer:
         assert "RH-BV"   in ids
         assert "COINBASE" in ids
 
+    def test_upsert_accounts_preserves_user_settings(self, initialised_db):
+        upsert_accounts(_ACCOUNTS)
+        with sqlite3.connect(initialised_db) as conn:
+            conn.execute(
+                "UPDATE accounts SET price_source='static', active=0 WHERE account_id='RH-BV'"
+            )
+            conn.commit()
+
+        upsert_accounts(_ACCOUNTS)
+
+        with sqlite3.connect(initialised_db) as conn:
+            row = conn.execute(
+                "SELECT price_source, active FROM accounts WHERE account_id='RH-BV'"
+            ).fetchone()
+        assert row == ("static", 0)
+
     def test_insert_and_load_roundtrip(self, initialised_db):
         upsert_accounts(_ACCOUNTS)
         records = [
@@ -347,7 +363,7 @@ class TestIncrementalAndReset:
 
     def test_reset_clears_then_reinserts(self, tmp_path, initialised_db, monkeypatch):
         """--reset should clear all existing transactions then reload from scratch."""
-        import ingest as ingest_mod
+        from src import ingest as ingest_mod
         from src.parsers import robinhood as rh_parser
 
         rh = _rh_csv(tmp_path)
@@ -368,7 +384,7 @@ class TestIncrementalAndReset:
 
     def test_fidelity_always_refresh_no_duplicates(self, tmp_path, initialised_db, monkeypatch):
         """Running ingest twice without --reset must not double Fidelity rows."""
-        import ingest as ingest_mod
+        from src import ingest as ingest_mod
         from src.parsers import fidelity as fid_parser
 
         fid = _fidelity_csv(tmp_path)

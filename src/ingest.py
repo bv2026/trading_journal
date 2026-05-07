@@ -2,13 +2,13 @@
 Ingest broker CSV files into data/journal.db.
 
 Default (incremental):
-    python ingest.py
+    python -m src.ingest
     Only new records are added; existing ones are left untouched.
     Drop only the latest CSV export from each broker — no need to re-download
     full history every time.
 
 Full rebuild:
-    python ingest.py --reset
+    python -m src.ingest --reset
     Clears all transactions and reloads from every CSV currently in activity/.
     Use this once after first setup or whenever you want a clean slate.
 
@@ -24,14 +24,14 @@ from pathlib import Path
 
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src import db
 from src.parsers import robinhood, webull, tradestation, schwab, tradier, coinbase, fidelity
 from src.parsers import positions_csv
 from src.parsers import static_positions_csv
 
-ACTIVITY = Path(__file__).parent / "activity"
+ACTIVITY = Path(__file__).resolve().parents[1] / "activity"
 
 ACCOUNTS = [
     # ── Equity accounts (live yfinance prices) ────────────────────────────────
@@ -57,12 +57,27 @@ ACCOUNTS = [
      "account_group": "investment", "holder": None,   "price_source": "live",   "active": 1},
     # ── Crypto account (transactions only; positions via CRYPTO_FILES) ─────────
     {"account_id": "COINBASE", "broker": "coinbase",     "account_type": "crypto",
-     "account_group": "investment", "holder": None,   "price_source": "static", "active": 1},
+     "account_group": "investment", "holder": None,   "price_source": "live", "active": 1},
 ]
 
 # Accounts whose CSVs are yearly summaries rather than running transaction logs.
 # These are always fully refreshed so mid-year updates are picked up.
 ALWAYS_REFRESH = {"FIDELITY"}
+
+# Accounts whose current positions are normally sourced from broker MCP syncs.
+# Legacy position CSVs for these accounts are skipped by default so opening the
+# dashboard or running a transaction ingest cannot overwrite fresher MCP data.
+MCP_POSITION_ACCOUNTS = {
+    "RH-BV",
+    "WEBULL",
+    "WEBULL-CASH",
+    "WEBULL-EVENTS",
+    "WEBULL-FUT",
+    "TS",
+    "SCHWAB",
+    "TRADIER",
+    "COINBASE",
+}
 
 PARSERS = [
     (robinhood.parse,       ACTIVITY / "robinhood-inv-bv.csv",                          "RH-BV"),
@@ -147,13 +162,30 @@ def _compute_snapshot_map() -> dict[str, dict]:
             snap.setdefault(str(acct), {"market_value": 0.0, "cost_basis": None, "margin": 0.0})
             snap[str(acct)]["market_value"] += mv
 
+    # Broker-reported account balances are authoritative when present. They
+    # capture cash-only sub-accounts and broker equity that may not be modeled
+    # as individual position rows.
+    latest_balances = db.load_account_balances()
+    if not latest_balances.empty:
+        for _, row in latest_balances.iterrows():
+            account_id = str(row["account_id"])
+            persisted_cost = row.get("cost_basis")
+            snap[account_id] = {
+                "market_value": float(row.get("market_value") or 0.0),
+                "cost_basis": persisted_cost
+                if pd.notna(persisted_cost)
+                else snap.get(account_id, {}).get("cost_basis"),
+                "margin": float(row.get("margin") or 0.0),
+            }
+
     return snap
 
 
-def run(reset: bool = False) -> None:
+def run(reset: bool = False, include_mcp_position_csv: bool = False) -> None:
     print("Initializing database …")
     db.init_db()
     db.upsert_accounts(ACCOUNTS)
+    db.set_account_price_source("COINBASE", "live")
 
     if reset:
         print("--reset: clearing all existing transactions …")
@@ -204,6 +236,10 @@ def run(reset: bool = False) -> None:
     # ── Equity positions (always fully replaced per account) ──────────────────
     pos_total = 0
     for path, acct in POSITION_FILES:
+        if acct in MCP_POSITION_ACCOUNTS and not include_mcp_position_csv:
+            if path.exists():
+                print(f"  SKIP  positions {acct}: MCP-owned account (use --include-mcp-position-csv to override)")
+            continue
         if not path.exists():
             continue
         try:
@@ -280,6 +316,11 @@ if __name__ == "__main__":
         help="Skip CSV parsing; recompute and write today's portfolio snapshot from "
              "current DB positions. Use after an MCP position sync.",
     )
+    parser.add_argument(
+        "--include-mcp-position-csv", action="store_true",
+        help="Allow legacy position CSV files to overwrite MCP-owned accounts. "
+             "By default those accounts keep MCP-synced positions.",
+    )
     args = parser.parse_args()
 
     if args.cash is not None:
@@ -297,4 +338,4 @@ if __name__ == "__main__":
         else:
             print("No positions found, snapshot skipped")
     else:
-        run(reset=args.reset)
+        run(reset=args.reset, include_mcp_position_csv=args.include_mcp_position_csv)

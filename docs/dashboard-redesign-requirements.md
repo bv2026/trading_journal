@@ -321,7 +321,7 @@ CREATE TABLE instruments (
 | 6.1 | New `src/fetchers/` directory | One fetcher module per MCP broker: `robinhood.py`, `tradier.py`, `tradestation.py`, `schwab.py`, `webull.py` |
 | 6.2 | Each fetcher returns standardised dicts matching the positions + transactions DB schema | Same shape as existing parsers — drop-in compatible |
 | 6.3 | MCP-first, CSV fallback | If MCP call fails or broker not connected, fall back to CSV file if present; log which path was taken |
-| 6.4 | `ingest.py` orchestrates both old CSV parsers and new MCP fetchers | CSV parsers for RH transactions, Fidelity, Coinbase unchanged |
+| 6.4 | `src/ingest.py` orchestrates both old CSV parsers and new MCP fetchers | CSV parsers for RH transactions, Fidelity, Coinbase unchanged |
 | 6.5 | Robinhood transactions remain CSV-only | trayd has no transaction history endpoint |
 | 6.6 | Schwab futures remain TOS.csv only | schwab MCP has no futures positions tool |
 | 6.7 | Snapshot written after every refresh | Aggregate all asset classes → `portfolio_snapshots` |

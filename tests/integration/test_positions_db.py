@@ -126,6 +126,19 @@ class TestPositionsRoundTrip:
         assert len(pos) == 1
         assert pos.iloc[0]["Ticker"] == "MSFT"
 
+    def test_inactive_account_is_hidden_from_position_loads(self, seeded_db):
+        insert_positions([
+            {"account_id": "SCHWAB", "ticker": "AAPL", "name": "Apple",
+             "shares": 10.0, "cost_basis": 150.0, "sector": "Technology",
+             "industry": None, "asset_type": "Stock",
+             "iv_rank": None, "perf_ytd": None, "atr_pct": None,
+             "source_file": "test.csv"},
+        ])
+        with db_module.get_conn() as conn:
+            conn.execute("UPDATE accounts SET active=0 WHERE account_id='SCHWAB'")
+            conn.commit()
+        assert load_positions_db().empty
+
     def test_csv_parse_and_insert(self, tmp_path, seeded_db):
         csv_path = _write_positions_csv(tmp_path, [_pos_row("AAPL"), _pos_row("MSFT")])
         recs = parse(str(csv_path), "SCHWAB")
@@ -279,6 +292,33 @@ class TestStaticPriceAccounts:
         assert "BTC" not in yf_calls           # yfinance never asked for BTC
         assert btc["PRICE"] == pytest.approx(77344.0)
         assert btc["MARKET VALUE"] == pytest.approx(0.5 * 77344.0)
+
+    def test_crypto_account_uses_stored_price_even_when_marked_live(self, static_seeded_db, monkeypatch):
+        """Legacy Coinbase CSV rows should not hit yfinance after Coinbase switches live."""
+        yf_calls = []
+
+        def _fake_prices(tickers):
+            yf_calls.extend(tickers)
+            return {t: 999.0 for t in tickers}
+
+        monkeypatch.setattr(positions_module, "_fetch_live_prices", _fake_prices)
+
+        with db_module.get_conn() as conn:
+            conn.execute("UPDATE accounts SET price_source='live' WHERE account_id='COINBASE'")
+            conn.commit()
+        insert_positions([{
+            "account_id": "COINBASE", "ticker": "BTC", "name": "Bitcoin",
+            "shares": 0.5, "cost_basis": 40000.0, "stored_price": 77344.0,
+            "sector": "CRYPTO", "industry": None, "asset_type": None,
+            "iv_rank": None, "perf_ytd": None, "atr_pct": None,
+            "source_file": "positions-coinbase.csv",
+        }])
+
+        pos = positions_module.load_positions_from_db()
+        btc = pos[pos["Ticker"] == "BTC"].iloc[0]
+
+        assert "BTC" not in yf_calls
+        assert btc["PRICE"] == pytest.approx(77344.0)
 
     def test_live_account_still_uses_yfinance(self, static_seeded_db, monkeypatch):
         """price_source='live' rows must still go through yfinance."""
@@ -566,7 +606,7 @@ class TestSnapshotViaIngest:
     """Verify that ingest.run() writes a portfolio snapshot at the end of each run."""
 
     def test_ingest_writes_snapshot(self, tmp_path, full_seeded_db, monkeypatch):
-        import ingest as ingest_mod
+        from src import ingest as ingest_mod
         from src.db import load_snapshot_periods, write_portfolio_snapshot
 
         # Seed equity positions so there's something to snapshot
@@ -607,7 +647,7 @@ class TestSnapshotViaIngest:
         assert "SCHWAB" in accts
 
     def test_ingest_same_day_rerun_updates_snapshot(self, tmp_path, full_seeded_db, monkeypatch):
-        import ingest as ingest_mod
+        from src import ingest as ingest_mod
         from src.db import load_snapshot_periods
 
         def _run_with_mv(mv):

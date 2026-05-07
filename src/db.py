@@ -3,7 +3,7 @@ import pandas as pd
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent.parent / "data" / "journal.db"
-SCHEMA_PATH = Path(__file__).parent.parent / "schema.sql"
+SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 
 def get_conn() -> sqlite3.Connection:
@@ -55,6 +55,25 @@ def _migrate(conn: sqlite3.Connection) -> None:
         )
     """)
 
+    # Latest account-level broker balance. This is separate from positions so
+    # cash-only sub-accounts and broker-reported equity can be preserved.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS account_balances (
+            account_id   TEXT PRIMARY KEY REFERENCES accounts(account_id),
+            market_value REAL NOT NULL DEFAULT 0,
+            cost_basis   REAL,
+            margin       REAL NOT NULL DEFAULT 0,
+            net_equity   REAL NOT NULL DEFAULT 0,
+            source       TEXT,
+            detail       TEXT,
+            as_of        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    try:
+        conn.execute("ALTER TABLE account_balances ADD COLUMN cost_basis REAL")
+    except sqlite3.OperationalError:
+        pass
+
 
 def init_db():
     sql = SCHEMA_PATH.read_text()
@@ -79,9 +98,17 @@ def upsert_accounts(records: list[dict]):
     ]
     with get_conn() as conn:
         conn.executemany(
-            "INSERT OR REPLACE INTO accounts "
-            "(account_id, broker, account_type, account_group, holder, price_source, active) "
-            "VALUES (:account_id, :broker, :account_type, :account_group, :holder, :price_source, :active)",
+            """
+            INSERT INTO accounts
+                (account_id, broker, account_type, account_group, holder, price_source, active)
+            VALUES
+                (:account_id, :broker, :account_type, :account_group, :holder, :price_source, :active)
+            ON CONFLICT(account_id) DO UPDATE SET
+                broker        = excluded.broker,
+                account_type  = excluded.account_type,
+                account_group = excluded.account_group,
+                holder        = excluded.holder
+            """,
             rows,
         )
         conn.commit()
@@ -181,9 +208,10 @@ def load_positions_db() -> pd.DataFrame:
             "p.sector, p.industry, "
             "p.asset_type AS TYPE, p.iv_rank AS IV_Rank, p.perf_ytd AS PERF_YTD, "
             "p.atr_pct AS ATR_pct, p.source_file, "
-            "a.price_source AS Price_Source "
+            "a.price_source AS Price_Source, a.account_type AS Account_Type "
             "FROM positions p "
-            "JOIN accounts a ON p.account_id = a.account_id",
+            "JOIN accounts a ON p.account_id = a.account_id "
+            "WHERE COALESCE(a.active, 1) = 1",
             conn,
         )
 
@@ -232,7 +260,11 @@ def load_options_db() -> pd.DataFrame:
             return pd.read_sql_query(
                 "SELECT account_id, symbol, underlying, expiry, strike, call_put, "
                 "description, qty, price, market_value, data_source, source_file "
-                "FROM options_positions",
+                "FROM options_positions o "
+                "WHERE EXISTS ("
+                "  SELECT 1 FROM accounts a "
+                "  WHERE a.account_id = o.account_id AND COALESCE(a.active, 1) = 1"
+                ")",
                 conn,
             )
     except Exception:
@@ -281,7 +313,11 @@ def load_futures_db() -> pd.DataFrame:
             return pd.read_sql_query(
                 "SELECT account_id, symbol, underlying, description, "
                 "qty, price, market_value, source_file "
-                "FROM futures_positions",
+                "FROM futures_positions f "
+                "WHERE EXISTS ("
+                "  SELECT 1 FROM accounts a "
+                "  WHERE a.account_id = f.account_id AND COALESCE(a.active, 1) = 1"
+                ")",
                 conn,
             )
     except Exception:
@@ -330,7 +366,11 @@ def load_crypto_db() -> pd.DataFrame:
             return pd.read_sql_query(
                 "SELECT account_id, symbol, name, qty, price, "
                 "cost_basis, market_value, source_file "
-                "FROM crypto_positions",
+                "FROM crypto_positions c "
+                "WHERE EXISTS ("
+                "  SELECT 1 FROM accounts a "
+                "  WHERE a.account_id = c.account_id AND COALESCE(a.active, 1) = 1"
+                ")",
                 conn,
             )
     except Exception:
@@ -357,13 +397,30 @@ def upsert_instruments(records: list[dict]) -> int:
     )
     with get_conn() as conn:
         cursor = conn.executemany(
-            "INSERT OR REPLACE INTO instruments "
-            "(symbol, asset_class, underlying, name, exchange, currency, "
-            " sector, industry, expiry, strike, call_put, "
-            " tick_size, point_value, tradable) "
-            "VALUES (:symbol, :asset_class, :underlying, :name, :exchange, :currency, "
-            "        :sector, :industry, :expiry, :strike, :call_put, "
-            "        :tick_size, :point_value, :tradable)",
+            """
+            INSERT INTO instruments
+                (symbol, asset_class, underlying, name, exchange, currency,
+                 sector, industry, expiry, strike, call_put,
+                 tick_size, point_value, tradable)
+            VALUES
+                (:symbol, :asset_class, :underlying, :name, :exchange, :currency,
+                 :sector, :industry, :expiry, :strike, :call_put,
+                 :tick_size, :point_value, :tradable)
+            ON CONFLICT(symbol, asset_class) DO UPDATE SET
+                underlying  = COALESCE(excluded.underlying, instruments.underlying),
+                name        = COALESCE(excluded.name, instruments.name),
+                exchange    = COALESCE(excluded.exchange, instruments.exchange),
+                currency    = COALESCE(excluded.currency, instruments.currency),
+                sector      = COALESCE(excluded.sector, instruments.sector),
+                industry    = COALESCE(excluded.industry, instruments.industry),
+                expiry      = COALESCE(excluded.expiry, instruments.expiry),
+                strike      = COALESCE(excluded.strike, instruments.strike),
+                call_put    = COALESCE(excluded.call_put, instruments.call_put),
+                tick_size   = COALESCE(excluded.tick_size, instruments.tick_size),
+                point_value = COALESCE(excluded.point_value, instruments.point_value),
+                tradable    = COALESCE(excluded.tradable, instruments.tradable),
+                fetched_at  = CURRENT_TIMESTAMP
+            """,
             rows,
         )
         conn.commit()
@@ -415,6 +472,84 @@ def write_portfolio_snapshot(snapshot_date: str, account_mv_map: dict[str, dict]
         conn.commit()
 
 
+def upsert_account_balances(records: list[dict]) -> int:
+    """Persist latest per-account balances from live/cached broker sources."""
+    if not records:
+        return 0
+    rows = []
+    for rec in records:
+        account_id = rec.get("account_id") or rec.get("Account")
+        if not account_id or account_id == "TOTAL":
+            continue
+        market_value = float(rec.get("market_value", rec.get("Market Value", 0.0)) or 0.0)
+        cost_basis_raw = rec.get("cost_basis", rec.get("Cost Basis"))
+        cost_basis = None if cost_basis_raw in (None, "") else float(cost_basis_raw)
+        margin = float(rec.get("margin", rec.get("Margin", 0.0)) or 0.0)
+        net_equity = float(rec.get("net_equity", rec.get("Net Equity", market_value - margin)) or 0.0)
+        rows.append({
+            "account_id": str(account_id),
+            "market_value": market_value,
+            "cost_basis": cost_basis,
+            "margin": margin,
+            "net_equity": net_equity,
+            "source": rec.get("source") or rec.get("Balance Source"),
+            "detail": rec.get("detail") or rec.get("Live Status"),
+        })
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        cursor = conn.executemany(
+            """
+            INSERT INTO account_balances
+                (account_id, market_value, cost_basis, margin, net_equity, source, detail, as_of)
+            VALUES
+                (:account_id, :market_value, :cost_basis, :margin, :net_equity, :source, :detail, CURRENT_TIMESTAMP)
+            ON CONFLICT(account_id) DO UPDATE SET
+                market_value = excluded.market_value,
+                cost_basis   = excluded.cost_basis,
+                margin       = excluded.margin,
+                net_equity   = excluded.net_equity,
+                source       = excluded.source,
+                detail       = excluded.detail,
+                as_of        = excluded.as_of
+            """,
+            rows,
+        )
+        conn.commit()
+        return cursor.rowcount
+
+
+def load_account_balances() -> pd.DataFrame:
+    """Load latest persisted account-level balances for active accounts."""
+    if not DB_PATH.exists():
+        return pd.DataFrame()
+    try:
+        with get_conn() as conn:
+            return pd.read_sql_query(
+                """
+                SELECT
+                    b.account_id,
+                    a.broker,
+                    a.account_type,
+                    b.market_value,
+                    b.cost_basis,
+                    b.margin,
+                    b.net_equity,
+                    b.source,
+                    b.detail,
+                    b.as_of
+                FROM account_balances b
+                LEFT JOIN accounts a ON a.account_id = b.account_id
+                WHERE COALESCE(a.active, 1) = 1
+                   OR a.account_id IS NULL
+                ORDER BY b.account_id
+                """,
+                conn,
+            )
+    except Exception:
+        return pd.DataFrame()
+
+
 def load_snapshot_periods(account_group: str = "investment") -> pd.DataFrame:
     """Query v_snapshot_periods filtered by account_group."""
     if not DB_PATH.exists():
@@ -424,7 +559,7 @@ def load_snapshot_periods(account_group: str = "investment") -> pd.DataFrame:
             return pd.read_sql_query(
                 "SELECT p.* FROM v_snapshot_periods p "
                 "JOIN accounts a ON p.account_id = a.account_id "
-                "WHERE a.account_group = ?",
+                "WHERE a.account_group = ? AND COALESCE(a.active, 1) = 1",
                 conn,
                 params=(account_group,),
             )
@@ -438,7 +573,8 @@ def load_transactions() -> pd.DataFrame:
     with get_conn() as conn:
         df = pd.read_sql_query(
             "SELECT t.*, a.broker FROM transactions t "
-            "JOIN accounts a ON t.account_id = a.account_id",
+            "JOIN accounts a ON t.account_id = a.account_id "
+            "WHERE COALESCE(a.active, 1) = 1",
             conn,
         )
     df["date"] = pd.to_datetime(df["date"])
@@ -481,6 +617,16 @@ def get_cash_balance(account_id: str = "CASH") -> float:
 
 
 # ── Margin overrides ──────────────────────────────────────────────────────────
+
+def set_account_price_source(account_id: str, price_source: str) -> None:
+    """Set one account's price source without touching other settings."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE accounts SET price_source=? WHERE account_id=?",
+            (price_source, account_id),
+        )
+        conn.commit()
+
 
 def upsert_margin_override(account_id: str, margin: float) -> None:
     """Set (or update) a persistent margin override for an account.
@@ -633,7 +779,8 @@ def get_accounts_by_type(account_type: str) -> list[str]:
     try:
         with get_conn() as conn:
             rows = conn.execute(
-                "SELECT account_id FROM accounts WHERE account_type = ?",
+                "SELECT account_id FROM accounts "
+                "WHERE account_type = ? AND COALESCE(active, 1) = 1",
                 (account_type,),
             ).fetchall()
         return [r[0] for r in rows]

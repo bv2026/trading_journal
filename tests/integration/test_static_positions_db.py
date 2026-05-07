@@ -223,6 +223,31 @@ class TestCryptoRoundTrip:
         df = load_crypto_db()
         assert set(df["symbol"]) == {"BTC", "ETH"}
 
+    def test_coinbase_mcp_write_replaces_static_positions(self, seeded_db):
+        from src.db import insert_positions, load_positions_db
+        from src.mcp_ingest import write_coinbase
+
+        insert_positions([{
+            "account_id": "COINBASE", "ticker": "BTC", "name": "Bitcoin",
+            "shares": 0.1, "cost_basis": 50000.0, "stored_price": 60000.0,
+            "sector": None, "industry": None, "asset_type": "Crypto",
+            "iv_rank": None, "perf_ytd": None, "atr_pct": None,
+            "data_source": "csv", "source_file": "positions-coinbase.csv",
+        }])
+
+        result = write_coinbase({
+            "positions": [
+                {"symbol": "BTC", "quantity": "0.2", "price": "70000"},
+            ]
+        })
+
+        assert result["crypto_count"] == 1
+        assert load_positions_db().empty
+        crypto = load_crypto_db()
+        assert len(crypto) == 1
+        assert crypto.iloc[0]["symbol"] == "BTC"
+        assert crypto.iloc[0]["market_value"] == 14000.0
+
 
 # ── Portfolio snapshots ───────────────────────────────────────────────────────
 
@@ -283,7 +308,7 @@ class TestIngestWithStaticPositions:
     """Verify that ingest.run() correctly wires options files → options_positions table."""
 
     def test_options_ingest_round_trip(self, tmp_path, seeded_db, monkeypatch):
-        import ingest as ingest_mod
+        from src import ingest as ingest_mod
         from src.parsers.static_positions_csv import parse as static_parse
 
         # Write a minimal options CSV
@@ -314,7 +339,7 @@ class TestIngestWithStaticPositions:
         assert df.iloc[0]["qty"] == pytest.approx(-1.0)
 
     def test_missing_options_file_skipped(self, tmp_path, seeded_db, monkeypatch):
-        import ingest as ingest_mod
+        from src import ingest as ingest_mod
 
         monkeypatch.setattr(ingest_mod, "ACCOUNTS",      [
             {"account_id": "TRADIER-OPT", "broker": "tradier", "account_type": "options",
