@@ -266,7 +266,13 @@ def _coinbase_live_balance() -> dict | None:
         market_value = sum(_as_float(row.get("market_value")) for row in crypto + futures)
         if market_value <= 0:
             raise RuntimeError("Coinbase live balance returned no non-zero rows")
-        return _balance_row(market_value, 0.0, "Live MCP")
+        row = _balance_row(market_value, 0.0, "Live MCP")
+        row["cost_basis"] = sum(
+            _as_float(rec.get("cost_basis"))
+            for rec in crypto
+            if rec.get("cost_basis") is not None
+        )
+        return row
     except Exception as exc:  # noqa: BLE001 - fall back to DB
         return {"error": str(exc)}
 
@@ -445,9 +451,27 @@ def _webull_cached_balances(db_market_values: pd.Series) -> dict[str, dict]:
             market_value = cash
         if not market_value:
             market_value = float(db_market_values.get(account_id, 0.0))
+        cost_basis = sum(_as_float(p.get("quantity")) * _as_float(p.get("avg_cost")) for p in positions)
+        if account_id == "WEBULL-CASH" and cost_basis <= 0:
+            cost_basis = market_value
         margin = abs(cash) if cash < 0 else 0.0
         rows[account_id] = _balance_row(market_value, margin, "Claude JSON")
+        rows[account_id]["cost_basis"] = cost_basis
     return rows
+
+
+def _fidelity_csv_balance() -> dict | None:
+    try:
+        from src.cli import fidelity as fidelity_cli  # noqa: PLC0415
+
+        totals = fidelity_cli.load_account_totals()
+        if not totals["market_value"]:
+            return None
+        row = _balance_row(totals["market_value"], totals["margin"], "CSV file", f"{fidelity_cli.CSV_PATH.name}")
+        row["cost_basis"] = totals["cost_basis"]
+        return row
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
 
 
 def _broker_balance_overrides(db_mv: pd.Series, db_margin: pd.Series) -> dict[str, dict]:
@@ -485,6 +509,12 @@ def _broker_balance_overrides(db_mv: pd.Series, db_margin: pd.Series) -> dict[st
     for account_id, bal in _webull_cached_balances(db_mv).items():
         if not account_id.startswith("_"):
             rows[account_id] = bal
+
+    fidelity = _fidelity_csv_balance()
+    if fidelity and "error" not in fidelity:
+        rows["FIDELITY"] = fidelity
+    elif fidelity:
+        _BALANCE_ERRORS["FIDELITY"] = str(fidelity["error"])
 
     return rows
 
@@ -528,6 +558,8 @@ def _account_summary(health: pd.DataFrame | None = None) -> pd.DataFrame:
         if override:
             market_value = _as_float(override.get("market_value"))
             margin_value = _as_float(override.get("margin"))
+            if override.get("cost_basis") is not None:
+                cost_value = _as_float(override.get("cost_basis"))
             balance_source = str(override.get("balance_source") or balance_source)
         source = account_sources.get(
             account_id,

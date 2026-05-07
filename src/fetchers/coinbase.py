@@ -122,6 +122,18 @@ def normalize_positions(positions_resp: dict | list, account_id: str = "COINBASE
 
         name = _first(row, "name", "display_name", ("metadata", "name"), ("currency", "name")) or symbol
         cost_basis = _float(_first(row, "cost_basis", "costBasis", "cost"))
+        unrealized_pnl = _float(_first(
+            row,
+            "unrealized_pnl",
+            "unrealizedPnl",
+            "unrealized_gain_loss",
+            "gain_loss",
+            "pnl",
+        ))
+        if cost_basis is None and unrealized_pnl is not None:
+            cost_basis = market_value - unrealized_pnl
+        if cost_basis is None and symbol in {"USD", "USDC"}:
+            cost_basis = market_value
 
         records.append({
             "account_id":   account_id,
@@ -130,6 +142,7 @@ def normalize_positions(positions_resp: dict | list, account_id: str = "COINBASE
             "qty":          qty,
             "price":        price,
             "cost_basis":   cost_basis,
+            "unrealized_pnl": unrealized_pnl,
             "market_value": market_value,
             "source_file":  None,
         })
@@ -144,7 +157,7 @@ def normalize_positions(positions_resp: dict | list, account_id: str = "COINBASE
             "name":         "Coinbase Derivatives USD",
             "qty":          futures_usd,
             "price":        1.0,
-            "cost_basis":   None,
+            "cost_basis":   futures_usd,
             "market_value": futures_usd,
             "source_file":  None,
         })
@@ -179,6 +192,10 @@ def normalize_futures(positions_resp: dict | list, account_id: str = "COINBASE")
         pnl = _float(_first(row, "unrealized_pnl", "unrealizedPnl", "pnl")) or 0.0
         position_pnl += pnl
         price = _float(_first(row, "mark_price", "current_price", "price"))
+        entry_price = _float(_first(row, "avg_entry_price", "entry_price", "average_entry_price"))
+        notional = _float(_first(row, "notional_value", "notional"))
+        if notional is None and entry_price is not None:
+            notional = abs(qty) * entry_price
         underlying = symbol.split("-", 1)[0]
 
         records.append({
@@ -189,6 +206,7 @@ def normalize_futures(positions_resp: dict | list, account_id: str = "COINBASE")
             "qty":          qty,
             "price":        price,
             "market_value": pnl,
+            "cost_basis":   notional,
             "source_file":  None,
         })
 
@@ -211,6 +229,7 @@ def normalize_futures(positions_resp: dict | list, account_id: str = "COINBASE")
             "qty":          1.0,
             "price":        adjustment,
             "market_value": adjustment,
+            "cost_basis":   0.0,
             "source_file":  None,
         })
 

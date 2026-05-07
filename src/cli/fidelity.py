@@ -35,8 +35,13 @@ ACCOUNT_ID = "FIDELITY"
 def _num(val: Any) -> float:
     if val is None:
         return 0.0
+    text = str(val).strip().replace(",", "").replace("$", "")
+    neg = text.startswith("(") and text.endswith(")")
+    if neg:
+        text = text[1:-1]
     try:
-        return float(str(val).strip().replace(",", "").replace("$", ""))
+        out = float(text)
+        return -out if neg else out
     except (ValueError, TypeError):
         return 0.0
 
@@ -60,6 +65,29 @@ def load_positions() -> list[dict]:
                 "cost_basis": _num(row.get(" COST BASIS ", row.get("COST BASIS", 0))),
             })
     return positions
+
+
+def load_account_totals() -> dict:
+    positions = load_positions()
+    market_value = sum(
+        _num(p.get("shares")) * _num(p.get("stored_price") or p.get("cost_basis"))
+        for p in positions
+    )
+    cost_basis = sum(_num(p.get("shares")) * _num(p.get("cost_basis")) for p in positions)
+    margin = 0.0
+    if CSV_PATH.exists():
+        with open(CSV_PATH, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                ticker = row.get("Ticker", "").strip().upper()
+                if ticker == "MARGIN":
+                    margin = abs(_num(row.get("MARGIN", 0)))
+                    break
+    return {
+        "market_value": market_value,
+        "cost_basis": cost_basis,
+        "margin": margin,
+        "net_equity": market_value - margin,
+    }
 
 
 # ---------------------------------------------------------------------------
