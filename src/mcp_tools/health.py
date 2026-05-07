@@ -126,6 +126,28 @@ def _one_line(text: str, max_len: int = 140) -> str:
     return text if len(text) <= max_len else text[: max_len - 3] + "..."
 
 
+def _tradestation_fallback_detail() -> str | None:
+    try:
+        from src.cli import tradestation as ts_cli  # noqa: PLC0415
+
+        if not ts_cli.load_balances():
+            return None
+        return f"MCP unavailable; using Claude JSON balances {ts_cli._file_age_str(ts_cli.BALANCES_FILE)}"
+    except Exception:
+        return None
+
+
+def _apply_configured_fallbacks(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for row in rows:
+        if row.get("Broker") != "TradeStation" or row.get("Status") == "OK":
+            continue
+        detail = _tradestation_fallback_detail()
+        if detail:
+            row["Status"] = "FALLBACK"
+            row["Detail"] = _one_line(detail)
+    return rows
+
+
 def _broker_cli_bearer_token(server_key: str | None) -> str | None:
     if server_key != "robinhood":
         return None
@@ -284,7 +306,7 @@ async def _check_all(timeout_seconds: float) -> list[dict[str, Any]]:
             })
 
     order = {target.broker: idx for idx, target in enumerate(HEALTH_TARGETS)}
-    return sorted(rows, key=lambda row: order.get(row["Broker"], 999))
+    return _apply_configured_fallbacks(sorted(rows, key=lambda row: order.get(row["Broker"], 999)))
 
 
 def check_mcp_health(timeout_seconds: float = 30.0) -> list[dict[str, Any]]:

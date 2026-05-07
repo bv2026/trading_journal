@@ -55,6 +55,7 @@ PRICE_COLS = {"PRICE", "price", "Cost_Basis"}
 _HEALTH_CACHE: pd.DataFrame | None = None
 _BALANCE_ERRORS: dict[str, str] = {}
 REPO_ROOT = Path(__file__).resolve().parents[1]
+HEALTH_OK_STATUSES = {"OK", "FALLBACK"}
 
 
 def _money(v) -> str:
@@ -124,9 +125,11 @@ def show_mcp_health(*, force: bool = False, compact: bool = False) -> pd.DataFra
     else:
         _print_df(health)
 
-    bad = health[~health["Status"].isin(["OK"])] if not health.empty else health
+    bad = health[~health["Status"].isin(HEALTH_OK_STATUSES)] if not health.empty else health
     if not bad.empty:
         print("\nAccount balances prefer live/cached broker sources; journal.db is used as fallback.")
+    elif not health.empty and health["Status"].isin(["FALLBACK"]).any():
+        print("\nSome broker MCPs are using configured cached sources. Account balances are available.")
     else:
         print("\nAll configured broker MCP servers responded. Account balances prefer live/cached broker sources.")
     return health
@@ -149,6 +152,8 @@ def _account_live_status(account_id: str, health_map: dict[str, dict]) -> str:
     status = str((health_map.get(broker) or {}).get("Status") or "UNKNOWN")
     if status == "OK":
         return "OK"
+    if status == "FALLBACK":
+        return "Fallback OK"
     if status == "WARN":
         return "WARN"
     return f"{status}/fallback"
@@ -159,7 +164,12 @@ def _report_live_fallbacks(health: pd.DataFrame | None = None) -> None:
         health = _HEALTH_CACHE
     if health is None or health.empty:
         return
-    bad = health[~health["Status"].isin(["OK"])]
+    bad = health[~health["Status"].isin(HEALTH_OK_STATUSES)]
+    fallback = health[health["Status"].isin(["FALLBACK"])]
+    if not fallback.empty:
+        print("\nConfigured fallback sources in use:")
+        for _, row in fallback.iterrows():
+            print(f"  {row['Accounts']}: {row['Broker']} — {row['Detail']}")
     if bad.empty:
         return
     print("\nLIVE connection failures; using configured fallback source for these accounts:")
