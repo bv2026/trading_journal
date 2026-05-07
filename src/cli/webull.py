@@ -1,7 +1,7 @@
 """Webull broker module for the Trading Journal CLI.
 
-Reads cached data from data/tmp/ (saved during 'sync positions' in Claude).
-Webull MCP is a cloud connector — no standalone API access possible.
+Reads cached position/balance data from data/tmp/ and can call the configured
+webull-openapi MCP server for transaction history exports.
 
 Standalone usage:
     python src/cli/webull.py                # all accounts
@@ -20,13 +20,20 @@ if _project_root not in _sys.path:
     _sys.path.insert(0, _project_root)
 
 import argparse
+import asyncio
+import csv
+import json
+import os
 import re
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 DATA_DIR = Path(_project_root) / "data" / "tmp"
+IMPORT_DIR = Path.home() / "OneDrive" / "Home-Docs" / "tradelog" / "Import"
 
 # Webull account IDs and labels
 ACCOUNTS = {
@@ -37,6 +44,10 @@ ACCOUNTS = {
 }
 
 MARGIN_ACCOUNT_ID = "8AGMH0413MK07EPRI7J4OOSVH9"
+ORDER_CSV_HEADERS = [
+    "Date", "Time", "O/C", "L/S", "Ticker", "Sh/Contr",
+    "Price", "Comm", "Amount", "Type/Mult",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +126,147 @@ def load_balance(account_id: str) -> dict:
     if not path.exists():
         return {}
     return parse_balance_text(path.read_text("utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# Transaction history export
+# ---------------------------------------------------------------------------
+
+def _server_config() -> tuple[str, dict[str, Any]]:
+    from src.mcp_tools.health import load_mcp_servers
+
+    servers = load_mcp_servers()
+    if "webull-openapi" in servers:
+        return "webull-openapi", servers["webull-openapi"]
+    for name, server in servers.items():
+        if "webull" in name.lower():
+            return name, server
+    raise RuntimeError("webull-openapi MCP server is not configured")
+
+
+async def _call_webull_tool(tool_name: str, arguments: dict[str, Any], timeout_seconds: float = 60.0) -> str:
+    from mcp.client.session import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+
+    _name, server = _server_config()
+    command = server.get("command")
+    if not command:
+        raise RuntimeError("webull-openapi MCP server has no command configured")
+
+    env = os.environ.copy()
+    env.update(server.get("env") or {})
+    env.setdefault("FASTMCP_LOG_LEVEL", "ERROR")
+    env.setdefault("LOG_LEVEL", "ERROR")
+    params = StdioServerParameters(
+        command=str(command),
+        args=[str(arg) for arg in (server.get("args") or [])],
+        env=env,
+        cwd=server.get("cwd"),
+    )
+
+    async def run() -> str:
+        with open(os.devnull, "w", encoding="utf-8") as errlog:
+            async with stdio_client(params, errlog=errlog) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    result = await session.call_tool(tool_name, arguments)
+        text = "\n".join(
+            getattr(item, "text", "")
+            for item in result.content
+            if getattr(item, "text", "")
+        )
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return text
+        return str(payload.get("result") or text)
+
+    return await asyncio.wait_for(run(), timeout_seconds)
+
+
+def fetch_order_history(account_id: str, start: str, end: str, limit: int = 100) -> str:
+    """Fetch Webull order history text through the configured MCP server."""
+    limit = max(10, min(int(limit), 100))
+    return asyncio.run(_call_webull_tool(
+        "get_order_history",
+        {"account_id": account_id, "start": start, "end": end, "limit": limit},
+    ))
+
+
+def parse_order_history_text(text: str) -> list[dict[str, str]]:
+    """Parse Webull get_order_history formatted text into order dictionaries."""
+    orders: list[dict[str, str]] = []
+    for block in re.split(r"\[Order Entry \d+\]", text):
+        if "Order Details" not in block:
+            continue
+        row: dict[str, str] = {}
+        for line in block.splitlines():
+            match = re.match(r"\s*([A-Za-z ]+):\s*(.*?)\s*$", line)
+            if match:
+                row[match.group(1).strip()] = match.group(2).strip()
+        if row.get("Symbol"):
+            orders.append(row)
+    return orders
+
+
+def _order_datetime(order: dict[str, str]) -> datetime | None:
+    for key in ("Filled Time", "Place Time"):
+        value = (order.get(key) or "").strip()
+        if not value or value == "N/A":
+            continue
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        return dt.astimezone(ZoneInfo("America/New_York"))
+
+    raw_ts = (order.get("Filled Timestamp") or order.get("Place Timestamp") or "").strip()
+    if raw_ts.isdigit():
+        ts = int(raw_ts)
+        # Webull's displayed timestamp can include milliseconds.
+        if ts > 10_000_000_000:
+            ts = ts // 1000
+        return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(ZoneInfo("America/New_York"))
+    return None
+
+
+def orders_to_import_rows(orders: list[dict[str, str]]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for order in orders:
+        status = (order.get("Status") or "").upper()
+        qty = order.get("Filled Quantity") or ""
+        if status != "FILLED" or not qty or qty == "0":
+            continue
+        dt = _order_datetime(order)
+        if dt is None:
+            continue
+        rows.append({
+            "Date": f"{dt.month}/{dt.day}/{dt.year}",
+            "Time": f"{dt.hour}:{dt.minute:02d}:{dt.second:02d}",
+            "O/C": (order.get("Side") or "").title(),
+            "L/S": "",
+            "Ticker": (order.get("Symbol") or "").upper(),
+            "Sh/Contr": qty,
+            "Price": order.get("Filled Price") or order.get("Limit Price") or "",
+            "Comm": "",
+            "Amount": "",
+            "Type/Mult": "",
+        })
+    return rows
+
+
+def export_order_history_csv(account_id: str, start: str, end: str, output_path: Path | None = None) -> Path:
+    raw = fetch_order_history(account_id, start, end)
+    rows = orders_to_import_rows(parse_order_history_text(raw))
+    if output_path is None:
+        short = ACCOUNTS.get(account_id, {}).get("short", account_id)
+        output_path = IMPORT_DIR / f"Webull_{short}_Transactions_{start}_to_{end}.csv"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=ORDER_CSV_HEADERS, lineterminator="\r\n")
+        writer.writeheader()
+        writer.writerows(rows)
+    return output_path
 
 
 # ---------------------------------------------------------------------------

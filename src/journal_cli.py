@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 
@@ -824,6 +825,67 @@ def housekeeping_menu() -> None:
             print("Choose 0-8.")
 
 
+def _prompt_date(label: str, default: date) -> str | None:
+    while True:
+        raw = input(f"{label} [{default.isoformat()}]: ").strip()
+        if raw.lower() in {"q", "quit", "exit"}:
+            return None
+        if not raw:
+            return default.isoformat()
+        try:
+            return datetime.strptime(raw, "%Y-%m-%d").date().isoformat()
+        except ValueError:
+            print("Use YYYY-MM-DD, for example 2026-05-01.")
+
+
+def transaction_history_menu() -> None:
+    from src.cli import webull as webull_cli
+
+    while True:
+        print("\nTransaction history")
+        print("1. Webull")
+        print("0. Back")
+
+        broker_choice = input("Select broker: ").strip()
+        if broker_choice in {"0", "q", "Q"}:
+            return
+        if broker_choice != "1":
+            print("Choose 0-1.")
+            continue
+
+        account_items = list(webull_cli.ACCOUNTS.items())
+        while True:
+            print("\nWebull accounts")
+            for i, (_account_id, info) in enumerate(account_items, start=1):
+                print(f"{i}. {info['label']}")
+            print("0. Back")
+
+            account_choice = input("Select account: ").strip()
+            if account_choice in {"0", "q", "Q"}:
+                break
+            if not account_choice.isdigit() or not (1 <= int(account_choice) <= len(account_items)):
+                print(f"Choose 1-{len(account_items)} or 0.")
+                continue
+
+            account_id, info = account_items[int(account_choice) - 1]
+            today = date.today()
+            start = _prompt_date("From date", today - timedelta(days=7))
+            if start is None:
+                continue
+            end = _prompt_date("To date", today)
+            if end is None:
+                continue
+            print(f"\nFetching Webull {info['label']} transactions from {start} to {end}...")
+            try:
+                output_path = webull_cli.export_order_history_csv(account_id, start, end)
+            except Exception as exc:  # noqa: BLE001 - interactive CLI should report and continue
+                print(f"Transaction history export failed: {exc}")
+                input("Press Enter to continue...")
+                continue
+            print(f"Exported transaction history to {output_path}")
+            input("Press Enter to continue...")
+
+
 def _broker_live_view() -> None:
     """Launch the standalone broker CLI menu (live API + cached data)."""
     from src.cli.menu import main_menu
@@ -841,6 +903,7 @@ def main() -> int:
         print("5. MCP health")
         print("6. Housekeeping")
         print("7. Broker Live View")
+        print("8. Transaction history")
         print("0. Exit")
 
         choice = input("Select: ").strip()
@@ -860,8 +923,10 @@ def main() -> int:
             housekeeping_menu()
         elif choice == "7":
             _broker_live_view()
+        elif choice == "8":
+            transaction_history_menu()
         else:
-            print("Choose 0-7.")
+            print("Choose 0-8.")
 
 
 if __name__ == "__main__":
