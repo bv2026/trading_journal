@@ -26,6 +26,7 @@ from src.mcp_tools.health import check_mcp_health
 
 MCP_POSITION_ACCOUNTS = {
     "RH-BV",
+    "RH-KD",
     "WEBULL",
     "WEBULL-CASH",
     "WEBULL-EVENTS",
@@ -39,6 +40,7 @@ MCP_POSITION_ACCOUNTS = {
 ACCOUNT_HEALTH_BROKERS = {
     "COINBASE": "Coinbase",
     "RH-BV": "Robinhood",
+    "RH-KD": "Robinhood",
     "TS": "TradeStation",
     "SCHWAB": "Schwab",
     "TRADIER": "Tradier",
@@ -303,10 +305,15 @@ def _robinhood_live_balances() -> dict[str, dict]:
                 continue
             try:
                 portfolio = asyncio.run(rh_cli.fetch_portfolio(token, account_number))
+                positions = asyncio.run(rh_cli.fetch_positions(token, account_number))
                 bal = normalize_portfolio(portfolio)
                 margin = _as_float(bal.get("margin"))
                 equity = _as_float(bal.get("equity"))
                 rows[account_id] = _balance_row(equity + margin, margin, "Live MCP", f"profile {profile}")
+                rows[account_id]["cost_basis"] = sum(
+                    _as_float(pos.get("quantity")) * _as_float(pos.get("avg_cost"))
+                    for pos in positions.get("positions", [])
+                )
             except Exception:
                 continue
     return rows

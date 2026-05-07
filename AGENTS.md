@@ -76,7 +76,7 @@ Each entry would be `(path, account_id)` parsed via `static_positions_csv.parse(
 | account_id    | broker       | ingest path | asset classes            |
 |---------------|--------------|-------------|--------------------------|
 | RH-BV         | robinhood    | MCP         | equity, margin           |
-| RH-KD         | robinhood    | CSV         | equity                   |
+| RH-KD         | robinhood    | MCP         | equity, margin           |
 | WEBULL        | webull       | MCP         | equity, margin           |
 | WEBULL-CASH   | webull       | MCP         | equity (cash)            |
 | WEBULL-EVENTS | webull       | MCP         | event contracts          |
@@ -199,15 +199,15 @@ mcp__2350ff9e-36f7-4e64-8285-92896085c7d0__get-balances-details   accounts=11908
 python -m src.mcp_ingest --broker ts --positions data\tmp\ts_positions.json --balances data\tmp\ts_balances.json
 ```
 
-### 5 — Robinhood RH-BV only (equity; RH-KD is CSV)
+### 5 — Robinhood (equity; one Trayd profile per Robinhood login)
 
-Robinhood requires periodic re-linking via `link_robinhood` (sessions expire). If `check_login_status` returns `robinhood_linked: false`, call `link_robinhood` with credentials — it sends a phone push notification to approve, then call `complete_robinhood_link`.
+Robinhood requires periodic re-linking via `link_robinhood` (sessions expire). If `check_login_status` returns `robinhood_linked: false`, call `link_robinhood` with credentials — it sends a phone push notification to approve, then call `complete_robinhood_link`. Account numbers are mapped in `src/fetchers/robinhood.py` and can be overridden locally with `data/config/robinhood_accounts.json` or `ROBINHOOD_ACCOUNT_MAP`.
 ```
-mcp__aeae2ef5-2c58-4908-8c9d-937f5b4fbbbf__get_positions  account_number=869439976 → data\tmp\rh_pos.json
-mcp__aeae2ef5-2c58-4908-8c9d-937f5b4fbbbf__get_portfolio  account_number=869439976 → data\tmp\rh_port.json
+mcp__aeae2ef5-2c58-4908-8c9d-937f5b4fbbbf__get_positions  account_number=<rh_account_number> → data\tmp\rh_<account_id>_pos.json
+mcp__aeae2ef5-2c58-4908-8c9d-937f5b4fbbbf__get_portfolio  account_number=<rh_account_number> → data\tmp\rh_<account_id>_port.json
 ```
 ```
-python -m src.mcp_ingest --broker robinhood --positions data\tmp\rh_pos.json --portfolio data\tmp\rh_port.json
+python -m src.mcp_ingest --broker robinhood --account-id RH-KD --positions data\tmp\rh_RH-KD_pos.json --portfolio data\tmp\rh_RH-KD_port.json
 ```
 
 ### 6 — Finalize

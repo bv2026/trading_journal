@@ -7,6 +7,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from src.fetchers import robinhood
 
 
+def test_default_account_map_includes_rh_kd(monkeypatch, tmp_path):
+    monkeypatch.setattr(robinhood, "ACCOUNT_MAP_PATH", tmp_path / "missing.json")
+    monkeypatch.delenv("ROBINHOOD_ACCOUNT_MAP", raising=False)
+
+    mapping = robinhood.account_map_from_list({"accounts": [{"account_number": "550666960"}]})
+
+    assert mapping["550666960"] == "RH-KD"
+
+
 def test_account_map_uses_config_file(tmp_path, monkeypatch):
     cfg = tmp_path / "robinhood_accounts.json"
     cfg.write_text('{"123": "RH-KD"}', encoding="utf-8")

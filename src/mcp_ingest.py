@@ -414,7 +414,7 @@ def write_robinhood(
     write equity positions to the journal DB.
 
     Robinhood only exposes equities via MCP; options are not available.
-    RH-KD requires separate trayd credentials and falls back to CSV ingest.
+    Use account_id to select the journal account for each linked Trayd profile.
 
     Args:
         positions_resp: Response from trayd get_positions MCP tool.

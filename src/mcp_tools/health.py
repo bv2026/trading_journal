@@ -51,7 +51,7 @@ HEALTH_TARGETS: tuple[HealthTarget, ...] = (
     ),
     HealthTarget(
         "Robinhood",
-        "RH-BV",
+        "RH-BV/RH-KD",
         "robinhood",
         ("get_positions",),
         "ROBINHOOD_MCP_URL",

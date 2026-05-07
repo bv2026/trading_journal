@@ -62,7 +62,7 @@ from .base import is_currency_entry
 # Update this map if account numbers change after re-linking.
 ACCOUNT_NUMBER_MAP: dict[str, str] = {
     "869439976": "RH-BV",
-    # "RH-KD account number": "RH-KD",  # add when linked
+    "550666960": "RH-KD",
 }
 ACCOUNT_MAP_PATH = Path(__file__).resolve().parents[2] / "data" / "config" / "robinhood_accounts.json"
 
