@@ -261,6 +261,13 @@ account-number scoped `get_portfolio` / `get_positions`. Map Robinhood account
 numbers to journal account IDs in ignored `data/config/robinhood_accounts.json`
 or with `ROBINHOOD_ACCOUNT_MAP` JSON.
 
+Robinhood linking is separate from Trayd OAuth. Use
+`python -m src.cli.robinhood --login --profile <name>` to create/refresh the
+local Trayd OAuth token, then
+`python -m src.cli.robinhood --link-robinhood --profile <name>` to prompt for
+Robinhood email/password, trigger email/phone approval, complete the Trayd
+`link_robinhood` flow, and avoid storing the password.
+
 ## Test coverage
 
 426 tests passing across 10 files:

@@ -187,6 +187,16 @@ journal account IDs in ignored `data/config/robinhood_accounts.json`, for exampl
 `{"869439976": "RH-BV", "123456789": "RH-KD"}`, or set
 `ROBINHOOD_ACCOUNT_MAP` to the same JSON.
 
+Trayd has two auth layers for Robinhood:
+```bash
+python -m src.cli.robinhood --login --profile bv          # Trayd OAuth token
+python -m src.cli.robinhood --link-robinhood --profile bv # Robinhood email/password + app approval
+python -m src.cli.robinhood --status --profile bv
+python -m src.cli.robinhood --logout-robinhood --profile bv
+```
+`--link-robinhood` prompts for the Robinhood password at runtime and never
+writes it to disk.
+
 Dashboard runs at `http://localhost:8501`.
 
 See [USAGE.md](docs/USAGE.md) for full details on file formats, MCP setup, and

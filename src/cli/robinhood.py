@@ -27,6 +27,7 @@ import secrets
 import sys
 import time
 import base64
+import getpass
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from threading import Thread
@@ -289,6 +290,66 @@ async def fetch_accounts(token: str) -> list[dict]:
             return data.get("accounts", [])
 
 
+async def check_login_status(token: str) -> dict:
+    async with streamablehttp_client(
+        MCP_URL, headers={"Authorization": f"Bearer {token}"},
+        timeout=30, sse_read_timeout=30,
+    ) as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            return await _call_tool(session, "check_login_status")
+
+
+async def logout_robinhood(token: str) -> dict:
+    async with streamablehttp_client(
+        MCP_URL, headers={"Authorization": f"Bearer {token}"},
+        timeout=30, sse_read_timeout=30,
+    ) as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            return await _call_tool(session, "logout")
+
+
+async def start_robinhood_link(token: str, email: str, password: str) -> dict:
+    async with streamablehttp_client(
+        MCP_URL, headers={"Authorization": f"Bearer {token}"},
+        timeout=30, sse_read_timeout=30,
+    ) as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            return await _call_tool(session, "link_robinhood", {
+                "email": email,
+                "password": password,
+            })
+
+
+async def complete_robinhood_link(token: str, email: str, password: str) -> dict:
+    async with streamablehttp_client(
+        MCP_URL, headers={"Authorization": f"Bearer {token}"},
+        timeout=30, sse_read_timeout=30,
+    ) as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            return await _call_tool(session, "complete_robinhood_link", {
+                "email": email,
+                "password": password,
+            })
+
+
+async def submit_sms_code(token: str, email: str, password: str, sms_code: str) -> dict:
+    async with streamablehttp_client(
+        MCP_URL, headers={"Authorization": f"Bearer {token}"},
+        timeout=30, sse_read_timeout=30,
+    ) as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            return await _call_tool(session, "submit_sms_code", {
+                "email": email,
+                "password": password,
+                "sms_code": sms_code,
+            })
+
+
 async def fetch_portfolio(token: str, account_number: str) -> dict:
     async with streamablehttp_client(
         MCP_URL, headers={"Authorization": f"Bearer {token}"},
@@ -390,6 +451,9 @@ def broker_menu() -> None:
 
         options = [f"Profile: {p}" for p in profiles]
         options.append("+ Login new profile")
+        options.append("Link Robinhood to profile")
+        options.append("Robinhood link status")
+        options.append("Logout Robinhood link")
 
         choice = prompt_choice(options, title="Select")
         if choice is None:
@@ -405,6 +469,23 @@ def broker_menu() -> None:
             if not name:
                 continue
             do_login(name)
+            continue
+
+        if choice >= len(profiles):
+            try:
+                name = input("  Profile name: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                continue
+            if not name:
+                continue
+            action = choice - len(profiles)
+            if action == 1:
+                link_robinhood_interactive(name)
+            elif action == 2:
+                print_login_status(name)
+            elif action == 3:
+                logout_robinhood_interactive(name)
             continue
 
         profile = profiles[choice]
@@ -505,6 +586,70 @@ def _account_menu(profile: str, token: str, account: dict) -> None:
         except (EOFError, KeyboardInterrupt):
             print()
             return
+
+
+def link_robinhood_interactive(profile: str, explicit_token: str | None = None) -> None:
+    """Prompt for Robinhood credentials and run Trayd's link flow.
+
+    Credentials are held only in memory long enough to call Trayd. They are not
+    written to ~/.trayd or any journal file.
+    """
+    token = load_bearer_token(profile, explicit_token)
+    if not token:
+        print(f"ERROR: no valid Trayd OAuth token for '{profile}'", file=sys.stderr)
+        print(f"Fix: python src/cli/robinhood.py --login --profile {profile}", file=sys.stderr)
+        sys.exit(1)
+
+    email = input("Robinhood email: ").strip()
+    password = getpass.getpass("Robinhood password: ")
+    if not email or not password:
+        print("ERROR: Robinhood email and password are required", file=sys.stderr)
+        sys.exit(1)
+
+    print("\nStarting Robinhood link through Trayd...")
+    result = asyncio.run(start_robinhood_link(token, email, password))
+    print(json.dumps(result, indent=2))
+    print(
+        "\nPlease check your phone and approve the Robinhood notification. "
+        "If it says the login is from Ashburn, VA, that is expected for Trayd's AWS server."
+    )
+
+    while True:
+        input("\nPress Enter after approving in the Robinhood app...")
+        result = asyncio.run(complete_robinhood_link(token, email, password))
+        print(json.dumps(result, indent=2))
+        status = str(result.get("status") or result.get("result") or "").lower()
+        if status in {"logged_in", "success", "linked"} or result.get("logged_in") is True:
+            print("Robinhood linked successfully.")
+            return
+        if status == "sms_required" or result.get("sms_required"):
+            sms_code = input("SMS code: ").strip()
+            result = asyncio.run(submit_sms_code(token, email, password, sms_code))
+            print(json.dumps(result, indent=2))
+            status = str(result.get("status") or result.get("result") or "").lower()
+            if status in {"logged_in", "success", "linked"} or result.get("logged_in") is True:
+                print("Robinhood linked successfully.")
+                return
+        if status != "pending":
+            print("Link flow did not complete. Re-run with --link-robinhood to try again.")
+            return
+
+
+def print_login_status(profile: str, explicit_token: str | None = None) -> None:
+    token = load_bearer_token(profile, explicit_token)
+    if not token:
+        print(f"ERROR: no valid Trayd OAuth token for '{profile}'", file=sys.stderr)
+        sys.exit(1)
+    print(json.dumps(asyncio.run(check_login_status(token)), indent=2))
+
+
+def logout_robinhood_interactive(profile: str, explicit_token: str | None = None) -> None:
+    token = load_bearer_token(profile, explicit_token)
+    if not token:
+        print(f"ERROR: no valid Trayd OAuth token for '{profile}'", file=sys.stderr)
+        sys.exit(1)
+    print(json.dumps(asyncio.run(logout_robinhood(token)), indent=2))
+    print("Robinhood connection removed from Trayd server memory.")
 
 
 # ---------------------------------------------------------------------------
@@ -621,6 +766,11 @@ def _cli_main() -> None:
                "Each login can have multiple accounts (Individual, Roth IRA, etc.).",
     )
     parser.add_argument("--login", action="store_true", help="OAuth login (opens browser)")
+    parser.add_argument("--link-robinhood", action="store_true",
+                        help="Link Robinhood credentials inside the selected Trayd profile")
+    parser.add_argument("--status", action="store_true", help="Show Robinhood link status")
+    parser.add_argument("--logout-robinhood", action="store_true",
+                        help="Remove Robinhood link from Trayd server memory")
     parser.add_argument("--profile", default=None, help="Profile name (e.g. bv, kd). Omit for all.")
     parser.add_argument("--account", default=None, help="Filter to a single account number")
     parser.add_argument("--positions", action="store_true", help="Show positions only")
@@ -635,6 +785,18 @@ def _cli_main() -> None:
             print("ERROR: --login requires --profile <name>", file=sys.stderr)
             sys.exit(1)
         do_login(args.profile)
+        return
+
+    if args.link_robinhood or args.status or args.logout_robinhood:
+        if not args.profile:
+            print("ERROR: this action requires --profile <name>", file=sys.stderr)
+            sys.exit(1)
+        if args.link_robinhood:
+            link_robinhood_interactive(args.profile, args.token)
+        elif args.status:
+            print_login_status(args.profile, args.token)
+        else:
+            logout_robinhood_interactive(args.profile, args.token)
         return
 
     if args.profile:
