@@ -74,6 +74,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         pass
 
+    # User adjustments applied on top of broker-reported account balances.
+    # Useful when an MCP returns market value but not complete cost basis.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS account_balance_adjustments (
+            account_id            TEXT PRIMARY KEY REFERENCES accounts(account_id),
+            cost_basis_adjustment REAL NOT NULL DEFAULT 0,
+            updated_at            TEXT
+        )
+    """)
+
 
 def init_db():
     sql = SCHEMA_PATH.read_text()
@@ -532,7 +542,15 @@ def load_account_balances() -> pd.DataFrame:
                     a.broker,
                     a.account_type,
                     b.market_value,
-                    b.cost_basis,
+                    b.cost_basis AS base_cost_basis,
+                    adj.cost_basis_adjustment,
+                    CASE
+                        WHEN b.cost_basis IS NULL
+                             AND COALESCE(adj.cost_basis_adjustment, 0) = 0
+                        THEN NULL
+                        ELSE COALESCE(b.cost_basis, 0)
+                             + COALESCE(adj.cost_basis_adjustment, 0)
+                    END AS cost_basis,
                     b.margin,
                     b.net_equity,
                     b.source,
@@ -540,6 +558,7 @@ def load_account_balances() -> pd.DataFrame:
                     b.as_of
                 FROM account_balances b
                 LEFT JOIN accounts a ON a.account_id = b.account_id
+                LEFT JOIN account_balance_adjustments adj ON adj.account_id = b.account_id
                 WHERE COALESCE(a.active, 1) = 1
                    OR a.account_id IS NULL
                 ORDER BY b.account_id
@@ -701,6 +720,23 @@ def get_futures_equity_override(account_id: str) -> float | None:
         return None
 
 
+def upsert_account_balance_adjustment(account_id: str, cost_basis_adjustment: float) -> None:
+    """Persist a +/- adjustment applied to broker-reported account cost basis."""
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO account_balance_adjustments
+                (account_id, cost_basis_adjustment, updated_at)
+            VALUES (?, ?, date('now'))
+            ON CONFLICT(account_id) DO UPDATE SET
+                cost_basis_adjustment = excluded.cost_basis_adjustment,
+                updated_at            = excluded.updated_at
+            """,
+            (account_id, cost_basis_adjustment),
+        )
+        conn.commit()
+
+
 def load_account_settings() -> pd.DataFrame:
     """Load all accounts with their current margin override and futures equity override."""
     if not DB_PATH.exists():
@@ -718,10 +754,12 @@ def load_account_settings() -> pd.DataFrame:
                     a.price_source,
                     a.active,
                     mo.margin          AS margin_override,
-                    fe.futures_equity  AS futures_equity_override
+                    fe.futures_equity  AS futures_equity_override,
+                    ba.cost_basis_adjustment AS cost_basis_adjustment
                 FROM accounts a
                 LEFT JOIN margin_overrides       mo ON mo.account_id = a.account_id
                 LEFT JOIN futures_equity_overrides fe ON fe.account_id = a.account_id
+                LEFT JOIN account_balance_adjustments ba ON ba.account_id = a.account_id
                 ORDER BY a.account_id
                 """,
                 conn,
@@ -734,7 +772,8 @@ def save_account_settings(rows: list[dict]) -> None:
     """Bulk-save account active/price_source and margin/futures overrides.
 
     Each dict must have: account_id, active, price_source,
-    margin_override (float|None), futures_equity_override (float|None).
+    margin_override (float|None), futures_equity_override (float|None),
+    cost_basis_adjustment (float).
     """
     with get_conn() as conn:
         for r in rows:
@@ -767,6 +806,22 @@ def save_account_settings(rows: list[dict]) -> None:
             else:
                 conn.execute(
                     "DELETE FROM futures_equity_overrides WHERE account_id=?",
+                    (r["account_id"],),
+                )
+            cost_basis_adjustment = float(r.get("cost_basis_adjustment") or 0.0)
+            if cost_basis_adjustment:
+                conn.execute(
+                    """INSERT INTO account_balance_adjustments
+                           (account_id, cost_basis_adjustment, updated_at)
+                       VALUES (?, ?, date('now'))
+                       ON CONFLICT(account_id) DO UPDATE SET
+                           cost_basis_adjustment=excluded.cost_basis_adjustment,
+                           updated_at=excluded.updated_at""",
+                    (r["account_id"], cost_basis_adjustment),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM account_balance_adjustments WHERE account_id=?",
                     (r["account_id"],),
                 )
         conn.commit()

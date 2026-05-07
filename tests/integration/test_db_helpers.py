@@ -18,6 +18,7 @@ from src.db import (
     upsert_cash_balance, get_cash_balance,
     load_transactions,
     upsert_account_balances, load_account_balances,
+    upsert_account_balance_adjustment,
 )
 
 
@@ -212,6 +213,28 @@ class TestAccountBalances:
         df = load_account_balances()
         row = df[df["account_id"] == "WEBULL"].iloc[0]
         assert pd.isna(row["cost_basis"])
+
+    def test_cost_basis_adjustment_is_added_to_broker_balance(self, tmp_db, monkeypatch):
+        monkeypatch.setattr(db_module, "DB_PATH", tmp_db)
+        upsert_accounts([{
+            "account_id": "COINBASE",
+            "broker": "coinbase",
+            "account_type": "crypto",
+        }])
+        upsert_account_balances([{
+            "account_id": "COINBASE",
+            "market_value": 32_000.0,
+            "cost_basis": 27_500.0,
+            "margin": 0.0,
+            "net_equity": 32_000.0,
+        }])
+        upsert_account_balance_adjustment("COINBASE", -250.0)
+
+        df = load_account_balances()
+        row = df[df["account_id"] == "COINBASE"].iloc[0]
+        assert row["base_cost_basis"] == pytest.approx(27_500.0)
+        assert row["cost_basis_adjustment"] == pytest.approx(-250.0)
+        assert row["cost_basis"] == pytest.approx(27_250.0)
 
 
 # ── _migrate idempotency ──────────────────────────────────────────────────────

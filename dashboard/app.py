@@ -1221,7 +1221,8 @@ with tab_settings:
     # ── Section 2: Account Settings ───────────────────────────────────────────
     st.markdown("##### Account Settings")
     st.caption("Active and price source are applied immediately. "
-               "Margin override is used as fallback when the broker API does not return margin data.")
+               "Margin override is used as fallback when the broker API does not return margin data. "
+               "Cost basis adjustment is added to broker-reported account cost basis.")
 
     if _acct_df.empty:
         st.info("No accounts found. Run `python ingest.py` first.")
@@ -1286,12 +1287,27 @@ with tab_settings:
                     )
                     _futures_override = _futures_override if _futures_override > 0 else None
 
+                _cost_basis_adjustment = 0.0
+                if _acct == "COINBASE":
+                    _cur_cb_adj = _row.get("cost_basis_adjustment")
+                    _cur_cb_adj = float(_cur_cb_adj) if pd.notna(_cur_cb_adj) else 0.0
+                    st.markdown("**Coinbase MCP Cost Basis Adjustment**")
+                    st.caption("Added to Coinbase MCP cost basis. Use a negative value to subtract.")
+                    _cost_basis_adjustment = st.number_input(
+                        "Cost Basis Adjustment ($)",
+                        value=_cur_cb_adj,
+                        step=100.0,
+                        format="%.2f",
+                        key=f"cost_basis_adj_{_acct}",
+                    )
+
                 _edited_rows.append({
                     "account_id":              _acct,
                     "active":                  int(_active),
                     "price_source":            _price_src,
                     "margin_override":         _margin_override,
                     "futures_equity_override": _futures_override,
+                    "cost_basis_adjustment":   _cost_basis_adjustment,
                 })
 
     st.divider()
