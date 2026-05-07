@@ -269,7 +269,7 @@ def _coinbase_live_balance() -> dict | None:
         row = _balance_row(market_value, 0.0, "Live MCP")
         row["cost_basis"] = sum(
             _as_float(rec.get("cost_basis"))
-            for rec in crypto
+            for rec in crypto + futures
             if rec.get("cost_basis") is not None
         )
         return row

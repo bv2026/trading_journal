@@ -118,6 +118,23 @@ def test_normalize_coinbase_futures_adds_realized_funding_adjustment():
     assert by_symbol["COINBASE-FUTURES-PNL-ADJ"]["market_value"] == 1011.5
 
 
+def test_normalize_coinbase_futures_derives_cost_basis_from_entry_price():
+    rows = normalize_futures({
+        "positions": [
+            {
+                "product_id": "BTC-20DEC30-CDE",
+                "side": "LONG",
+                "contracts": "2",
+                "avg_entry_price": "79000",
+                "mark_price": "81500",
+                "unrealized_pnl": "200",
+            },
+        ],
+    })
+
+    assert rows[0]["cost_basis"] == 158000.0
+
+
 def test_normalize_instruments_deduplicates():
     instruments = normalize_instruments([
         {"symbol": "BTC", "name": "Bitcoin"},
