@@ -149,18 +149,24 @@ def normalize_positions(positions_resp: dict | list, account_id: str = "COINBASE
 
     summary = _futures_summary(positions_resp)
     futures_usd = _float(summary.get("total_usd_balance"))
-    has_usd = any(rec["symbol"] == "USD" for rec in records)
-    if futures_usd and not has_usd:
-        records.append({
-            "account_id":   account_id,
-            "symbol":       "USD",
-            "name":         "Coinbase Derivatives USD",
-            "qty":          futures_usd,
-            "price":        1.0,
-            "cost_basis":   futures_usd,
-            "market_value": futures_usd,
-            "source_file":  None,
-        })
+    if futures_usd:
+        usd_rec = next((rec for rec in records if rec["symbol"] == "USD"), None)
+        if usd_rec:
+            usd_rec["qty"] = (usd_rec.get("qty") or 0.0) + futures_usd
+            usd_rec["market_value"] = (usd_rec.get("market_value") or 0.0) + futures_usd
+            usd_rec["cost_basis"] = (usd_rec.get("cost_basis") or 0.0) + futures_usd
+            usd_rec["name"] = "Coinbase USD"
+        else:
+            records.append({
+                "account_id":   account_id,
+                "symbol":       "USD",
+                "name":         "Coinbase Derivatives USD",
+                "qty":          futures_usd,
+                "price":        1.0,
+                "cost_basis":   futures_usd,
+                "market_value": futures_usd,
+                "source_file":  None,
+            })
 
     return records
 

@@ -85,6 +85,23 @@ def test_normalize_coinbase_portfolio_state_includes_futures_usd():
     assert by_symbol["USD"]["market_value"] == 7290.43
 
 
+def test_normalize_coinbase_merges_futures_usd_with_primary_usd():
+    rows = normalize_positions({
+        "balances": [
+            {"asset": "USD", "total": "55.95", "usd_value": "55.95", "price_usd": "1"},
+        ],
+        "futures_balance_summary": {
+            "total_usd_balance": "8622.06",
+        },
+    })
+
+    by_symbol = {row["symbol"]: row for row in rows}
+    assert len(rows) == 1
+    assert by_symbol["USD"]["qty"] == 8678.01
+    assert by_symbol["USD"]["market_value"] == 8678.01
+    assert by_symbol["USD"]["cost_basis"] == 8678.01
+
+
 def test_normalize_coinbase_futures_adds_realized_funding_adjustment():
     rows = normalize_futures({
         "positions": [
