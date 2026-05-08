@@ -13,14 +13,14 @@ Full regression at this checkpoint:
 
 ```bash
 rtk pytest -q
-# 507 passed
+# 509 passed
 ```
 
 Latest Phase 8 focused backend checkpoint:
 
 ```bash
 rtk pytest tests/unit/test_api_main.py tests/unit/test_cli_main.py -q
-# 19 passed
+# 21 passed
 ```
 
 ## Completed Phases
@@ -156,6 +156,8 @@ GET /health
 GET /dashboard/capabilities
 GET /dashboard/portfolio
 GET /dashboard/performance
+GET /dashboard/yearly-summary
+GET /dashboard/by-account
 GET /portfolio/summary
 GET /portfolio/yearly-summary
 GET /portfolio/account-summary
@@ -200,8 +202,10 @@ Current API-backed UI coverage:
 - Portfolio dashboard sections: net worth banner, transaction KPIs, account
   summary, asset-class breakdown, futures by commodity, sector allocation,
   positions by account, and sector summary
-- Yearly Summary metrics by year plus total
-- By Account metrics by account plus total
+- Yearly Summary dashboard sections: year-over-year summary and income
+  breakdown by type
+- By Account dashboard sections: net cash flow, dividends/rewards,
+  margin/fees, and Coinbase crypto flow
 - Positions table from canonical current positions with Equity, Options,
   Futures, and Crypto sub-tabs
 - Recent Transactions table
@@ -223,8 +227,9 @@ Browser smoke on `http://127.0.0.1:3000/` verified:
 - Portfolio renders non-zero metrics
 - Portfolio renders 13 account-summary rows, 6 asset-class rows, 10 futures
   commodity rows, 14 sector rows, and 148 equity position rows
-- Yearly Summary renders 8 API-backed rows
-- By Account renders 9 API-backed rows
+- Yearly Summary renders 9 summary rows and 16 income breakdown rows
+- By Account renders three 9-row pivot tables plus crypto flow inflow/outflow
+  tables
 - Positions tab renders 181 rows and four asset-class sub-tabs:
   148 equity, 8 options, 11 futures, 14 crypto
 - Transactions tab renders 25 recent rows

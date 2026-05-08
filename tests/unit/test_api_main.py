@@ -88,6 +88,39 @@ def test_dashboard_performance_endpoint_serializes_summary_and_returns(monkeypat
     assert payload["data"]["has_snapshots"] is True
 
 
+def test_dashboard_yearly_summary_endpoint_serializes_tables(monkeypatch):
+    monkeypatch.setattr(api_main.portfolio, "load_transactions_filtered", lambda: api_main.pd.DataFrame([
+        {"date": api_main.pd.Timestamp("2025-01-01"), "account_id": "RH-BV", "category": "cash_flow", "subcategory": "deposit", "amount": 100.0},
+        {"date": api_main.pd.Timestamp("2026-01-01"), "account_id": "RH-BV", "category": "dividend", "subcategory": "cash_div", "amount": 25.0},
+    ]))
+
+    response = _client().get("/dashboard/yearly-summary")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["operation"] == "dashboard.yearly_summary"
+    assert payload["data"]["summary"][0]["Metric"] == "Deposits"
+    assert payload["data"]["income_breakdown"][0]["Type"] == "cash_div"
+
+
+def test_dashboard_by_account_endpoint_serializes_pivots_and_crypto_flow(monkeypatch):
+    monkeypatch.setattr(api_main.portfolio, "load_transactions_filtered", lambda: api_main.pd.DataFrame([
+        {"date": api_main.pd.Timestamp("2026-01-01"), "account_id": "RH-BV", "category": "dividend", "subcategory": "cash_div", "amount": 25.0},
+        {"date": api_main.pd.Timestamp("2026-01-02"), "account_id": "COINBASE", "category": "crypto_flow", "subcategory": "usd_deposit", "amount": 100.0},
+        {"date": api_main.pd.Timestamp("2026-01-03"), "account_id": "COINBASE", "category": "crypto_flow", "subcategory": "crypto_sent", "amount": -40.0},
+    ]))
+
+    response = _client().get("/dashboard/by-account")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["operation"] == "dashboard.by_account"
+    assert payload["data"]["net_cash_flow"]
+    assert payload["data"]["div_rewards"]
+    assert payload["data"]["margin_fees"]
+    assert payload["data"]["crypto_flow"]["net"] == 60.0
+
+
 def test_portfolio_summary_endpoint_routes_query_params(monkeypatch):
     seen = {}
 

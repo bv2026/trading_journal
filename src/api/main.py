@@ -19,6 +19,7 @@ from src.positions import (
 )
 from src.services import dashboard_performance
 from src.services import dashboard_portfolio
+from src.services import dashboard_transactions
 from src.services import dashboard_capabilities
 from src.services import portfolio
 
@@ -205,6 +206,46 @@ def register_routes(app: FastAPI) -> None:
                 "summary": _records(result["summary"]),
                 "returns": _records(result["returns"]),
                 "has_snapshots": result["has_snapshots"],
+            },
+        )
+
+    @app.get("/dashboard/yearly-summary")
+    def dashboard_yearly_summary_payload() -> dict[str, Any]:
+        transactions = portfolio.load_transactions_filtered()
+        summary = dashboard_transactions.yearly_summary_table(transactions)
+        income = dashboard_transactions.income_breakdown_by_type(transactions)
+        return receipt(
+            operation="dashboard.yearly_summary",
+            data={
+                "summary": _records(summary),
+                "income_breakdown": _records(income),
+            },
+        )
+
+    @app.get("/dashboard/by-account")
+    def dashboard_by_account_payload() -> dict[str, Any]:
+        transactions = portfolio.load_transactions_filtered()
+        accounts = _all_accounts(transactions)
+        pivots = dashboard_transactions.by_account_pivots(
+            transactions,
+            all_accounts=accounts,
+            selected_accounts=accounts,
+        )
+        crypto_flow = dashboard_transactions.crypto_flow_summary(transactions)
+        return receipt(
+            operation="dashboard.by_account",
+            data={
+                "net_cash_flow": _records(pivots["net_cash_flow"]),
+                "div_rewards": _records(pivots["div_rewards"]),
+                "margin_fees": _records(pivots["margin_fees"]),
+                "crypto_flow": {
+                    "has_crypto_flow": crypto_flow["has_crypto_flow"],
+                    "total_in": _clean(crypto_flow["total_in"]),
+                    "total_out": _clean(crypto_flow["total_out"]),
+                    "net": _clean(crypto_flow["net"]),
+                    "inflows": _records(crypto_flow["inflows"]),
+                    "outflows": _records(crypto_flow["outflows"]),
+                },
             },
         )
 

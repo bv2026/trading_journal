@@ -65,6 +65,25 @@ type DashboardPerformancePayload = {
   has_snapshots: boolean;
 };
 
+type DashboardYearlyPayload = {
+  summary: Array<Record<string, unknown>>;
+  income_breakdown: Array<Record<string, unknown>>;
+};
+
+type DashboardByAccountPayload = {
+  net_cash_flow: Array<Record<string, unknown>>;
+  div_rewards: Array<Record<string, unknown>>;
+  margin_fees: Array<Record<string, unknown>>;
+  crypto_flow: {
+    has_crypto_flow: boolean;
+    total_in: number;
+    total_out: number;
+    net: number;
+    inflows: Array<Record<string, unknown>>;
+    outflows: Array<Record<string, unknown>>;
+  };
+};
+
 type TransactionsPayload = {
   count: number;
   transactions: Array<Record<string, unknown>>;
@@ -194,6 +213,8 @@ export default function Home() {
   const [positions, setPositions] = useState<ApiReceipt<PositionsPayload> | null>(null);
   const [dashboardPortfolio, setDashboardPortfolio] = useState<ApiReceipt<DashboardPortfolioPayload> | null>(null);
   const [dashboardPerformance, setDashboardPerformance] = useState<ApiReceipt<DashboardPerformancePayload> | null>(null);
+  const [dashboardYearly, setDashboardYearly] = useState<ApiReceipt<DashboardYearlyPayload> | null>(null);
+  const [dashboardByAccount, setDashboardByAccount] = useState<ApiReceipt<DashboardByAccountPayload> | null>(null);
   const [transactions, setTransactions] = useState<ApiReceipt<TransactionsPayload> | null>(null);
   const [yearlySummary, setYearlySummary] = useState<ApiReceipt<MetricsRow[]> | null>(null);
   const [accountSummary, setAccountSummary] = useState<ApiReceipt<MetricsRow[]> | null>(null);
@@ -209,6 +230,8 @@ export default function Home() {
           positionsData,
           dashboardPortfolioData,
           dashboardPerformanceData,
+          dashboardYearlyData,
+          dashboardByAccountData,
           transactionData,
           yearlySummaryData,
           accountSummaryData,
@@ -218,6 +241,8 @@ export default function Home() {
           getJson<PositionsPayload>("/portfolio/positions"),
           getJson<DashboardPortfolioPayload>("/dashboard/portfolio"),
           getJson<DashboardPerformancePayload>("/dashboard/performance"),
+          getJson<DashboardYearlyPayload>("/dashboard/yearly-summary"),
+          getJson<DashboardByAccountPayload>("/dashboard/by-account"),
           getJson<TransactionsPayload>("/transactions?limit=25"),
           getJson<MetricsRow[]>("/portfolio/yearly-summary"),
           getJson<MetricsRow[]>("/portfolio/account-summary"),
@@ -228,6 +253,8 @@ export default function Home() {
           setPositions(positionsData);
           setDashboardPortfolio(dashboardPortfolioData);
           setDashboardPerformance(dashboardPerformanceData);
+          setDashboardYearly(dashboardYearlyData);
+          setDashboardByAccount(dashboardByAccountData);
           setTransactions(transactionData);
           setYearlySummary(yearlySummaryData);
           setAccountSummary(accountSummaryData);
@@ -252,6 +279,9 @@ export default function Home() {
   const performanceReturnRows = dashboardPerformance?.data?.returns ?? [];
   const yearlyRows = yearlySummary?.data ?? [];
   const accountRows = accountSummary?.data ?? [];
+  const yearlyDashboardRows = dashboardYearly?.data?.summary ?? [];
+  const incomeBreakdownRows = dashboardYearly?.data?.income_breakdown ?? [];
+  const byAccountData = dashboardByAccount?.data;
   const assetRows = useMemo(() => {
     const rows = positions?.data?.summary?.by_asset_class;
     return Array.isArray(rows) ? (rows as Array<Record<string, unknown>>) : [];
@@ -346,21 +376,46 @@ export default function Home() {
         ) : null}
 
         {activeTab === "yearly" ? (
-          <Panel title={`${yearlyRows.length.toLocaleString()} Yearly Summary Rows`}>
-            <DataTable
-              rows={yearlyRows}
-              columns={["label", "net_cash_flow", "dividends", "rewards", "margin_interest", "fees", "net_income"]}
-            />
-          </Panel>
+          <div className="stack">
+            <Panel title="Year-over-Year Summary">
+              <DataTable rows={yearlyDashboardRows} columns={columnsFromRows(yearlyDashboardRows, ["Metric", "ALL"])} />
+            </Panel>
+            <Panel title="Income Breakdown by Type">
+              <DataTable rows={incomeBreakdownRows} columns={columnsFromRows(incomeBreakdownRows, ["Type", "ALL"])} />
+            </Panel>
+            <Panel title={`${yearlyRows.length.toLocaleString()} Canonical Year Rows`}>
+              <DataTable
+                rows={yearlyRows}
+                columns={["label", "net_cash_flow", "dividends", "rewards", "margin_interest", "fees", "net_income"]}
+              />
+            </Panel>
+          </div>
         ) : null}
 
         {activeTab === "account" ? (
-          <Panel title={`${accountRows.length.toLocaleString()} Account Summary Rows`}>
-            <DataTable
-              rows={accountRows}
-              columns={["label", "broker", "net_cash_flow", "dividends", "rewards", "margin_interest", "fees", "net_income"]}
-            />
-          </Panel>
+          <div className="stack">
+            <Panel title="Net Cash Flow by Account">
+              <DataTable rows={byAccountData?.net_cash_flow ?? []} columns={columnsFromRows(byAccountData?.net_cash_flow ?? [], ["Account", "ALL"])} />
+            </Panel>
+            <Panel title="Div + Rewards by Account">
+              <DataTable rows={byAccountData?.div_rewards ?? []} columns={columnsFromRows(byAccountData?.div_rewards ?? [], ["Account", "ALL"])} />
+            </Panel>
+            <Panel title="Margin + Fees by Account">
+              <DataTable rows={byAccountData?.margin_fees ?? []} columns={columnsFromRows(byAccountData?.margin_fees ?? [], ["Account", "ALL"])} />
+            </Panel>
+            <div className="metricsGrid compact">
+              <Metric label="Crypto Total In" value={currency(byAccountData?.crypto_flow.total_in)} />
+              <Metric label="Crypto Total Out" value={currency(byAccountData?.crypto_flow.total_out)} />
+              <Metric label="Crypto Net Cash" value={currency(byAccountData?.crypto_flow.net)} />
+              <Metric label="Accounts" value={accountRows.length.toLocaleString()} />
+            </div>
+            <Panel title="Crypto Flow Inflows">
+              <DataTable rows={byAccountData?.crypto_flow.inflows ?? []} columns={["Type", "Amount", "Txns"]} />
+            </Panel>
+            <Panel title="Crypto Flow Outflows">
+              <DataTable rows={byAccountData?.crypto_flow.outflows ?? []} columns={["Type", "Amount", "Txns"]} />
+            </Panel>
+          </div>
         ) : null}
 
         {activeTab === "positions" ? (
@@ -453,4 +508,19 @@ function sumRows(rows: Array<Record<string, unknown>>, column: string) {
     const value = Number(row[column] ?? 0);
     return total + (Number.isFinite(value) ? value : 0);
   }, 0);
+}
+
+function columnsFromRows(rows: Array<Record<string, unknown>>, preferred: string[]) {
+  const seen = new Set<string>();
+  for (const column of preferred) {
+    if (rows.some((row) => Object.prototype.hasOwnProperty.call(row, column))) {
+      seen.add(column);
+    }
+  }
+  for (const row of rows) {
+    for (const column of Object.keys(row)) {
+      seen.add(column);
+    }
+  }
+  return Array.from(seen);
 }
