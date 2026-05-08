@@ -166,3 +166,26 @@ def test_dashboard_capabilities_outputs_parity_contract(capsys):
     capability_ids = {item["capability_id"] for item in payload["capabilities"]}
     assert "positions.crypto_subtab" in capability_ids
     assert "settings.save_all" in capability_ids
+
+
+def test_api_launch_outputs_receipt(monkeypatch, capsys):
+    launched = {}
+
+    class DummyProcess:
+        pass
+
+    def fake_popen(cmd, **kwargs):
+        launched["cmd"] = cmd
+        launched["kwargs"] = kwargs
+        return DummyProcess()
+
+    monkeypatch.setattr(cli_main.subprocess, "Popen", fake_popen)
+
+    code = cli_main.main(["api", "launch", "--host", "127.0.0.1", "--port", "8123", "--reload"])
+
+    assert code == 0
+    assert launched["cmd"][:4] == [sys.executable, "-m", "uvicorn", "src.api.main:app"]
+    assert "--reload" in launched["cmd"]
+    payload = _json_from_stdout(capsys)
+    assert payload["operation"] == "api.launch"
+    assert payload["url"] == "http://127.0.0.1:8123"

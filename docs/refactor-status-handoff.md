@@ -4,15 +4,23 @@ Date: 2026-05-08
 
 ## Current Status
 
-The refactor has reached a stable service-layer checkpoint. Calculation-heavy
-logic has been moved out of `dashboard/app.py` into tested service modules while
-the existing Streamlit dashboard remains the active UI.
+The service-layer refactor has been pushed to `master` at commit `8b1bbfd`.
+Phase 8 is in progress: a read-only FastAPI backend and a Next.js dashboard
+scaffold now exist side-by-side with the existing Streamlit dashboard. Streamlit
+remains the active UI until the new UI reaches verified capability parity.
 
 Full regression at this checkpoint:
 
 ```bash
-pytest -q
-# 496 passed
+rtk pytest -q
+# 503 passed
+```
+
+Latest Phase 8 focused backend checkpoint:
+
+```bash
+rtk pytest tests/unit/test_api_main.py tests/unit/test_cli_main.py -q
+# 15 passed
 ```
 
 ## Completed Phases
@@ -126,6 +134,99 @@ The Positions tab still has the same four sub-tabs:
 - Futures
 - Crypto
 
+### Phase 8 - FastAPI + React/Next.js Migration In Progress
+
+Read-only FastAPI backend foundation added:
+
+- `src/api/__init__.py`
+- `src/api/main.py`
+- `tests/unit/test_api_main.py`
+
+Dependencies added to `requirements.txt`:
+
+- `fastapi`
+- `uvicorn`
+- `httpx`
+
+API endpoints currently available:
+
+```bash
+GET /
+GET /health
+GET /dashboard/capabilities
+GET /portfolio/summary
+GET /portfolio/positions
+GET /portfolio/performance
+GET /transactions
+```
+
+Unified CLI now has an API launcher:
+
+```bash
+python -m src.cli.main api launch --host 127.0.0.1 --port 8000 --reload
+```
+
+The API is intentionally read-only at this checkpoint. Mutating workflows
+remain in existing CLI/MCP paths until the new UI has read-only parity.
+
+Next.js UI scaffold added under `ui/`:
+
+- `ui/app/layout.tsx`
+- `ui/app/page.tsx`
+- `ui/app/styles.css`
+- `ui/package.json`
+- `ui/package-lock.json`
+- `ui/next.config.mjs`
+- `ui/tsconfig.json`
+
+The UI currently renders the same eight top-level tabs from the dashboard
+capability contract:
+
+1. Portfolio
+2. Yearly Summary
+3. By Account
+4. Positions
+5. Transactions
+6. Performance
+7. Broker MCP
+8. Settings
+
+Current API-backed UI coverage:
+
+- Portfolio metrics and asset-class breakdown
+- Positions table from canonical current positions
+- Recent Transactions table
+- Performance table
+- Capability rows for Yearly Summary, By Account, Broker MCP, and Settings
+
+The UI dependency line is pinned to conservative, verified versions after
+Next 16/React 19 showed unreliable hydration in Chrome during local smoke
+testing:
+
+- `next@15.5.18`
+- `react@18.3.1`
+- `react-dom@18.3.1`
+
+Browser smoke on `http://127.0.0.1:3000/` verified:
+
+- API fetches to `http://127.0.0.1:8000`
+- capability count updates to 37
+- Portfolio renders non-zero metrics
+- Positions tab renders 181 rows
+- Transactions tab renders 25 recent rows
+- Performance tab renders account performance rows
+- no console errors after the version pin
+
+Frontend verification also passed:
+
+```bash
+npm audit --json
+# 0 vulnerabilities
+npm run typecheck
+npm run build
+# Next.js 15.5.18 production build succeeded
+```
+
 ## Intentional Non-Extraction
 
 Broker MCP and Settings remain in `dashboard/app.py` for now.
@@ -163,12 +264,16 @@ flowchart TD
     UnifiedCLI["src.cli.main"]
     MCP["src.mcp_server"]
     Dashboard["dashboard/app.py"]
+    API["src.api.main"]
+    NextUI["ui/ Next.js"]
     Services["src/services/*"]
 
     DB --> Services
     Services --> UnifiedCLI
     Services --> MCP
     Services --> Dashboard
+    Services --> API
+    API --> NextUI
     DB --> LegacyCLI
     Dashboard --> DB
 ```
@@ -179,19 +284,28 @@ reduced where there is clear reuse value.
 
 ## Remaining TODO
 
-1. Decide whether to commit this checkpoint before deeper refactoring.
-2. Consider extracting dashboard rendering into smaller Streamlit functions only
-   after the service-layer checkpoint is committed.
-3. Consider adding CLI commands for dashboard service reports if they are useful
-   outside the UI.
-4. Keep Broker MCP and Settings in Streamlit until a stronger reuse case appears.
-5. Review pre-existing dirty files before staging; do not blindly stage unrelated
-   local edits.
+1. Add API endpoints for Yearly Summary and By Account so those tabs move from
+   capability placeholders to real read-only data.
+2. Recreate the Positions tab's four sub-tabs in the Next UI:
+   Equity, Options, Futures, Crypto.
+3. Decide the replacement shape for Broker MCP and Settings. Keep mutation
+   flows in CLI/MCP until explicit write workflows are designed and tested.
+4. Add frontend tests or a lightweight browser smoke script for tab switching
+   and API-backed rendering.
+5. Keep Streamlit active until the new UI reaches verified capability parity.
+6. Review line-ending-only local noise before staging any future commits.
 
 ## Verification Commands Used
 
 ```bash
-python -m py_compile dashboard/app.py src/services/*.py
-python -m src.cli.main dashboard capabilities
-pytest -q
+rtk python -m py_compile dashboard/app.py src/services/*.py
+rtk python -m py_compile src/api/main.py src/api/__init__.py
+rtk python -m src.cli.main dashboard capabilities
+rtk python -m src.cli.main api launch --host 127.0.0.1 --port 8000 --reload
+rtk pytest tests/unit/test_api_main.py tests/unit/test_cli_main.py -q
+rtk pytest -q
+cd ui
+npm audit --json
+npm run typecheck
+npm run build
 ```

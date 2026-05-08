@@ -253,6 +253,38 @@ def _cmd_dashboard_capabilities(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_api_launch(args: argparse.Namespace) -> int:
+    cmd = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "src.api.main:app",
+        "--host",
+        args.host,
+        "--port",
+        str(args.port),
+    ]
+    if args.reload:
+        cmd.append("--reload")
+    kwargs: dict[str, Any] = {
+        "cwd": str(ROOT),
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "stdin": subprocess.DEVNULL,
+    }
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    subprocess.Popen(cmd, **kwargs)
+    _print_json(_receipt(
+        operation="api.launch",
+        host=args.host,
+        port=args.port,
+        url=f"http://{args.host}:{args.port}",
+        reload=args.reload,
+    ))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tj", description="Trading Journal CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -322,6 +354,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     health = sub.add_parser("health", help="MCP health check")
     health.set_defaults(func=_cmd_health)
+
+    api = sub.add_parser("api", help="FastAPI backend commands")
+    api_sub = api.add_subparsers(dest="api_command", required=True)
+    api_launch = api_sub.add_parser("launch", help="Launch read-only FastAPI backend")
+    api_launch.add_argument("--host", default="127.0.0.1")
+    api_launch.add_argument("--port", type=int, default=8000)
+    api_launch.add_argument("--reload", action="store_true")
+    api_launch.set_defaults(func=_cmd_api_launch)
 
     dashboard = sub.add_parser("dashboard", help="Dashboard commands")
     dashboard_sub = dashboard.add_subparsers(dest="dashboard_command", required=True)
