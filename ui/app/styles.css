@@ -175,6 +175,10 @@ h2 {
   gap: 12px;
 }
 
+.metricsGrid.compact {
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+}
+
 .metric,
 .panel {
   border: 1px solid var(--line);
@@ -199,6 +203,36 @@ h2 {
   display: block;
   font-size: 25px;
   margin-top: 9px;
+}
+
+.segmented {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  overflow: auto;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 3px;
+  box-shadow: var(--shadow);
+}
+
+.segmented button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 6px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.segmented button.selected {
+  background: var(--ink);
+  color: #fff;
 }
 
 .panel {

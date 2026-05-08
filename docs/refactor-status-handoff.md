@@ -198,7 +198,8 @@ Current API-backed UI coverage:
 - Portfolio metrics and asset-class breakdown
 - Yearly Summary metrics by year plus total
 - By Account metrics by account plus total
-- Positions table from canonical current positions
+- Positions table from canonical current positions with Equity, Options,
+  Futures, and Crypto sub-tabs
 - Recent Transactions table
 - Performance table
 - Capability rows for Broker MCP and Settings
@@ -218,7 +219,8 @@ Browser smoke on `http://127.0.0.1:3000/` verified:
 - Portfolio renders non-zero metrics
 - Yearly Summary renders 8 API-backed rows
 - By Account renders 9 API-backed rows
-- Positions tab renders 181 rows
+- Positions tab renders 181 rows and four asset-class sub-tabs:
+  148 equity, 8 options, 11 futures, 14 crypto
 - Transactions tab renders 25 recent rows
 - Performance tab renders account performance rows
 - no console errors after the version pin
@@ -290,14 +292,12 @@ reduced where there is clear reuse value.
 
 ## Remaining TODO
 
-1. Recreate the Positions tab's four sub-tabs in the Next UI:
-   Equity, Options, Futures, Crypto.
-2. Decide the replacement shape for Broker MCP and Settings. Keep mutation
+1. Decide the replacement shape for Broker MCP and Settings. Keep mutation
    flows in CLI/MCP until explicit write workflows are designed and tested.
-3. Add frontend tests or a lightweight browser smoke script for tab switching
+2. Add frontend tests or a lightweight browser smoke script for tab switching
    and API-backed rendering.
-4. Keep Streamlit active until the new UI reaches verified capability parity.
-5. Review line-ending-only local noise before staging any future commits.
+3. Keep Streamlit active until the new UI reaches verified capability parity.
+4. Review line-ending-only local noise before staging any future commits.
 
 ## Verification Commands Used
 

@@ -85,6 +85,15 @@ const tabs = [
 
 type TabId = (typeof tabs)[number]["id"];
 
+const positionTabs = [
+  { id: "equity", label: "Equity", columns: ["account_id", "symbol", "name", "quantity", "price", "cost_basis", "market_value", "unrealized_pnl", "sector"] },
+  { id: "options", label: "Options", columns: ["account_id", "symbol", "underlying", "expiration", "strike", "call_put", "quantity", "price", "market_value"] },
+  { id: "futures", label: "Futures", columns: ["account_id", "symbol", "name", "quantity", "price", "market_value"] },
+  { id: "crypto", label: "Crypto", columns: ["account_id", "symbol", "name", "quantity", "price", "cost_basis", "market_value", "unrealized_pnl"] }
+] as const;
+
+type PositionTabId = (typeof positionTabs)[number]["id"];
+
 function currency(value: unknown) {
   const number = Number(value ?? 0);
   return new Intl.NumberFormat("en-US", {
@@ -158,6 +167,7 @@ function Metric({ label, value }: { label: string; value: string }) {
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<TabId>("portfolio");
+  const [activePositionTab, setActivePositionTab] = useState<PositionTabId>("equity");
   const [summary, setSummary] = useState<ApiReceipt<PortfolioSummary> | null>(null);
   const [positions, setPositions] = useState<ApiReceipt<PositionsPayload> | null>(null);
   const [transactions, setTransactions] = useState<ApiReceipt<TransactionsPayload> | null>(null);
@@ -219,6 +229,11 @@ export default function Home() {
     const rows = positions?.data?.summary?.by_asset_class;
     return Array.isArray(rows) ? (rows as Array<Record<string, unknown>>) : [];
   }, [positions]);
+  const activePositionConfig = positionTabs.find((tab) => tab.id === activePositionTab) ?? positionTabs[0];
+  const filteredPositionRows = useMemo(
+    () => positionRows.filter((row) => String(row.asset_class ?? "").toLowerCase() === activePositionTab),
+    [positionRows, activePositionTab]
+  );
 
   return (
     <main>
@@ -292,12 +307,31 @@ export default function Home() {
         ) : null}
 
         {activeTab === "positions" ? (
-          <Panel title={`${positionRows.length.toLocaleString()} Positions`}>
-            <DataTable
-              rows={positionRows.slice(0, 50)}
-              columns={["account_id", "symbol", "asset_class", "quantity", "price", "market_value", "unrealized_pnl", "sector"]}
-            />
-          </Panel>
+          <div className="stack">
+            <div className="segmented" role="tablist" aria-label="Position asset classes">
+              {positionTabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  className={activePositionTab === tab.id ? "selected" : ""}
+                  onClick={() => setActivePositionTab(tab.id)}
+                  type="button"
+                  role="tab"
+                  aria-selected={activePositionTab === tab.id}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+            <div className="metricsGrid compact">
+              <Metric label="All Positions" value={positionRows.length.toLocaleString()} />
+              <Metric label={`${activePositionConfig.label} Rows`} value={filteredPositionRows.length.toLocaleString()} />
+              <Metric label="Market Value" value={currency(sumRows(filteredPositionRows, "market_value"))} />
+              <Metric label="Unrealized P/L" value={currency(sumRows(filteredPositionRows, "unrealized_pnl"))} />
+            </div>
+            <Panel title={`${filteredPositionRows.length.toLocaleString()} ${activePositionConfig.label} Positions`}>
+              <DataTable rows={filteredPositionRows.slice(0, 75)} columns={[...activePositionConfig.columns]} />
+            </Panel>
+          </div>
         ) : null}
 
         {activeTab === "transactions" ? (
@@ -350,4 +384,11 @@ function capabilityRows(receipt: ApiReceipt<CapabilityPayload> | null, tab: stri
       capability: capability.name,
       source: capability.data_sources.join(", ")
     }));
+}
+
+function sumRows(rows: Array<Record<string, unknown>>, column: string) {
+  return rows.reduce((total, row) => {
+    const value = Number(row[column] ?? 0);
+    return total + (Number.isFinite(value) ? value : 0);
+  }, 0);
 }
