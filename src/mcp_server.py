@@ -21,6 +21,9 @@ Tools:
 import sys
 import json
 import subprocess
+from contextlib import redirect_stdout
+from datetime import datetime, timezone
+from io import StringIO
 from pathlib import Path
 
 # Ensure project root is on the path so src.* imports work.
@@ -29,42 +32,46 @@ sys.path.insert(0, str(ROOT))
 
 from src import mcp_ingest as _ingest
 
-import pandas as pd
 from mcp.server.fastmcp import FastMCP
-from src.db import DB_PATH, load_transactions, load_snapshot_periods
-from src.metrics import compute_metrics, net_income as _net_income
-from src.positions import load_all_positions, compute_net_worth
+from src.services import portfolio as _portfolio
 
 mcp = FastMCP("trading-journal")
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
-
-def _load(year: int | None = None,
-          account_id: str | None = None) -> pd.DataFrame:
-    """Load transactions with optional year and account filters."""
-    if not DB_PATH.exists():
-        return pd.DataFrame()
-    df = load_transactions()
-    df = df[df["category"] != "other"]
-    df = df[df["subcategory"] != "internal_transfer"]
-    if year:
-        df = df[df["date"].dt.year == year]
-    if account_id:
-        df = df[df["account_id"] == account_id.upper()]
-    return df
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
-def _fmt_metrics(m: dict, label: str = "") -> dict:
-    return {
-        "label":           label,
-        "net_cash_flow":   round(m["net_cash"], 2),
-        "dividends":       round(m["dividends"], 2),
-        "rewards":         round(m["rewards"], 2),
-        "margin_interest": round(m["margin_int"], 2),
-        "fees":            round(m["fees"], 2),
-        "net_income":      round(_net_income(m), 2),
+def _json_response(
+    *,
+    operation: str,
+    status: str = "ok",
+    data=None,
+    message: str | None = None,
+    warnings: list[str] | None = None,
+    errors: list[str] | None = None,
+    **fields,
+) -> str:
+    payload = {
+        "status": status,
+        "operation": operation,
+        "generated_at": _now(),
+        "warnings": warnings or [],
+        "errors": errors or [],
     }
+    if message:
+        payload["message"] = message
+    if data is not None:
+        payload["data"] = data
+    payload.update(fields)
+    return json.dumps(payload, indent=2, default=str)
+
+
+def _capture_stdout(fn, *args, **kwargs):
+    buffer = StringIO()
+    with redirect_stdout(buffer):
+        result = fn(*args, **kwargs)
+    return result, buffer.getvalue()
 
 
 # ── Tools ──────────────────────────────────────────────────────────────────────
@@ -81,34 +88,20 @@ def get_portfolio_summary(year: int | None = None,
         year:       Optional calendar year to filter (e.g. 2024).
         account_id: Optional account to filter (e.g. "RH-BV", "FIDELITY").
     """
-    df = _load(year, account_id)
-    if df.empty:
-        return "No data found. Run run_ingest() first."
+    result = _portfolio.get_portfolio_summary(year=year, account_id=account_id)
+    if result is None:
+        return _json_response(
+            operation="portfolio.summary",
+            status="empty",
+            message="No data found. Run run_ingest() first.",
+            filters={"year": year, "account_id": account_id},
+        )
 
-    label_parts = []
-    if account_id:
-        label_parts.append(account_id.upper())
-    if year:
-        label_parts.append(str(year))
-    label = " · ".join(label_parts) if label_parts else "All accounts · All years"
-
-    result = _fmt_metrics(compute_metrics(df), label)
-    result["transaction_count"] = len(df)
-    result["date_range"] = f"{df['date'].min().date()} → {df['date'].max().date()}"
-
-    # Live net worth across all asset classes
-    try:
-        all_pos = load_all_positions()
-        if account_id:
-            all_pos = all_pos[all_pos["Account"].str.upper() == account_id.upper()]
-        nw = compute_net_worth(all_pos)
-        result["live_net_worth"]    = round(nw["net_worth"], 2)
-        result["live_market_value"] = round(nw["market_value"], 2)
-        result["live_margin"]       = round(nw["margin"], 2)
-    except Exception:
-        pass  # live prices are best-effort; failures must not block the tool
-
-    return json.dumps(result, indent=2)
+    return _json_response(
+        operation="portfolio.summary",
+        data=result,
+        filters={"year": year, "account_id": account_id},
+    )
 
 
 @mcp.tool()
@@ -119,16 +112,20 @@ def get_yearly_summary(account_id: str | None = None) -> str:
     Args:
         account_id: Optional account to filter (e.g. "SCHWAB").
     """
-    df = _load(account_id=account_id)
-    if df.empty:
-        return "No data found. Run run_ingest() first."
-
-    df["year"] = df["date"].dt.year
-    years = sorted(df["year"].dropna().unique().astype(int))
-
-    rows = [_fmt_metrics(compute_metrics(df[df["year"] == yr]), str(yr)) for yr in years]
-    rows.append(_fmt_metrics(compute_metrics(df), "TOTAL"))
-    return json.dumps(rows, indent=2)
+    rows = _portfolio.get_yearly_summary(account_id=account_id)
+    if rows is None:
+        return _json_response(
+            operation="portfolio.yearly_summary",
+            status="empty",
+            message="No data found. Run run_ingest() first.",
+            filters={"account_id": account_id},
+        )
+    return _json_response(
+        operation="portfolio.yearly_summary",
+        data=rows,
+        row_count=len(rows),
+        filters={"account_id": account_id},
+    )
 
 
 @mcp.tool()
@@ -139,20 +136,20 @@ def get_account_summary(year: int | None = None) -> str:
     Args:
         year: Optional calendar year to filter (e.g. 2023).
     """
-    df = _load(year=year)
-    if df.empty:
-        return "No data found. Run run_ingest() first."
-
-    accounts = sorted(df["account_id"].unique())
-    rows = []
-    for acct in accounts:
-        m = _fmt_metrics(compute_metrics(df[df["account_id"] == acct]), acct)
-        broker = df[df["account_id"] == acct]["broker"].iloc[0]
-        m["broker"] = broker
-        rows.append(m)
-
-    rows.append(_fmt_metrics(compute_metrics(df), "TOTAL"))
-    return json.dumps(rows, indent=2)
+    rows = _portfolio.get_account_summary(year=year)
+    if rows is None:
+        return _json_response(
+            operation="portfolio.account_summary",
+            status="empty",
+            message="No data found. Run run_ingest() first.",
+            filters={"year": year},
+        )
+    return _json_response(
+        operation="portfolio.account_summary",
+        data=rows,
+        row_count=len(rows),
+        filters={"year": year},
+    )
 
 
 @mcp.tool()
@@ -172,28 +169,38 @@ def get_transactions(category: str | None = None,
         search:     Case-insensitive substring search on description.
         limit:      Maximum rows to return (default 50, max 500).
     """
-    df = _load(year=year, account_id=account_id)
-    if df.empty:
-        return "No data found."
-
-    if category:
-        df = df[df["category"] == category.lower()]
-    if search:
-        df = df[df["description"].str.contains(search, case=False, na=False)]
-
-    limit = min(limit, 500)
-    df = df.sort_values("date", ascending=False).head(limit)
-
-    cols = ["date", "account_id", "broker", "category", "subcategory",
-            "amount", "currency", "symbol", "description"]
-    df = df[cols].copy()
-    df["date"] = df["date"].dt.strftime("%Y-%m-%d")
-    df["amount"] = df["amount"].round(2)
-
-    return json.dumps({
-        "count": len(df),
-        "transactions": df.to_dict(orient="records"),
-    }, indent=2)
+    result = _portfolio.query_transactions(
+        category=category,
+        account_id=account_id,
+        year=year,
+        search=search,
+        limit=limit,
+    )
+    if result is None:
+        return _json_response(
+            operation="transactions.query",
+            status="empty",
+            message="No data found.",
+            filters={
+                "category": category,
+                "account_id": account_id,
+                "year": year,
+                "search": search,
+                "limit": limit,
+            },
+        )
+    return _json_response(
+        operation="transactions.query",
+        data=result,
+        row_count=result["count"],
+        filters={
+            "category": category,
+            "account_id": account_id,
+            "year": year,
+            "search": search,
+            "limit": limit,
+        },
+    )
 
 
 @mcp.tool()
@@ -211,78 +218,49 @@ def get_positions(account_id: str | None = None,
         sector:        Filter by sector (equity only, e.g. "Technology", "Income ETF").
         position_type: Filter by type (equity only, e.g. "Stock", "ETF").
     """
-    pos = load_all_positions()
-    if pos.empty:
-        return ("No positions in database. Run ingest after adding position "
-                "CSV files to the activity/ folder.")
-
-    # Strip MARGIN rows — they are balance sentinels, not real positions
-    pos = pos[pos["Ticker"].str.upper() != "MARGIN"]
-
-    if account_id:
-        pos = pos[pos["Account"].str.upper() == account_id.upper()]
-    if asset_class:
-        pos = pos[pos["asset_class"].str.lower() == asset_class.lower()]
-    if sector and "sector" in pos.columns:
-        pos = pos[pos["sector"].str.lower() == sector.lower()]
-    if position_type and "TYPE" in pos.columns:
-        pos = pos[pos["TYPE"].str.lower() == position_type.lower()]
-
-    if pos.empty:
-        return "No positions match the given filters."
-
-    mv_col = pd.to_numeric(pos["MARKET VALUE"], errors="coerce")
-    total_mv = float(mv_col.fillna(0).sum())
-
-    # Equity-specific aggregates (cost / P&L only meaningful for equity)
-    eq = pos[pos["asset_class"] == "equity"] if "asset_class" in pos.columns else pos
-    total_cost = float(pd.to_numeric(eq.get("COST", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
-    total_pnl  = float(pd.to_numeric(eq.get("totalReturn", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
-
-    summary = {
-        "total_market_value": round(total_mv, 2),
-        "equity_cost":        round(total_cost, 2),
-        "equity_unrealized_pnl": round(total_pnl, 2),
-        "equity_return_pct":  round(total_pnl / total_cost * 100, 2) if total_cost else 0,
-        "position_count":     len(pos),
-        "by_asset_class":     (
-            pos.groupby("asset_class")
-               .agg(count=("Ticker", "count"),
-                    market_value=("MARKET VALUE", "sum"))
-               .reset_index()
-               .round(2)
-               .to_dict(orient="records")
-        ) if "asset_class" in pos.columns else [],
-    }
-
-    # Equity sector breakdown
-    if "sector" in pos.columns and total_mv:
-        eq_sec = pos[pos["asset_class"] == "equity"].copy() if "asset_class" in pos.columns else pos
-        if not eq_sec.empty:
-            sec = (
-                eq_sec.groupby("sector")
-                      .agg(count=("Ticker", "count"),
-                           market_value=("MARKET VALUE", "sum"),
-                           pnl=("totalReturn", "sum"))
-                      .sort_values("market_value", ascending=False)
-                      .reset_index()
-            )
-            eq_mv = float(pd.to_numeric(eq_sec["MARKET VALUE"], errors="coerce").fillna(0).sum())
-            sec["alloc_pct"] = (sec["market_value"] / eq_mv * 100).round(2) if eq_mv else 0
-            summary["by_sector"] = sec.round(2).to_dict(orient="records")
-
-    # Individual positions — include asset_class plus relevant per-class columns
-    want_cols = ["Account", "asset_class", "Ticker", "Name", "TYPE", "sector",
-                 "Shares", "PRICE", "Cost_Basis", "COST", "MARKET VALUE", "totalReturn",
-                 "underlying", "expiry", "strike", "call_put", "qty", "price",
-                 "PERF_YTD", "IV_Rank"]
-    out_cols = [c for c in want_cols if c in pos.columns]
-    positions = pos[out_cols].round(4).to_dict(orient="records")
-
-    return json.dumps({
-        "summary":   summary,
-        "positions": positions,
-    }, indent=2, default=str)
+    result = _portfolio.get_positions_report(
+        account_id=account_id,
+        asset_class=asset_class,
+        sector=sector,
+        position_type=position_type,
+    )
+    if result is None:
+        return _json_response(
+            operation="positions.report",
+            status="empty",
+            message=("No positions in database. Run ingest after adding position "
+                     "CSV files to the activity/ folder."),
+            filters={
+                "account_id": account_id,
+                "asset_class": asset_class,
+                "sector": sector,
+                "position_type": position_type,
+            },
+        )
+    if not result["positions"]:
+        return _json_response(
+            operation="positions.report",
+            status="empty",
+            message="No positions match the given filters.",
+            data=result,
+            filters={
+                "account_id": account_id,
+                "asset_class": asset_class,
+                "sector": sector,
+                "position_type": position_type,
+            },
+        )
+    return _json_response(
+        operation="positions.report",
+        data=result,
+        row_count=len(result["positions"]),
+        filters={
+            "account_id": account_id,
+            "asset_class": asset_class,
+            "sector": sector,
+            "position_type": position_type,
+        },
+    )
 
 
 @mcp.tool()
@@ -297,94 +275,29 @@ def get_performance(account_id: str | None = None) -> str:
     Args:
         account_id: Optional account to filter (e.g. "SCHWAB", "RH-BV").
     """
-    snap = load_snapshot_periods()
-    if snap.empty:
-        return ("No snapshot data yet. Run `python -m src.ingest` at least once "
-                "to record the first snapshot.  Historical periods accumulate "
-                "with each subsequent run.")
-
-    if account_id:
-        snap = snap[snap["account_id"].str.upper() == account_id.upper()]
-    if snap.empty:
-        return "No snapshot data found for that account."
-
-    # Also load live current values for accuracy
-    try:
-        all_pos = load_all_positions()
-        is_margin = all_pos["Ticker"].str.upper() == "MARGIN"
-        live_mv = (
-            all_pos[~is_margin]
-            .groupby("Account")["MARKET VALUE"]
-            .sum()
-            .reset_index()
-            .rename(columns={"Account": "account_id", "MARKET VALUE": "current_live"})
+    rows = _portfolio.get_performance_report(account_id=account_id)
+    if rows is None:
+        return _json_response(
+            operation="portfolio.performance",
+            status="empty",
+            message=("No snapshot data yet. Run `python -m src.ingest` at least once "
+                     "to record the first snapshot. Historical periods accumulate "
+                     "with each subsequent run."),
+            filters={"account_id": account_id},
         )
-        live_mv["current_live"] = pd.to_numeric(live_mv["current_live"], errors="coerce")
-        margin_mv = (
-            all_pos[is_margin]
-            .groupby("Account")["MARKET VALUE"]
-            .sum()
-            .abs()
-            .reset_index()
-            .rename(columns={"Account": "account_id", "MARKET VALUE": "margin_live"})
+    if not rows:
+        return _json_response(
+            operation="portfolio.performance",
+            status="empty",
+            message="No snapshot data found for that account.",
+            filters={"account_id": account_id},
         )
-        snap = snap.merge(live_mv, on="account_id", how="left")
-        snap = snap.merge(margin_mv, on="account_id", how="left")
-        snap["current_value"] = snap["current_live"].combine_first(
-            pd.to_numeric(snap["current_value"], errors="coerce")
-        )
-        snap["margin_live"] = pd.to_numeric(snap["margin_live"], errors="coerce").fillna(0)
-        snap["net_value"] = snap["current_value"] - snap["margin_live"]
-    except Exception:
-        snap["current_value"] = pd.to_numeric(snap.get("current_value", pd.Series(dtype=float)), errors="coerce")
-        snap["net_value"] = snap["current_value"]
-
-    def _pct(cur, prior):
-        try:
-            p = float(prior)
-            c = float(cur)
-            if pd.isna(p) or p == 0:
-                return None
-            return round((c - p) / p * 100, 2)
-        except (TypeError, ValueError):
-            return None
-
-    rows = []
-    for _, r in snap.iterrows():
-        net = r.get("net_value")
-        rows.append({
-            "account_id":  r["account_id"],
-            "current_value": round(float(net), 2) if pd.notna(net) else None,
-            "returns": {
-                "1w":  _pct(net, r.get("value_1w")),
-                "1m":  _pct(net, r.get("value_1m")),
-                "3m":  _pct(net, r.get("value_3m")),
-                "ytd": _pct(net, r.get("value_ytd_start")),
-                "1y":  _pct(net, r.get("value_1y")),
-            },
-        })
-
-    # Portfolio total row
-    valid_net = pd.to_numeric(snap.get("net_value", pd.Series(dtype=float)), errors="coerce")
-    tot_net = float(valid_net.fillna(0).sum())
-
-    def _tot_pct(col):
-        prior = pd.to_numeric(snap.get(col, pd.Series(dtype=float)), errors="coerce").dropna().sum()
-        return _pct(tot_net, prior) if prior else None
-
-    rows.append({
-        "account_id": "TOTAL",
-        "current_value": round(tot_net, 2),
-        "returns": {
-            "1w":  _tot_pct("value_1w"),
-            "1m":  _tot_pct("value_1m"),
-            "3m":  _tot_pct("value_3m"),
-            "ytd": _tot_pct("value_ytd_start"),
-            "1y":  _tot_pct("value_1y"),
-        },
-    })
-
-    return json.dumps(rows, indent=2)
+    return _json_response(
+        operation="portfolio.performance",
+        data=rows,
+        row_count=len(rows),
+        filters={"account_id": account_id},
+    )
 
 
 @mcp.tool()
@@ -414,8 +327,23 @@ def run_ingest(reset: bool = False) -> str:
 
     output = result.stdout + result.stderr
     if result.returncode != 0:
-        return f"Ingest failed (exit {result.returncode}):\n{output}"
-    return output.strip()
+        return _json_response(
+            operation="ingest.csv",
+            status="error",
+            message=f"Ingest failed with exit code {result.returncode}.",
+            errors=[output.strip()] if output.strip() else [],
+            command=cmd,
+            returncode=result.returncode,
+            reset=reset,
+        )
+    return _json_response(
+        operation="ingest.csv",
+        message="Ingest completed.",
+        command=cmd,
+        returncode=result.returncode,
+        reset=reset,
+        output=output.strip(),
+    )
 
 
 @mcp.tool()
@@ -441,10 +369,18 @@ def set_margin(account_id: str, amount: float) -> str:
         set_margin("SCHWAB", 0)        # clear margin (paid off / not using)
         set_margin("TS", 12500.50)     # TradeStation with $12,500.50 margin
     """
-    result = _ingest.set_margin(account_id, amount)
-    if result["action"] == "cleared":
-        return f"Margin cleared for {result['account_id']} (set to $0)."
-    return f"Margin for {result['account_id']} set to ${result['amount']:,.2f}."
+    result, output = _capture_stdout(_ingest.set_margin, account_id, amount)
+    message = (
+        f"Margin cleared for {result['account_id']} (set to $0)."
+        if result["action"] == "cleared"
+        else f"Margin for {result['account_id']} set to ${result['amount']:,.2f}."
+    )
+    return _json_response(
+        operation="account.margin.set",
+        message=message,
+        data=result,
+        output=output.strip(),
+    )
 
 
 @mcp.tool()
@@ -506,10 +442,15 @@ def refresh_positions(
         return json.loads(s) if s else None
 
     summary: dict[str, dict] = {}
+    errors: list[str] = []
+    warnings: list[str] = []
+    brokers_requested: list[str] = []
 
     if schwab_equity_json:
+        brokers_requested.append("SCHWAB")
         try:
-            result = _ingest.write_schwab(
+            result, output = _capture_stdout(
+                _ingest.write_schwab,
                 equity_resp  = json.loads(schwab_equity_json),
                 futures_resp = _j(schwab_futures_json),
                 summary_resp = _j(schwab_summary_json),
@@ -517,63 +458,97 @@ def refresh_positions(
                 margin_mode  = margin_mode,
             )
             summary["SCHWAB"] = result
+            if output.strip():
+                summary["SCHWAB"]["output"] = output.strip()
         except Exception as exc:
-            summary["SCHWAB"] = {"error": str(exc)}
+            error = str(exc)
+            summary["SCHWAB"] = {"error": error}
+            errors.append(f"SCHWAB: {error}")
 
     if tradier_positions_json:
+        brokers_requested.append("TRADIER")
         try:
-            result = _ingest.write_tradier(
+            result, output = _capture_stdout(
+                _ingest.write_tradier,
                 positions_resp = json.loads(tradier_positions_json),
                 quotes_resp    = _j(tradier_quotes_json),
                 history_resp   = _j(tradier_history_json),
             )
             summary["TRADIER"] = result
+            if output.strip():
+                summary["TRADIER"]["output"] = output.strip()
         except Exception as exc:
-            summary["TRADIER"] = {"error": str(exc)}
+            error = str(exc)
+            summary["TRADIER"] = {"error": error}
+            errors.append(f"TRADIER: {error}")
 
     if ts_positions_json:
+        brokers_requested.append("TS")
         try:
-            result = _ingest.write_tradestation(
+            result, output = _capture_stdout(
+                _ingest.write_tradestation,
                 positions_resp = json.loads(ts_positions_json),
                 balances_resp  = _j(ts_balances_json),
                 margin_mode    = margin_mode,
             )
             summary["TS"] = result
+            if output.strip():
+                summary["TS"]["output"] = output.strip()
         except Exception as exc:
-            summary["TS"] = {"error": str(exc)}
+            error = str(exc)
+            summary["TS"] = {"error": error}
+            errors.append(f"TS: {error}")
 
     if rh_positions_json:
+        brokers_requested.append("RH-BV")
         try:
-            result = _ingest.write_robinhood(
+            result, output = _capture_stdout(
+                _ingest.write_robinhood,
                 positions_resp = json.loads(rh_positions_json),
                 portfolio_resp = _j(rh_portfolio_json),
                 margin_mode    = margin_mode,
             )
             summary["RH-BV"] = result
+            if output.strip():
+                summary["RH-BV"]["output"] = output.strip()
         except Exception as exc:
-            summary["RH-BV"] = {"error": str(exc)}
+            error = str(exc)
+            summary["RH-BV"] = {"error": error}
+            errors.append(f"RH-BV: {error}")
 
     if coinbase_positions_json:
+        brokers_requested.append("COINBASE")
         try:
-            result = _ingest.write_coinbase(
+            result, output = _capture_stdout(
+                _ingest.write_coinbase,
                 positions_resp = json.loads(coinbase_positions_json),
             )
             summary["COINBASE"] = result
+            if output.strip():
+                summary["COINBASE"]["output"] = output.strip()
         except Exception as exc:
-            summary["COINBASE"] = {"error": str(exc)}
+            error = str(exc)
+            summary["COINBASE"] = {"error": error}
+            errors.append(f"COINBASE: {error}")
 
     if webull_account_list and webull_positions_json:
+        brokers_requested.append("WEBULL")
         try:
             pos_by_id  = json.loads(webull_positions_json)
             bal_by_id  = json.loads(webull_balances_json) if webull_balances_json else None
-            result = _ingest.write_webull(
+            result, output = _capture_stdout(
+                _ingest.write_webull,
                 account_list_result = webull_account_list,
                 positions_by_wb_id  = pos_by_id,
                 balance_by_wb_id    = bal_by_id,
             )
             summary["WEBULL"] = result
+            if output.strip():
+                summary["WEBULL"]["output"] = output.strip()
         except Exception as exc:
-            summary["WEBULL"] = {"error": str(exc)}
+            error = str(exc)
+            summary["WEBULL"] = {"error": error}
+            errors.append(f"WEBULL: {error}")
 
     # Enrich sector/industry for any new equity instruments
     try:
@@ -581,9 +556,23 @@ def refresh_positions(
         enriched = enrich_sectors()
         summary["sector_enrichment"] = {"instruments_updated": enriched}
     except Exception as exc:
-        summary["sector_enrichment"] = {"error": str(exc)}
+        warning = str(exc)
+        summary["sector_enrichment"] = {"error": warning}
+        warnings.append(f"sector_enrichment: {warning}")
 
-    return json.dumps(summary, indent=2)
+    if not brokers_requested:
+        warnings.append("No broker payloads were provided; no position rows were refreshed.")
+
+    return _json_response(
+        operation="positions.refresh",
+        status="partial" if errors else "ok",
+        data=summary,
+        brokers_requested=brokers_requested,
+        broker_count=len(brokers_requested),
+        margin_mode=margin_mode,
+        warnings=warnings,
+        errors=errors,
+    )
 
 
 @mcp.tool()
@@ -596,7 +585,12 @@ def launch_dashboard() -> str:
 
     app = ROOT / "dashboard" / "app.py"
     if not app.exists():
-        return "Error: dashboard/app.py not found."
+        return _json_response(
+            operation="dashboard.launch",
+            status="error",
+            message="dashboard/app.py not found.",
+            errors=["dashboard/app.py not found."],
+        )
 
     subprocess.Popen(
         [sys.executable, "-m", "streamlit", "run", str(app),
@@ -606,7 +600,11 @@ def launch_dashboard() -> str:
     )
 
     webbrowser.open("http://localhost:8501")
-    return "Dashboard launched at http://localhost:8501"
+    return _json_response(
+        operation="dashboard.launch",
+        message="Dashboard launched.",
+        url="http://localhost:8501",
+    )
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────

@@ -31,6 +31,10 @@ from src.positions import (
     load_options_from_db, load_futures_from_db, load_crypto_from_db,
 )
 from src.mcp_tools.health import check_mcp_health
+from src.services import dashboard_performance as performance_tab
+from src.services import dashboard_portfolio as portfolio_tab
+from src.services import dashboard_positions as positions_tab
+from src.services import dashboard_transactions as transaction_tabs
 
 @st.cache_data(ttl=300)
 def _load_positions() -> pd.DataFrame:
@@ -163,35 +167,25 @@ tab_portfolio, tab_yearly, tab_breakdown, tab_positions, tab_txns, tab_perf, tab
 
 # ═══ TAB 1 — Portfolio ════════════════════════════════════════════════════════
 with tab_portfolio:
-    import re as _re
     _acct_balances = _load_account_balances()
 
     # ── Net Worth banner ───────────────────────────────────────────────────────
     try:
-        if not _acct_balances.empty:
-            _total_mv = float(pd.to_numeric(_acct_balances["market_value"], errors="coerce").fillna(0).sum())
-            _total_margin = float(pd.to_numeric(_acct_balances["margin"], errors="coerce").fillna(0).sum())
-            _net_worth = float(pd.to_numeric(_acct_balances["net_equity"], errors="coerce").fillna(0).sum())
-        else:
-            _nw_data = compute_net_worth(_load_all_positions())
-            _total_mv = _nw_data["market_value"] + _cash_balance
-            _total_margin = _nw_data["margin"]
-            _net_worth = _nw_data["net_worth"] + _cash_balance
-        if _total_mv:
+        _nw_data = portfolio_tab.net_worth_banner(
+            account_balances=_acct_balances,
+            all_positions=_load_all_positions(),
+            cash_balance=_cash_balance,
+        )
+        if _nw_data["market_value"]:
             nw1, nw2, nw3 = st.columns(3)
-            nw1.metric("Net Worth",       f"${_net_worth:,.0f}")
-            nw2.metric("Market Value",    f"${_total_mv:,.0f}")
-            nw3.metric("Margin Borrowed", f"${_total_margin:,.0f}",
-                       delta=f"-${_total_margin:,.0f}", delta_color="inverse")
+            nw1.metric("Net Worth",       f"${_nw_data['net_worth']:,.0f}")
+            nw2.metric("Market Value",    f"${_nw_data['market_value']:,.0f}")
+            nw3.metric("Margin Borrowed", f"${_nw_data['margin']:,.0f}",
+                       delta=f"-${_nw_data['margin']:,.0f}", delta_color="inverse")
     except Exception:
         pass
 
-    _kpi_row = {
-        "Cash In/Out": m_all["net_cash"],
-        "Div+Rewards":   m_all["dividends"] + m_all["rewards"],
-        "Costs":         m_all["margin_int"] + m_all["fees"],
-        "Net Income":    _net_income_fn(m_all),
-    }
+    _kpi_row = portfolio_tab.portfolio_kpi_row(m_all)
     _kpi_df = pd.DataFrame([_kpi_row])
     st.dataframe(
         _kpi_df.style
@@ -214,99 +208,26 @@ with tab_portfolio:
     has_crypto = not cry_all.empty
 
     if has_positions:
-        _is_margin = pos_all["Ticker"].str.upper() == "MARGIN"
-        margin_df  = pos_all[_is_margin].copy()
-        pos        = pos_all[~_is_margin].copy()
-        for col in ["PRICE", "Shares", "Cost_Basis", "COST", "MARKET VALUE",
-                    "totalReturn", "IV_Rank", "PERF_YTD", "ATR_pct"]:
-            if col in pos.columns:
-                pos[col] = pd.to_numeric(pos[col], errors="coerce")
-        margin_df["MARKET VALUE"] = pd.to_numeric(
-            margin_df["MARKET VALUE"], errors="coerce"
-        )
-        pos_by_acct = (
-            pos.groupby("Account")
-               .agg(Market_Value=("MARKET VALUE", "sum"),
-                    Total_Cost  =("COST",         "sum"),
-                    PnL         =("totalReturn",  "sum"))
-               .reset_index()
-        )
-        margin_by_acct = (
-            margin_df.groupby("Account")["MARKET VALUE"].sum()
-                     .reset_index()
-                     .rename(columns={"MARKET VALUE": "Margin"})
-        )
-        # Non-equity MV per account (options + futures + crypto)
-        _non_eq_frames = []
-        for _ldr in (_load_options, _load_futures, _load_crypto):
-            _nef = _ldr()
-            if not _nef.empty and "MARKET VALUE" in _nef.columns:
-                _nef = _nef[["Account", "MARKET VALUE"]].copy()
-                _nef["MARKET VALUE"] = pd.to_numeric(_nef["MARKET VALUE"], errors="coerce")
-                _non_eq_frames.append(_nef)
-        if _non_eq_frames:
-            _non_eq_mv = (
-                pd.concat(_non_eq_frames, ignore_index=True)
-                  .groupby("Account")["MARKET VALUE"].sum()
-                  .reset_index()
-                  .rename(columns={"MARKET VALUE": "Other_MV"})
-            )
-        else:
-            _non_eq_mv = pd.DataFrame(columns=["Account", "Other_MV"])
+        pos, margin_df = portfolio_tab.split_equity_margin(pos_all)
+    else:
+        pos = pd.DataFrame()
+        margin_df = pd.DataFrame()
 
     # ── 1. ACCOUNT SUMMARY ────────────────────────────────────────────────────
     st.subheader("Account Summary")
     if has_positions:
-        _broker_map = (
-            df_all[["account_id", "broker"]].drop_duplicates()
-            .set_index("account_id")["broker"].to_dict()
+        _acct_sum = portfolio_tab.account_summary(
+            pos=pos,
+            margin_df=margin_df,
+            opts_all=opts_all,
+            futs_all=futs_all,
+            cry_all=cry_all,
+            account_balances=_acct_balances,
+            transactions=df_all,
+            all_accounts=all_accounts,
+            selected_accounts=accounts,
+            cash_balance=_cash_balance,
         )
-        _acct_rows = []
-        for acct in [a for a in all_accounts if a in accounts]:
-            _eq_mv   = float(pos_by_acct.loc[pos_by_acct["Account"] == acct, "Market_Value"].sum())
-            _cost    = float(pos_by_acct.loc[pos_by_acct["Account"] == acct, "Total_Cost"].sum())
-            _margin  = abs(float(margin_by_acct.loc[margin_by_acct["Account"] == acct, "Margin"].sum()))
-            _other   = float(_non_eq_mv.loc[_non_eq_mv["Account"] == acct, "Other_MV"].sum())
-            _mv      = _eq_mv + _other
-            _acct_rows.append({
-                "Account":    acct,
-                "Broker":     _broker_map.get(acct, ""),
-                "Market Value": _mv,
-                "Cost Basis": _cost,
-                "Margin":     _margin,
-                "Net Equity": _mv - _margin,
-            })
-        if _cash_balance > 0:
-            _acct_rows.append({
-                "Account":    "CASH",
-                "Broker":     "Multi-Bank",
-                "Market Value": _cash_balance,
-                "Cost Basis": _cash_balance,
-                "Margin":     0.0,
-                "Net Equity": _cash_balance,
-            })
-        if not _acct_balances.empty:
-            _acct_rows = []
-            for _, _bal in _acct_balances.iterrows():
-                _account_id = str(_bal.get("account_id") or "")
-                _broker = _bal.get("broker")
-                _acct_rows.append({
-                    "Account": _account_id,
-                    "Broker": _broker if pd.notna(_broker) else ("Multi-Bank" if _account_id == "CASH" else ""),
-                    "Market Value": float(_bal.get("market_value") or 0.0),
-                    "Cost Basis": _bal.get("cost_basis"),
-                    "Margin": float(_bal.get("margin") or 0.0),
-                    "Net Equity": float(_bal.get("net_equity") or 0.0),
-                })
-        _acct_sum = pd.DataFrame(_acct_rows)
-        _tot = {
-            "Account":    "TOTAL", "Broker": "",
-            "Market Value": _acct_sum["Market Value"].sum(),
-            "Cost Basis": _acct_sum["Cost Basis"].sum(),
-            "Margin":     _acct_sum["Margin"].sum(),
-            "Net Equity": _acct_sum["Net Equity"].sum(),
-        }
-        _acct_sum = pd.concat([_acct_sum, pd.DataFrame([_tot])], ignore_index=True)
         _money_acct = ["Market Value", "Cost Basis", "Margin", "Net Equity"]
         st.dataframe(
             _acct_sum.style
@@ -320,29 +241,14 @@ with tab_portfolio:
 
         # ── 2. ASSET CLASS BREAKDOWN ──────────────────────────────────────────
         st.subheader("Asset Class Breakdown")
-        # Crypto accounts (e.g. COINBASE) are stored in the positions/equity table,
-        # not in crypto_positions.  Separate them out so they show as "Crypto" here.
-        _crypto_accts = set(get_accounts_by_type("crypto"))
-        _is_crypto_pos = pos["Account"].isin(_crypto_accts) if _crypto_accts else pd.Series(False, index=pos.index)
-        _cry_from_pos  = float(pos.loc[_is_crypto_pos, "MARKET VALUE"].sum())
-        _stocks_mv = float(pos.loc[~_is_crypto_pos, "MARKET VALUE"].sum())
-        _opts_mv   = float(opts_all["MARKET VALUE"].fillna(0).sum()) if has_opts else 0.0
-        _futs_mv   = float(futs_all["MARKET VALUE"].fillna(0).sum()) if has_futs else 0.0
-        _cry_mv    = _cry_from_pos + (float(cry_all["MARKET VALUE"].fillna(0).sum()) if has_crypto else 0.0)
-        _total_asset_mv = _stocks_mv + _opts_mv + _futs_mv + _cry_mv + _cash_balance
-        _asset_rows = [
-            {"Asset Class": "Stocks",  "Market Value": _stocks_mv},
-            {"Asset Class": "Options", "Market Value": _opts_mv},
-            {"Asset Class": "Futures", "Market Value": _futs_mv},
-            {"Asset Class": "Crypto",  "Market Value": _cry_mv},
-            {"Asset Class": "Cash",    "Market Value": _cash_balance},
-            {"Asset Class": "TOTAL",   "Market Value": _total_asset_mv},
-        ]
-        _asset_df = pd.DataFrame(_asset_rows)
-        _asset_df["Allocation"] = (
-            _asset_df["Market Value"] / _total_asset_mv * 100
-            if _total_asset_mv else 0
-        ).round(1)
+        _asset_df = portfolio_tab.asset_class_breakdown(
+            pos=pos,
+            opts_all=opts_all,
+            futs_all=futs_all,
+            cry_all=cry_all,
+            cash_balance=_cash_balance,
+            crypto_accounts=set(get_accounts_by_type("crypto")),
+        )
         st.dataframe(
             _asset_df.style
                 .format({"Market Value": "${:,.0f}", "Allocation": "{:.1f}%"})
@@ -355,23 +261,7 @@ with tab_portfolio:
         # ── 3. FUTURES BY COMMODITY ───────────────────────────────────────────
         if has_futs:
             st.subheader("Futures by Commodity")
-            def _fut_root(ticker: str) -> str:
-                # Strip contract-month letter + 2-digit year: /GCZ26 → /GC, /VXMH27 → /VXM
-                m = _re.match(r'(/[A-Z]+)(?=[A-Z]\d{2})', str(ticker))
-                return m.group(1) if m else str(ticker)
-
-            _futs_grp = futs_all[futs_all["Ticker"] != "_FUTURES_ADJ_"].copy()
-            _futs_grp["MARKET VALUE"] = pd.to_numeric(_futs_grp["MARKET VALUE"], errors="coerce")
-            _futs_grp["Root"] = _futs_grp["Ticker"].apply(_fut_root)
-            _futs_grp["qty"]  = pd.to_numeric(_futs_grp.get("qty", pd.Series(dtype=float)), errors="coerce")
-            _fut_by_commodity = (
-                _futs_grp.groupby("Root")
-                    .agg(Contracts=("qty", "count"), Net_MV=("MARKET VALUE", "sum"))
-                    .reset_index()
-                    .rename(columns={"Root": "Commodity"})
-                    .sort_values("Net_MV", key=lambda x: x.abs(), ascending=False)
-                    .reset_index(drop=True)
-            )
+            _fut_by_commodity = portfolio_tab.futures_by_commodity(futs_all)
             st.dataframe(
                 _fut_by_commodity.style
                     .format({"Net_MV": "${:+,.0f}"})
@@ -383,29 +273,10 @@ with tab_portfolio:
     # ── 4. SECTOR ALLOCATION CHART ────────────────────────────────────────────
     if has_positions:
         total_mv = pos["MARKET VALUE"].sum()
-
-        # Collapse: "Fixed Income", "Broad Market", "International" → "ETF";
-        # TYPE=="ETF" rows (excluding "Income ETF") → "ETF";
-        # "Unknown" → "Other"
-        _ETF_SECTORS = {"Fixed Income", "Broad Market", "International"}
-        _sec_display = pos["sector"].copy()
-        _is_etf_sector = _sec_display.isin(_ETF_SECTORS)
-        _sec_display = _sec_display.where(~_is_etf_sector, "ETF")
-        if "TYPE" in pos.columns:
-            _is_etf_type = pos["TYPE"].str.upper().eq("ETF") & (_sec_display != "Income ETF")
-            _sec_display = _sec_display.where(~_is_etf_type, "ETF")
-        _sec_display = _sec_display.replace("Unknown", "Other")
+        _sec_display = portfolio_tab.collapsed_sector_labels(pos)
 
         st.subheader("Sector Allocation")
-        sec_grp = (
-            pd.Series(_sec_display.values, name="sector")
-            .to_frame()
-            .assign(mv=pos["MARKET VALUE"].values)
-            .groupby("sector")["mv"].sum()
-            .sort_values(ascending=False)
-            .reset_index()
-            .rename(columns={"mv": "MARKET VALUE"})
-        )
+        sec_grp = portfolio_tab.sector_allocation(pos, _sec_display)
         fig_sec = px.pie(
             sec_grp, values="MARKET VALUE", names="sector",
             hole=0.4, color_discrete_sequence=px.colors.qualitative.Safe,
@@ -502,31 +373,11 @@ with tab_portfolio:
 
     # ── 6. SECTOR SUMMARY TABLE ────────────────────────────────────────────────
     if has_positions:
-        _sec_tbl_src = pos.copy()
-        _sec_tbl_src["sector"] = _sec_display.values
-        sec_tbl = (
-            _sec_tbl_src.groupby("sector")
-               .agg(Market_Value=("MARKET VALUE", "sum"),
-                    Total_Cost  =("COST",         "sum"),
-                    PnL         =("totalReturn",  "sum"))
-               .reset_index()
-               .sort_values("Market_Value", ascending=False)
+        sec_tbl = portfolio_tab.sector_summary(
+            pos=pos,
+            transactions=df_all,
+            sector_labels=_sec_display,
         )
-        sec_tbl["Alloc_%"]  = (sec_tbl["Market_Value"] / total_mv * 100).round(2)
-        sec_tbl["Return_%"] = (sec_tbl["PnL"] / sec_tbl["Total_Cost"] * 100).round(2)
-
-        _pos_with_collapsed = pos[["Ticker", "sector"]].copy()
-        _pos_with_collapsed["sector"] = _sec_display.values
-        _sec_divs = (
-            df_all[df_all["category"] == "dividend"]
-            .merge(_pos_with_collapsed.drop_duplicates("Ticker"),
-                   left_on="symbol", right_on="Ticker", how="inner")
-            .groupby("sector")["amount"].sum()
-            .reset_index()
-            .rename(columns={"amount": "Dividends"})
-        )
-        sec_tbl = sec_tbl.merge(_sec_divs, on="sector", how="left")
-        sec_tbl["Dividends"] = sec_tbl["Dividends"].fillna(0)
 
         st.subheader("Sector Summary")
         st.dataframe(
@@ -541,36 +392,7 @@ with tab_portfolio:
 
 # ═══ TAB 2 — Yearly Summary ═══════════════════════════════════════════════════
 with tab_yearly:
-    import datetime as _yrdt
-
-    df["year"] = df["date"].dt.year
-    _yr_curr  = _yrdt.date.today().year
-    _yr_prev  = _yr_curr - 1
-    _yr_avail = set(df["year"].dropna().unique().astype(int))
-    _yr_cols  = [y for y in [_yr_prev, _yr_curr] if y in _yr_avail]
-
-    # ── Transposed summary: rows = metrics, cols = [YR-1, YR, ALL] ────────────
-    _metric_defs = [
-        ("Deposits",        lambda m: m["deposits"]),
-        ("Withdrawals",     lambda m: m["withdrawals"]),
-        ("Net Cash",        lambda m: m["net_cash"]),
-        ("Dividends",       lambda m: m["dividends"]),
-        ("Rewards",         lambda m: m["rewards"]),
-        ("Div + Rewards",   lambda m: m["dividends"] + m["rewards"]),
-        ("Margin Interest", lambda m: m["margin_int"]),
-        ("Fees",            lambda m: m["fees"]),
-        ("Net Income",      lambda m: _net_income_fn(m)),
-    ]
-
-    _yr_summary_rows = []
-    for _label, _fn in _metric_defs:
-        _row = {"Metric": _label}
-        for _yr in _yr_cols:
-            _row[_yr] = _fn(compute_metrics(df[df["year"] == _yr]))
-        _row["ALL"] = _fn(compute_metrics(df))
-        _yr_summary_rows.append(_row)
-
-    yr_df = pd.DataFrame(_yr_summary_rows)
+    yr_df = transaction_tabs.yearly_summary_table(df)
     _yr_val_cols = [c for c in yr_df.columns if c != "Metric"]
     fmt_yr = {c: "${:,.0f}" for c in _yr_val_cols}
 
@@ -587,21 +409,8 @@ with tab_yearly:
 
     # ── Drilldown — Income by Type, transposed: rows = type, cols = [YR-1, YR, ALL] ──
     st.subheader("Income Breakdown by Type")
-    _inc_src = df[df["category"].isin(["dividend", "reward"]) & (df["amount"] > 0)]
-    if not _inc_src.empty:
-        _inc_pivot = (
-            _inc_src.groupby(["subcategory", "year"])["amount"].sum()
-            .unstack(fill_value=0)
-        )
-        _inc_yr_cols = [y for y in _yr_cols if y in _inc_pivot.columns]
-        _inc_pivot["ALL"] = _inc_pivot.sum(axis=1)
-        _inc_tbl = (
-            _inc_pivot[_inc_yr_cols + ["ALL"]]
-            .reset_index()
-            .rename(columns={"subcategory": "Type"})
-            .sort_values("ALL", ascending=False)
-            .reset_index(drop=True)
-        )
+    _inc_tbl = transaction_tabs.income_breakdown_by_type(df)
+    if not _inc_tbl.empty:
         _inc_val_cols = [c for c in _inc_tbl.columns if c != "Type"]
         st.dataframe(
             _inc_tbl.style
@@ -613,105 +422,57 @@ with tab_yearly:
 
 # ═══ TAB 3 — By Account ═══════════════════════════════════════════════════════
 with tab_breakdown:
-    import datetime as _dt
-
-    _curr_yr = _dt.date.today().year
-    _prev_yr = _curr_yr - 1
-
-    df_acct = df.copy()
-    df_acct["year"] = df_acct["date"].dt.year
-    _available = set(df_acct["year"].dropna().unique().astype(int))
-    # Show only prev-year and current-year columns, whichever exist in the data
-    _pivot_years = [y for y in [_prev_yr, _curr_yr] if y in _available]
-
-    def _pivot(source: pd.DataFrame, metric_fn) -> pd.DataFrame:
-        """Build Account × (Prev Year | Curr Year | ALL) pivot with a TOTAL row."""
-        rows = {}
-        for acct in [a for a in all_accounts if a in accounts]:
-            ad = source[source["account_id"] == acct]
-            rows[acct] = {yr: metric_fn(compute_metrics(ad[ad["year"] == yr]))
-                          for yr in _pivot_years}
-            rows[acct]["ALL"] = metric_fn(compute_metrics(ad))
-        pv = pd.DataFrame(rows).T.reset_index().rename(columns={"index": "Account"})
-        totals = {"Account": "TOTAL"}
-        for yr in _pivot_years:
-            totals[yr] = metric_fn(compute_metrics(source[source["year"] == yr]))
-        totals["ALL"] = metric_fn(compute_metrics(source))
-        pv = pd.concat([pv, pd.DataFrame([totals])], ignore_index=True)
-        return pv[["Account"] + _pivot_years + ["ALL"]]
-
     def _show_pivot(pv: pd.DataFrame, title: str):
         yr_cols = [c for c in pv.columns if c != "Account"]
         st.subheader(title)
         st.dataframe(style_table(pv, yr_cols), use_container_width=True, hide_index=True)
 
-    _show_pivot(_pivot(df_acct, lambda m: m["net_cash"]),                "Net Cash Flow by Account")
+    _pivots = transaction_tabs.by_account_pivots(
+        df,
+        all_accounts=all_accounts,
+        selected_accounts=accounts,
+    )
+
+    _show_pivot(_pivots["net_cash_flow"], "Net Cash Flow by Account")
     st.divider()
-    _show_pivot(_pivot(df_acct, lambda m: m["dividends"] + m["rewards"]), "Div + Rewards by Account")
+    _show_pivot(_pivots["div_rewards"], "Div + Rewards by Account")
     st.divider()
-    _show_pivot(_pivot(df_acct, lambda m: m["margin_int"] + m["fees"]),   "Margin + Fees by Account")
+    _show_pivot(_pivots["margin_fees"], "Margin + Fees by Account")
 
     # ── Crypto Flow ────────────────────────────────────────────────────────────
-    crypto_df = df[df["category"] == "crypto_flow"]
-    if not crypto_df.empty:
+    _crypto_flow = transaction_tabs.crypto_flow_summary(df)
+    if _crypto_flow["has_crypto_flow"]:
         st.divider()
         st.subheader("Crypto Flow — Coinbase (external movements only)")
-        total_in  = float(crypto_df[crypto_df["amount"] > 0]["amount"].sum())
-        total_out = float(crypto_df[crypto_df["amount"] < 0]["amount"].sum())
-        net       = total_in + total_out
-        INFLOW_SUBS  = ["usd_deposit", "bank_purchase", "crypto_received"]
-        OUTFLOW_SUBS = ["usd_withdrawal", "crypto_sent"]
-        LABELS = {
-            "usd_deposit":     "USD Deposited (direct)",
-            "bank_purchase":   "Bought Crypto via Bank / PayPal",
-            "crypto_received": "Crypto Received (external wallet)",
-            "usd_withdrawal":  "USD Withdrawn",
-            "crypto_sent":     "Crypto Sent (external wallet)",
-        }
         col_in, col_out, col_net = st.columns(3)
         with col_in:
             st.markdown("**Inflows**")
-            in_rows = []
-            for sub in INFLOW_SUBS:
-                v = float(crypto_df[crypto_df["subcategory"] == sub]["amount"].sum())
-                n = int((crypto_df["subcategory"] == sub).sum())
-                in_rows.append({"Type": LABELS[sub], "Amount": v, "Txns": n})
-            in_df = pd.DataFrame(in_rows)
-            in_df.loc[len(in_df)] = ["Total In", total_in, ""]
+            in_df = _crypto_flow["inflows"]
             st.dataframe(in_df.style.format({"Amount": "${:,.2f}"}, na_rep="")
                              .apply(_bold_last_row, last_idx=in_df.index[-1], axis=1),
                          use_container_width=True, hide_index=True)
         with col_out:
             st.markdown("**Outflows**")
-            out_rows = []
-            for sub in OUTFLOW_SUBS:
-                v = float(crypto_df[crypto_df["subcategory"] == sub]["amount"].sum())
-                n = int((crypto_df["subcategory"] == sub).sum())
-                out_rows.append({"Type": LABELS[sub], "Amount": v, "Txns": n})
-            out_df = pd.DataFrame(out_rows)
-            out_df.loc[len(out_df)] = ["Total Out", total_out, ""]
+            out_df = _crypto_flow["outflows"]
             st.dataframe(out_df.style.format({"Amount": "${:,.2f}"}, na_rep="")
                              .apply(_bold_last_row, last_idx=out_df.index[-1], axis=1),
                          use_container_width=True, hide_index=True)
         with col_net:
             st.markdown("**Net**")
-            st.metric("Total In",  f"${total_in:,.2f}")
-            st.metric("Total Out", f"${total_out:,.2f}")
-            st.metric("Net Cash",  f"${net:,.2f}", delta=f"${net:,.2f}")
+            st.metric("Total In",  f"${_crypto_flow['total_in']:,.2f}")
+            st.metric("Total Out", f"${_crypto_flow['total_out']:,.2f}")
+            st.metric("Net Cash",  f"${_crypto_flow['net']:,.2f}", delta=f"${_crypto_flow['net']:,.2f}")
 
 
 # ═══ TAB 4 — Positions ════════════════════════════════════════════════════════
 with tab_positions:
-    _all_brokers = sorted(df_all["broker"].dropna().unique()) if "broker" in df_all.columns else []
+    _all_brokers = positions_tab.broker_filter_options(df_all)
     _sel_brokers = st.multiselect("Broker filter", _all_brokers, default=_all_brokers,
                                    key="pos_broker_filter")
-    _acct_broker = (df_all[["account_id", "broker"]].drop_duplicates()
-                    .set_index("account_id")["broker"])
+    _acct_broker = positions_tab.account_broker_map(df_all)
 
     def _filter_pos(frame: pd.DataFrame) -> pd.DataFrame:
-        if frame.empty or "Account" not in frame.columns:
-            return frame
-        return frame[frame["Account"].map(_acct_broker).isin(_sel_brokers)].copy()
+        return positions_tab.filter_positions_by_broker(frame, _acct_broker, _sel_brokers)
 
     _ptab_eq, _ptab_opt, _ptab_fut, _ptab_cry = st.tabs(
         ["Equity", "Options", "Futures", "Crypto"]
@@ -723,42 +484,10 @@ with tab_positions:
         if pos_raw.empty:
             st.info("No equity positions — run the broker MCP/CLI sync first; CSV position files are fallback imports.")
         else:
-            _pos = pos_raw[pos_raw["Ticker"].str.upper() != "MARGIN"].copy()
-            for _c in ["COST", "MARKET VALUE", "totalReturn"]:
-                _pos[_c] = pd.to_numeric(_pos[_c], errors="coerce")
-
-            sym = (
-                _pos.groupby(["Ticker", "Name", "sector"])
-                    .agg(
-                        Market_Value=("MARKET VALUE", "sum"),
-                        Total_Cost  =("COST",         "sum"),
-                        PnL         =("totalReturn",  "sum"),
-                    )
-                    .reset_index()
-                    .sort_values("Market_Value", ascending=False)
-            )
-            sym["Return_%"] = (
-                sym["PnL"] / sym["Total_Cost"].replace(0, float("nan")) * 100
-            ).round(2)
-
-            _divs = (
-                df_all[df_all["category"] == "dividend"]
-                .groupby("symbol")["amount"]
-                .sum()
-                .reset_index()
-                .rename(columns={"symbol": "Ticker", "amount": "Dividends"})
-            )
-            sym = sym.merge(_divs, on="Ticker", how="left")
-            sym["Dividends"] = sym["Dividends"].fillna(0)
-
-            _t_mv   = sym["Market_Value"].sum()
-            _t_cost = sym["Total_Cost"].sum()
-            _t_pnl  = sym["PnL"].sum()
-            _t_ret  = (_t_pnl / _t_cost * 100 if _t_cost else 0)
-            _t_div  = sym["Dividends"].sum()
-
-            _pos_cols = ["Ticker", "Name", "sector", "Market_Value", "Total_Cost",
-                         "PnL", "Return_%", "Dividends"]
+            _equity_result = positions_tab.equity_positions_summary(pos_raw, df_all)
+            sym = _equity_result["holdings"]
+            _totals = _equity_result["totals"]
+            _pos_cols = positions_tab.EQUITY_COLUMNS
             _money_p  = ["Market_Value", "Total_Cost", "PnL", "Dividends"]
             _colour_p = ["PnL", "Return_%"]
             _fmt_p    = {c: "${:,.0f}" for c in _money_p}
@@ -774,12 +503,12 @@ with tab_positions:
             )
             st.markdown("<hr style='margin:4px 0; border-color:#6b7280'>", unsafe_allow_html=True)
             fc1, fc2, fc3, fc4, fc5 = st.columns(5)
-            fc1.metric("Market Value", f"${_t_mv:,.0f}")
-            fc2.metric("Total Cost",   f"${_t_cost:,.0f}")
-            fc3.metric("P&L",          f"${_t_pnl:+,.0f}")
-            fc4.metric("Return",       f"{_t_ret:+.2f}%",
-                       delta=f"{_t_ret:+.2f}%", delta_color="normal")
-            fc5.metric("Dividends",    f"${_t_div:,.0f}")
+            fc1.metric("Market Value", f"${_totals['market_value']:,.0f}")
+            fc2.metric("Total Cost",   f"${_totals['total_cost']:,.0f}")
+            fc3.metric("P&L",          f"${_totals['pnl']:+,.0f}")
+            fc4.metric("Return",       f"{_totals['return_pct']:+.2f}%",
+                       delta=f"{_totals['return_pct']:+.2f}%", delta_color="normal")
+            fc5.metric("Dividends",    f"${_totals['dividends']:,.0f}")
 
     # ── Options sub-tab ────────────────────────────────────────────────────────
     with _ptab_opt:
@@ -787,21 +516,12 @@ with tab_positions:
         if opt_df.empty:
             st.info("No options positions in the database.")
         else:
-            for _c in ["qty", "price", "MARKET VALUE", "strike"]:
-                if _c in opt_df.columns:
-                    opt_df[_c] = pd.to_numeric(opt_df[_c], errors="coerce")
-
-            _opt_total_mv = float(opt_df["MARKET VALUE"].fillna(0).sum())
+            _opt_result = positions_tab.option_account_groups(opt_df)
 
             # Per-account breakdown
-            for _acct, _grp in opt_df.groupby("Account"):
-                _acct_mv = float(_grp["MARKET VALUE"].fillna(0).sum())
-                _label   = f"**{_acct}** — {len(_grp)} contracts · MV ${_acct_mv:,.0f}"
-                with st.expander(_label, expanded=True):
-                    _show_cols = [c for c in
-                                  ["symbol", "underlying", "expiry", "strike", "call_put",
-                                   "qty", "price", "MARKET VALUE", "description"]
-                                  if c in _grp.columns]
+            for _group in _opt_result["groups"]:
+                with st.expander(_group["label"], expanded=True):
+                    _show_cols = _group["show_columns"]
                     _opt_fmt = {}
                     for _fc in ["price", "strike"]:
                         if _fc in _show_cols:
@@ -809,17 +529,15 @@ with tab_positions:
                     if "MARKET VALUE" in _show_cols:
                         _opt_fmt["MARKET VALUE"] = "${:,.0f}"
                     st.dataframe(
-                        _grp[_show_cols]
-                            .sort_values("MARKET VALUE", ascending=False)
-                            .reset_index(drop=True)
+                        _group["table"]
                             .style.format(_opt_fmt, na_rep=""),
                         use_container_width=True, hide_index=True,
                     )
 
             st.markdown("<hr style='margin:4px 0; border-color:#6b7280'>", unsafe_allow_html=True)
             _oc1, _oc2 = st.columns(2)
-            _oc1.metric("Total Contracts", len(opt_df))
-            _oc2.metric("Total Market Value", f"${_opt_total_mv:,.0f}")
+            _oc1.metric("Total Contracts", _opt_result["total_contracts"])
+            _oc2.metric("Total Market Value", f"${_opt_result['total_market_value']:,.0f}")
 
     # ── Futures sub-tab ────────────────────────────────────────────────────────
     with _ptab_fut:
@@ -827,29 +545,18 @@ with tab_positions:
         if fut_df.empty:
             st.info("No futures positions in the database.")
         else:
-            for _c in ["qty", "price", "MARKET VALUE"]:
-                if _c in fut_df.columns:
-                    fut_df[_c] = pd.to_numeric(fut_df[_c], errors="coerce")
+            _fut_result = positions_tab.futures_account_groups(fut_df)
 
-            _fut_total_mv = float(fut_df["MARKET VALUE"].fillna(0).sum())
-
-            for _acct, _grp in fut_df.groupby("Account"):
-                _acct_mv = float(_grp["MARKET VALUE"].fillna(0).sum())
-                _label   = f"**{_acct}** — {len(_grp)} contracts · Net MV ${_acct_mv:+,.0f}"
-                with st.expander(_label, expanded=True):
-                    _show_cols = [c for c in
-                                  ["Ticker", "underlying", "description", "qty",
-                                   "price", "MARKET VALUE"]
-                                  if c in _grp.columns]
+            for _group in _fut_result["groups"]:
+                with st.expander(_group["label"], expanded=True):
+                    _show_cols = _group["show_columns"]
                     _fut_fmt = {}
                     if "price" in _show_cols:
                         _fut_fmt["price"] = "${:,.2f}"
                     if "MARKET VALUE" in _show_cols:
                         _fut_fmt["MARKET VALUE"] = "${:+,.0f}"
                     st.dataframe(
-                        _grp[_show_cols]
-                            .sort_values("MARKET VALUE", ascending=False)
-                            .reset_index(drop=True)
+                        _group["table"]
                             .style.format(_fut_fmt, na_rep="")
                             .map(colour_cell, subset=["MARKET VALUE"]),
                         use_container_width=True, hide_index=True,
@@ -857,8 +564,8 @@ with tab_positions:
 
             st.markdown("<hr style='margin:4px 0; border-color:#6b7280'>", unsafe_allow_html=True)
             _fc1, _fc2 = st.columns(2)
-            _fc1.metric("Total Contracts", len(fut_df))
-            _fc2.metric("Net Market Value", f"${_fut_total_mv:+,.0f}")
+            _fc1.metric("Total Contracts", _fut_result["total_contracts"])
+            _fc2.metric("Net Market Value", f"${_fut_result['net_market_value']:+,.0f}")
 
     # ── Crypto sub-tab ─────────────────────────────────────────────────────────
     with _ptab_cry:
@@ -866,68 +573,55 @@ with tab_positions:
         if cry_df.empty:
             st.info("No crypto positions in the database.")
         else:
-            for _c in ["qty", "price", "cost_basis", "MARKET VALUE"]:
-                if _c in cry_df.columns:
-                    cry_df[_c] = pd.to_numeric(cry_df[_c], errors="coerce")
-
-            _cry_total_mv   = float(cry_df["MARKET VALUE"].fillna(0).sum())
-            _cry_total_cost = float(cry_df["cost_basis"].fillna(0).sum()) if "cost_basis" in cry_df.columns else 0.0
-            _cry_pnl        = _cry_total_mv - _cry_total_cost
-
-            _show_cols = [c for c in
-                          ["Ticker", "name", "qty", "price", "cost_basis", "MARKET VALUE"]
-                          if c in cry_df.columns]
+            _cry_result = positions_tab.crypto_positions_summary(cry_df)
+            _show_cols = _cry_result["show_columns"]
             _cry_fmt = {c: "${:,.4f}" for c in ["price"]} if "price" in _show_cols else {}
             for _mc in ["cost_basis", "MARKET VALUE"]:
                 if _mc in _show_cols:
                     _cry_fmt[_mc] = "${:,.0f}"
 
-            st.subheader(f"Crypto — {len(cry_df)} holdings")
+            st.subheader(f"Crypto — {_cry_result['holding_count']} holdings")
             st.dataframe(
-                cry_df[_show_cols]
-                    .sort_values("MARKET VALUE", ascending=False)
-                    .reset_index(drop=True)
+                _cry_result["table"]
                     .style.format(_cry_fmt, na_rep=""),
                 use_container_width=True, hide_index=True,
             )
             st.markdown("<hr style='margin:4px 0; border-color:#6b7280'>", unsafe_allow_html=True)
             _cc1, _cc2, _cc3 = st.columns(3)
-            _cc1.metric("Market Value", f"${_cry_total_mv:,.0f}")
-            _cc2.metric("Cost Basis",   f"${_cry_total_cost:,.0f}")
-            _cc3.metric("P&L",          f"${_cry_pnl:+,.0f}")
+            _cc1.metric("Market Value", f"${_cry_result['market_value']:,.0f}")
+            _cc2.metric("Cost Basis",   f"${_cry_result['cost_basis']:,.0f}")
+            _cc3.metric("P&L",          f"${_cry_result['pnl']:+,.0f}")
 
 
 # ═══ TAB 5 — Transactions ══════════════════════════════════════════════════════
 with tab_txns:
     col1, col2, col3, col4 = st.columns([2, 2, 2, 3])
+    _txn_options = transaction_tabs.transaction_filter_options(df)
     with col1:
         cat_filter = st.multiselect("Category",
-                                    sorted(df["category"].unique()),
-                                    default=sorted(df["category"].unique()))
+                                    _txn_options["categories"],
+                                    default=_txn_options["categories"])
     with col2:
-        _txn_brokers = sorted(df["broker"].dropna().unique()) if "broker" in df.columns else []
+        _txn_brokers = _txn_options["brokers"]
         broker_filter = st.multiselect("Broker", _txn_brokers, default=_txn_brokers)
     with col3:
         yr_filter = st.multiselect("Year",
-                                   sorted(df["date"].dt.year.unique().astype(int), reverse=True),
+                                   _txn_options["years"],
                                    default=[])
     with col4:
         search = st.text_input("Search description",
                                placeholder="AAPL, margin, staking …")
 
-    txn = df[df["category"].isin(cat_filter)].copy()
-    if "broker" in txn.columns:
-        txn = txn[txn["broker"].isin(broker_filter)]
-    if yr_filter:
-        txn = txn[txn["date"].dt.year.isin(yr_filter)]
-    if search:
-        txn = txn[txn["description"].str.contains(search, case=False, na=False)]
-
-    display_cols = ["date", "account_id", "broker", "category", "subcategory",
-                    "amount", "currency", "symbol", "description"]
+    txn = transaction_tabs.filtered_transactions_table(
+        df,
+        categories=cat_filter,
+        brokers=broker_filter,
+        years=yr_filter,
+        search=search,
+    )
     st.caption(f"{len(txn):,} rows")
     st.dataframe(
-        txn.sort_values("date", ascending=False)[display_cols].reset_index(drop=True),
+        txn,
         use_container_width=True,
         column_config={
             "date":   st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
@@ -935,7 +629,7 @@ with tab_txns:
         },
     )
     st.download_button("⬇ Download CSV",
-                       txn[display_cols].to_csv(index=False).encode(),
+                       txn.to_csv(index=False).encode(),
                        "transactions.csv", "text/csv")
 
 
@@ -954,94 +648,16 @@ with tab_perf:
     if _all_pos.empty:
         st.info("No positions loaded yet. Run `python ingest.py` to populate positions data.")
     else:
-        # ── Compute live current value per account ─────────────────────────────
-        _is_margin_p = _all_pos["Ticker"].str.upper() == "MARGIN"
-
-        _live_mv = (
-            _all_pos[~_is_margin_p]
-            .groupby("Account")["MARKET VALUE"]
-            .sum()
-            .reset_index()
-            .rename(columns={"Account": "account_id", "MARKET VALUE": "current_value"})
+        _perf_tables = performance_tab.performance_tables(
+            all_positions=_all_pos,
+            snapshot_periods=_snap_df,
+            cash_balance=_cash_balance,
         )
-        _live_mv["current_value"] = pd.to_numeric(_live_mv["current_value"], errors="coerce")
-
-        _margin_mv = (
-            _all_pos[_is_margin_p]
-            .groupby("Account")["MARKET VALUE"]
-            .sum()
-            .abs()
-            .reset_index()
-            .rename(columns={"Account": "account_id", "MARKET VALUE": "margin"})
-        )
-
-        # ── Merge with snapshot periods ────────────────────────────────────────
-        _snap_cols = ["account_id", "value_1w", "value_1m", "value_3m",
-                      "value_1y", "value_ytd_start"]
-        _snap_avail = [c for c in _snap_cols if c in _snap_df.columns]
-
-        if not _snap_df.empty:
-            _perf = _live_mv.merge(_snap_df[_snap_avail], on="account_id", how="left")
-        else:
-            _perf = _live_mv.copy()
-            for _c in ["value_1w", "value_1m", "value_3m", "value_1y", "value_ytd_start"]:
-                _perf[_c] = float("nan")
-
-        _perf = _perf.merge(_margin_mv, on="account_id", how="left")
-        _perf["margin"] = _perf["margin"].fillna(0.0)
-
-        def _ret(cur, prior):
-            """Return % change or NaN."""
-            if pd.isna(prior) or prior == 0:
-                return float("nan")
-            return (cur - prior) / prior * 100
-
-        def _chg(cur, prior):
-            return float("nan") if pd.isna(prior) else cur - prior
-
-        # ── TOTAL row values ───────────────────────────────────────────────────
-        _perf["net_value"] = _perf["current_value"] - _perf["margin"]
-        _tot_net   = _perf["net_value"].sum() + _cash_balance
-
-        def _tot_prior(col):
-            _valid = _perf[col].dropna()
-            return _valid.sum() if not _valid.empty else float("nan")
 
         # ── Section 1: Portfolio Summary (1-Week) ──────────────────────────────
         st.markdown("##### Portfolio Summary")
 
-        _sum_rows = []
-        for _, _r in _perf.iterrows():
-            _net  = _r["net_value"]
-            _1w   = _r.get("value_1w", float("nan"))
-            _sum_rows.append({
-                "Account":       _r["account_id"],
-                "Current Value": _net,
-                "1W Ago":        _1w,
-                "$ Change":      _chg(_net, _1w),
-                "% Change":      _ret(_net, _1w),
-            })
-
-        # Cash & Savings row (stable balance — no historical snapshot)
-        if _cash_balance > 0:
-            _sum_rows.append({
-                "Account":       "CASH",
-                "Current Value": _cash_balance,
-                "1W Ago":        _cash_balance,
-                "$ Change":      0.0,
-                "% Change":      0.0,
-            })
-
-        _t1w = _tot_prior("value_1w") + (_cash_balance if _cash_balance > 0 else 0.0)
-        _sum_rows.append({
-            "Account":       "TOTAL",
-            "Current Value": _tot_net,
-            "1W Ago":        _t1w,
-            "$ Change":      _chg(_tot_net, _t1w),
-            "% Change":      _ret(_tot_net, _t1w),
-        })
-
-        _sum_df = pd.DataFrame(_sum_rows)
+        _sum_df = _perf_tables["summary"]
         _sum_money = ["Current Value", "1W Ago", "$ Change"]
         _sum_fmt   = {c: "${:,.0f}" for c in _sum_money}
         _sum_fmt["% Change"] = "{:+.2f}%"
@@ -1055,7 +671,7 @@ with tab_perf:
             hide_index=True,
         )
 
-        if _snap_df.empty:
+        if not _perf_tables["has_snapshots"]:
             st.caption("Historical data accumulates with each `ingest.py` run.")
 
         st.divider()
@@ -1063,28 +679,7 @@ with tab_perf:
         # ── Section 2: Portfolio Returns ───────────────────────────────────────
         st.markdown("##### Portfolio Returns")
 
-        _ret_rows = []
-        for _, _r in _perf.iterrows():
-            _net = _r["net_value"]
-            _ret_rows.append({
-                "Account": _r["account_id"],
-                "1-Week":  _ret(_net, _r.get("value_1w",       float("nan"))),
-                "1-Month": _ret(_net, _r.get("value_1m",       float("nan"))),
-                "3-Month": _ret(_net, _r.get("value_3m",       float("nan"))),
-                "YTD":     _ret(_net, _r.get("value_ytd_start",float("nan"))),
-                "1-Year":  _ret(_net, _r.get("value_1y",       float("nan"))),
-            })
-
-        _ret_rows.append({
-            "Account": "TOTAL",
-            "1-Week":  _ret(_tot_net, _tot_prior("value_1w")),
-            "1-Month": _ret(_tot_net, _tot_prior("value_1m")),
-            "3-Month": _ret(_tot_net, _tot_prior("value_3m")),
-            "YTD":     _ret(_tot_net, _tot_prior("value_ytd_start")),
-            "1-Year":  _ret(_tot_net, _tot_prior("value_1y")),
-        })
-
-        _ret_df   = pd.DataFrame(_ret_rows)
+        _ret_df   = _perf_tables["returns"]
         _ret_cols = ["1-Week", "1-Month", "3-Month", "YTD", "1-Year"]
         _ret_fmt  = {c: "{:+.2f}%" for c in _ret_cols}
 

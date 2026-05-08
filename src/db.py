@@ -1,4 +1,5 @@
 import sqlite3
+import json
 import pandas as pd
 from pathlib import Path
 
@@ -11,21 +12,72 @@ def get_conn() -> sqlite3.Connection:
     return sqlite3.connect(DB_PATH)
 
 
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _ensure_schema_migrations_table(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            name       TEXT PRIMARY KEY,
+            applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
+def _apply_migration(conn: sqlite3.Connection, name: str, fn) -> None:
+    _ensure_schema_migrations_table(conn)
+    row = conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE name = ?",
+        (name,),
+    ).fetchone()
+    if row:
+        return
+    fn()
+    conn.execute(
+        "INSERT INTO schema_migrations (name) VALUES (?)",
+        (name,),
+    )
+
+
+def _add_column_if_missing(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    column_sql: str,
+) -> None:
+    if column in _table_columns(conn, table):
+        return
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_sql}")
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
-    """Add new columns to existing tables without losing data."""
-    migrations = [
-        "ALTER TABLE accounts  ADD COLUMN account_group TEXT DEFAULT 'investment'",
-        "ALTER TABLE accounts  ADD COLUMN price_source  TEXT DEFAULT 'live'",
-        "ALTER TABLE accounts  ADD COLUMN active        INTEGER DEFAULT 1",
-        "ALTER TABLE positions ADD COLUMN stored_price  REAL",
-        "ALTER TABLE positions ADD COLUMN data_source   TEXT",
-        "ALTER TABLE options_positions ADD COLUMN data_source TEXT",
+    """Apply idempotent schema migrations without hiding unrelated DB errors."""
+    _ensure_schema_migrations_table(conn)
+
+    column_migrations = [
+        ("accounts.account_group", "accounts", "account_group", "account_group TEXT DEFAULT 'investment'"),
+        ("accounts.price_source", "accounts", "price_source", "price_source TEXT DEFAULT 'live'"),
+        ("accounts.active", "accounts", "active", "active INTEGER DEFAULT 1"),
+        ("positions.stored_price", "positions", "stored_price", "stored_price REAL"),
+        ("positions.data_source", "positions", "data_source", "data_source TEXT"),
+        ("options_positions.data_source", "options_positions", "data_source", "data_source TEXT"),
+        ("transactions.sync_run_id", "transactions", "sync_run_id", "sync_run_id INTEGER REFERENCES sync_runs(sync_run_id)"),
+        ("positions.sync_run_id", "positions", "sync_run_id", "sync_run_id INTEGER REFERENCES sync_runs(sync_run_id)"),
+        ("options_positions.sync_run_id", "options_positions", "sync_run_id", "sync_run_id INTEGER REFERENCES sync_runs(sync_run_id)"),
+        ("futures_positions.sync_run_id", "futures_positions", "sync_run_id", "sync_run_id INTEGER REFERENCES sync_runs(sync_run_id)"),
+        ("crypto_positions.sync_run_id", "crypto_positions", "sync_run_id", "sync_run_id INTEGER REFERENCES sync_runs(sync_run_id)"),
+        ("portfolio_snapshots.sync_run_id", "portfolio_snapshots", "sync_run_id", "sync_run_id INTEGER REFERENCES sync_runs(sync_run_id)"),
+        ("account_balances.cost_basis", "account_balances", "cost_basis", "cost_basis REAL"),
+        ("account_balances.sync_run_id", "account_balances", "sync_run_id", "sync_run_id INTEGER REFERENCES sync_runs(sync_run_id)"),
     ]
-    for sql in migrations:
-        try:
-            conn.execute(sql)
-        except sqlite3.OperationalError:
-            pass  # column already exists
+    for name, table, column, column_sql in column_migrations:
+        _apply_migration(
+            conn,
+            name,
+            lambda table=table, column=column, column_sql=column_sql:
+                _add_column_if_missing(conn, table, column, column_sql),
+        )
 
     # Cash accounts table (idempotent)
     conn.execute("""
@@ -69,10 +121,6 @@ def _migrate(conn: sqlite3.Connection) -> None:
             as_of        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    try:
-        conn.execute("ALTER TABLE account_balances ADD COLUMN cost_basis REAL")
-    except sqlite3.OperationalError:
-        pass
 
     # User adjustments applied on top of broker-reported account balances.
     # Useful when an MCP returns market value but not complete cost basis.
@@ -83,6 +131,74 @@ def _migrate(conn: sqlite3.Connection) -> None:
             updated_at            TEXT
         )
     """)
+
+
+def create_sync_run(
+    operation: str,
+    *,
+    source: str | None = None,
+    metadata: dict | None = None,
+) -> int:
+    """Create a sync run audit row and return its id."""
+    with get_conn() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO sync_runs (operation, source, status, metadata)
+            VALUES (?, ?, 'running', ?)
+            """,
+            (operation, source, json.dumps(metadata or {}, default=str)),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
+
+
+def complete_sync_run(
+    sync_run_id: int,
+    *,
+    status: str = "ok",
+    row_counts: dict | None = None,
+    warnings: list[str] | None = None,
+    errors: list[str] | None = None,
+) -> None:
+    """Mark a sync run complete with structured result metadata."""
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE sync_runs
+            SET status = ?,
+                finished_at = CURRENT_TIMESTAMP,
+                row_counts = ?,
+                warnings = ?,
+                errors = ?
+            WHERE sync_run_id = ?
+            """,
+            (
+                status,
+                json.dumps(row_counts or {}, default=str),
+                json.dumps(warnings or [], default=str),
+                json.dumps(errors or [], default=str),
+                sync_run_id,
+            ),
+        )
+        conn.commit()
+
+
+def load_sync_runs(limit: int = 50) -> pd.DataFrame:
+    """Load recent sync-run audit rows."""
+    if not DB_PATH.exists():
+        return pd.DataFrame()
+    with get_conn() as conn:
+        return pd.read_sql_query(
+            """
+            SELECT sync_run_id, operation, source, status, started_at, finished_at,
+                   row_counts, warnings, errors, metadata
+            FROM sync_runs
+            ORDER BY sync_run_id DESC
+            LIMIT ?
+            """,
+            conn,
+            params=(limit,),
+        )
 
 
 def init_db():
@@ -139,7 +255,8 @@ def insert_transactions(records: list[dict]) -> int:
         return 0
     df = pd.DataFrame(records)
     required = ["id", "account_id", "date", "category", "subcategory",
-                "amount", "currency", "symbol", "description", "data_source", "source_file"]
+                "amount", "currency", "symbol", "description", "data_source",
+                "source_file", "sync_run_id"]
     for col in required:
         if col not in df.columns:
             df[col] = None
@@ -152,9 +269,9 @@ def insert_transactions(records: list[dict]) -> int:
         cursor = conn.executemany(
             "INSERT OR IGNORE INTO transactions "
             "(id, account_id, date, category, subcategory, amount, "
-            " currency, symbol, description, data_source, source_file) "
+            " currency, symbol, description, data_source, source_file, sync_run_id) "
             "VALUES (:id, :account_id, :date, :category, :subcategory, :amount, "
-            "        :currency, :symbol, :description, :data_source, :source_file)",
+            "        :currency, :symbol, :description, :data_source, :source_file, :sync_run_id)",
             rows,
         )
         conn.commit()
@@ -185,7 +302,7 @@ def insert_positions(records: list[dict]) -> int:
     df = pd.DataFrame(records)
     cols = ["account_id", "ticker", "name", "shares", "cost_basis", "stored_price",
             "sector", "industry", "asset_type", "iv_rank", "perf_ytd",
-            "atr_pct", "data_source", "source_file"]
+            "atr_pct", "data_source", "source_file", "sync_run_id"]
     for col in cols:
         if col not in df.columns:
             df[col] = None
@@ -198,9 +315,9 @@ def insert_positions(records: list[dict]) -> int:
         cursor = conn.executemany(
             "INSERT OR REPLACE INTO positions "
             "(account_id, ticker, name, shares, cost_basis, stored_price, sector, industry, "
-            " asset_type, iv_rank, perf_ytd, atr_pct, data_source, source_file) "
+            " asset_type, iv_rank, perf_ytd, atr_pct, data_source, source_file, sync_run_id) "
             "VALUES (:account_id, :ticker, :name, :shares, :cost_basis, :stored_price, :sector, "
-            "        :industry, :asset_type, :iv_rank, :perf_ytd, :atr_pct, :data_source, :source_file)",
+            "        :industry, :asset_type, :iv_rank, :perf_ytd, :atr_pct, :data_source, :source_file, :sync_run_id)",
             rows,
         )
         conn.commit()
@@ -240,7 +357,7 @@ def insert_options(records: list[dict]) -> int:
     df = pd.DataFrame(records)
     cols = ["account_id", "symbol", "underlying", "expiry", "strike",
             "call_put", "description", "qty", "price", "market_value",
-            "data_source", "source_file"]
+            "data_source", "source_file", "sync_run_id"]
     for col in cols:
         if col not in df.columns:
             df[col] = None
@@ -253,9 +370,9 @@ def insert_options(records: list[dict]) -> int:
         cursor = conn.executemany(
             "INSERT OR REPLACE INTO options_positions "
             "(account_id, symbol, underlying, expiry, strike, call_put, "
-            " description, qty, price, market_value, data_source, source_file) "
+            " description, qty, price, market_value, data_source, source_file, sync_run_id) "
             "VALUES (:account_id, :symbol, :underlying, :expiry, :strike, :call_put, "
-            "        :description, :qty, :price, :market_value, :data_source, :source_file)",
+            "        :description, :qty, :price, :market_value, :data_source, :source_file, :sync_run_id)",
             rows,
         )
         conn.commit()
@@ -269,7 +386,7 @@ def load_options_db() -> pd.DataFrame:
         with get_conn() as conn:
             return pd.read_sql_query(
                 "SELECT account_id, symbol, underlying, expiry, strike, call_put, "
-                "description, qty, price, market_value, data_source, source_file "
+                "description, qty, price, market_value, data_source, source_file, sync_run_id "
                 "FROM options_positions o "
                 "WHERE EXISTS ("
                 "  SELECT 1 FROM accounts a "
@@ -294,7 +411,7 @@ def insert_futures(records: list[dict]) -> int:
         return 0
     df = pd.DataFrame(records)
     cols = ["account_id", "symbol", "underlying", "description",
-            "qty", "price", "market_value", "source_file"]
+            "qty", "price", "market_value", "source_file", "sync_run_id"]
     for col in cols:
         if col not in df.columns:
             df[col] = None
@@ -306,9 +423,9 @@ def insert_futures(records: list[dict]) -> int:
     with get_conn() as conn:
         cursor = conn.executemany(
             "INSERT OR REPLACE INTO futures_positions "
-            "(account_id, symbol, underlying, description, qty, price, market_value, source_file) "
+            "(account_id, symbol, underlying, description, qty, price, market_value, source_file, sync_run_id) "
             "VALUES (:account_id, :symbol, :underlying, :description, "
-            "        :qty, :price, :market_value, :source_file)",
+            "        :qty, :price, :market_value, :source_file, :sync_run_id)",
             rows,
         )
         conn.commit()
@@ -322,7 +439,7 @@ def load_futures_db() -> pd.DataFrame:
         with get_conn() as conn:
             return pd.read_sql_query(
                 "SELECT account_id, symbol, underlying, description, "
-                "qty, price, market_value, source_file "
+                "qty, price, market_value, source_file, sync_run_id "
                 "FROM futures_positions f "
                 "WHERE EXISTS ("
                 "  SELECT 1 FROM accounts a "
@@ -347,7 +464,7 @@ def insert_crypto(records: list[dict]) -> int:
         return 0
     df = pd.DataFrame(records)
     cols = ["account_id", "symbol", "name", "qty", "price",
-            "cost_basis", "market_value", "source_file"]
+            "cost_basis", "market_value", "source_file", "sync_run_id"]
     for col in cols:
         if col not in df.columns:
             df[col] = None
@@ -359,9 +476,9 @@ def insert_crypto(records: list[dict]) -> int:
     with get_conn() as conn:
         cursor = conn.executemany(
             "INSERT OR REPLACE INTO crypto_positions "
-            "(account_id, symbol, name, qty, price, cost_basis, market_value, source_file) "
+            "(account_id, symbol, name, qty, price, cost_basis, market_value, source_file, sync_run_id) "
             "VALUES (:account_id, :symbol, :name, :qty, :price, "
-            "        :cost_basis, :market_value, :source_file)",
+            "        :cost_basis, :market_value, :source_file, :sync_run_id)",
             rows,
         )
         conn.commit()
@@ -375,7 +492,7 @@ def load_crypto_db() -> pd.DataFrame:
         with get_conn() as conn:
             return pd.read_sql_query(
                 "SELECT account_id, symbol, name, qty, price, "
-                "cost_basis, market_value, source_file "
+                "cost_basis, market_value, source_file, sync_run_id "
                 "FROM crypto_positions c "
                 "WHERE EXISTS ("
                 "  SELECT 1 FROM accounts a "
@@ -455,7 +572,12 @@ def load_instruments(asset_class: str | None = None) -> pd.DataFrame:
 
 # ── Snapshots ─────────────────────────────────────────────────────────────────
 
-def write_portfolio_snapshot(snapshot_date: str, account_mv_map: dict[str, dict]) -> None:
+def write_portfolio_snapshot(
+    snapshot_date: str,
+    account_mv_map: dict[str, dict],
+    *,
+    sync_run_id: int | None = None,
+) -> None:
     """Write or update per-account market value snapshots for a given date.
 
     account_mv_map: {account_id: {"market_value": float, "cost_basis": float, "margin": float}}
@@ -467,6 +589,7 @@ def write_portfolio_snapshot(snapshot_date: str, account_mv_map: dict[str, dict]
             "market_value": vals.get("market_value", 0.0),
             "cost_basis": vals.get("cost_basis"),
             "margin": vals.get("margin", 0.0),
+            "sync_run_id": vals.get("sync_run_id", sync_run_id),
         }
         for acct, vals in account_mv_map.items()
     ]
@@ -475,8 +598,8 @@ def write_portfolio_snapshot(snapshot_date: str, account_mv_map: dict[str, dict]
     with get_conn() as conn:
         conn.executemany(
             "INSERT OR REPLACE INTO portfolio_snapshots "
-            "(snapshot_date, account_id, market_value, cost_basis, margin) "
-            "VALUES (:snapshot_date, :account_id, :market_value, :cost_basis, :margin)",
+            "(snapshot_date, account_id, market_value, cost_basis, margin, sync_run_id) "
+            "VALUES (:snapshot_date, :account_id, :market_value, :cost_basis, :margin, :sync_run_id)",
             rows,
         )
         conn.commit()
@@ -504,6 +627,7 @@ def upsert_account_balances(records: list[dict]) -> int:
             "net_equity": net_equity,
             "source": rec.get("source") or rec.get("Balance Source"),
             "detail": rec.get("detail") or rec.get("Live Status"),
+            "sync_run_id": rec.get("sync_run_id"),
         })
     if not rows:
         return 0
@@ -511,9 +635,9 @@ def upsert_account_balances(records: list[dict]) -> int:
         cursor = conn.executemany(
             """
             INSERT INTO account_balances
-                (account_id, market_value, cost_basis, margin, net_equity, source, detail, as_of)
+                (account_id, market_value, cost_basis, margin, net_equity, source, detail, sync_run_id, as_of)
             VALUES
-                (:account_id, :market_value, :cost_basis, :margin, :net_equity, :source, :detail, CURRENT_TIMESTAMP)
+                (:account_id, :market_value, :cost_basis, :margin, :net_equity, :source, :detail, :sync_run_id, CURRENT_TIMESTAMP)
             ON CONFLICT(account_id) DO UPDATE SET
                 market_value = excluded.market_value,
                 cost_basis   = excluded.cost_basis,
@@ -521,6 +645,7 @@ def upsert_account_balances(records: list[dict]) -> int:
                 net_equity   = excluded.net_equity,
                 source       = excluded.source,
                 detail       = excluded.detail,
+                sync_run_id  = excluded.sync_run_id,
                 as_of        = excluded.as_of
             """,
             rows,
@@ -555,6 +680,7 @@ def load_account_balances() -> pd.DataFrame:
                     b.net_equity,
                     b.source,
                     b.detail,
+                    b.sync_run_id,
                     b.as_of
                 FROM account_balances b
                 LEFT JOIN accounts a ON a.account_id = b.account_id

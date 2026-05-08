@@ -1,3 +1,8 @@
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    name       TEXT PRIMARY KEY,
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS accounts (
     account_id     TEXT PRIMARY KEY,
     broker         TEXT NOT NULL,
@@ -9,6 +14,19 @@ CREATE TABLE IF NOT EXISTS accounts (
     price_source   TEXT DEFAULT 'live',
                    -- live (yfinance) | static (stored in DB)
     active         INTEGER DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS sync_runs (
+    sync_run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    operation   TEXT NOT NULL,
+    source      TEXT,
+    status      TEXT NOT NULL DEFAULT 'running',
+    started_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    finished_at TIMESTAMP,
+    row_counts  TEXT,
+    warnings    TEXT,
+    errors      TEXT,
+    metadata    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS transactions (
@@ -23,6 +41,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     description  TEXT,
     data_source  TEXT,            -- mcp | csv
     source_file  TEXT,
+    sync_run_id  INTEGER REFERENCES sync_runs(sync_run_id),
     created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -67,6 +86,7 @@ CREATE TABLE IF NOT EXISTS positions (
     atr_pct       REAL,
     data_source   TEXT,   -- mcp | csv | yfinance
     source_file   TEXT,
+    sync_run_id   INTEGER REFERENCES sync_runs(sync_run_id),
     ingested_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (account_id, ticker)
 );
@@ -84,6 +104,7 @@ CREATE TABLE IF NOT EXISTS options_positions (
     market_value REAL,
     data_source  TEXT,   -- mcp | csv
     source_file  TEXT,
+    sync_run_id  INTEGER REFERENCES sync_runs(sync_run_id),
     ingested_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (account_id, symbol)
 );
@@ -101,6 +122,7 @@ CREATE TABLE IF NOT EXISTS futures_positions (
     price        REAL,
     market_value REAL,
     source_file  TEXT,
+    sync_run_id  INTEGER REFERENCES sync_runs(sync_run_id),
     ingested_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (account_id, symbol)
 );
@@ -116,6 +138,7 @@ CREATE TABLE IF NOT EXISTS crypto_positions (
     cost_basis   REAL,
     market_value REAL,
     source_file  TEXT,
+    sync_run_id  INTEGER REFERENCES sync_runs(sync_run_id),
     ingested_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (account_id, symbol)
 );
@@ -128,6 +151,7 @@ CREATE TABLE IF NOT EXISTS portfolio_snapshots (
     market_value   REAL NOT NULL,
     cost_basis     REAL,
     margin         REAL DEFAULT 0.0,
+    sync_run_id    INTEGER REFERENCES sync_runs(sync_run_id),
     PRIMARY KEY (snapshot_date, account_id)
 );
 
@@ -142,6 +166,7 @@ CREATE TABLE IF NOT EXISTS account_balances (
     net_equity      REAL NOT NULL DEFAULT 0,
     source          TEXT,
     detail          TEXT,
+    sync_run_id     INTEGER REFERENCES sync_runs(sync_run_id),
     as_of           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

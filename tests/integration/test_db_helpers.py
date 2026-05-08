@@ -19,6 +19,7 @@ from src.db import (
     load_transactions,
     upsert_account_balances, load_account_balances,
     upsert_account_balance_adjustment,
+    create_sync_run, complete_sync_run, load_sync_runs,
 )
 
 
@@ -236,6 +237,46 @@ class TestAccountBalances:
         assert row["cost_basis_adjustment"] == pytest.approx(-250.0)
         assert row["cost_basis"] == pytest.approx(27_250.0)
 
+    def test_sync_run_id_is_preserved(self, tmp_db, monkeypatch):
+        monkeypatch.setattr(db_module, "DB_PATH", tmp_db)
+        sync_run_id = create_sync_run("balances.refresh", source="test")
+        upsert_account_balances([{
+            "account_id": "RH-BV",
+            "market_value": 100_000.0,
+            "cost_basis": 82_500.0,
+            "margin": 20_000.0,
+            "net_equity": 80_000.0,
+            "sync_run_id": sync_run_id,
+        }])
+        df = load_account_balances()
+        row = df[df["account_id"] == "RH-BV"].iloc[0]
+        assert row["sync_run_id"] == sync_run_id
+
+
+class TestSyncRuns:
+    def test_create_complete_and_load_sync_run(self, tmp_db, monkeypatch):
+        monkeypatch.setattr(db_module, "DB_PATH", tmp_db)
+        sync_run_id = create_sync_run(
+            "positions.refresh",
+            source="mcp",
+            metadata={"broker": "webull"},
+        )
+        complete_sync_run(
+            sync_run_id,
+            status="ok",
+            row_counts={"positions": 2},
+            warnings=["sample warning"],
+            errors=[],
+        )
+
+        runs = load_sync_runs()
+        row = runs[runs["sync_run_id"] == sync_run_id].iloc[0]
+        assert row["operation"] == "positions.refresh"
+        assert row["source"] == "mcp"
+        assert row["status"] == "ok"
+        assert '"positions": 2' in row["row_counts"]
+        assert "sample warning" in row["warnings"]
+
 
 # ── _migrate idempotency ──────────────────────────────────────────────────────
 
@@ -244,6 +285,35 @@ class TestMigrateIdempotent:
         monkeypatch.setattr(db_module, "DB_PATH", tmp_db)
         init_db()   # second call — _migrate() must be idempotent
         init_db()   # third call for good measure
+
+    def test_schema_migrations_and_sync_columns_exist(self, tmp_db, monkeypatch):
+        monkeypatch.setattr(db_module, "DB_PATH", tmp_db)
+        with db_module.get_conn() as conn:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            assert "schema_migrations" in tables
+            assert "sync_runs" in tables
+            for table in (
+                "transactions",
+                "positions",
+                "options_positions",
+                "futures_positions",
+                "crypto_positions",
+                "portfolio_snapshots",
+                "account_balances",
+            ):
+                columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+                assert "sync_run_id" in columns
+
+            applied = {
+                row[0]
+                for row in conn.execute("SELECT name FROM schema_migrations")
+            }
+            assert "positions.sync_run_id" in applied
 
     def test_data_survives_re_init(self, tmp_db, monkeypatch):
         monkeypatch.setattr(db_module, "DB_PATH", tmp_db)
