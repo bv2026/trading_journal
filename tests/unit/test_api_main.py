@@ -39,6 +39,55 @@ def test_dashboard_capabilities_endpoint_exposes_tab_contract():
     assert "positions.crypto_subtab" in capability_ids
 
 
+def test_dashboard_portfolio_endpoint_serializes_dashboard_sections(monkeypatch):
+    monkeypatch.setattr(api_main.portfolio, "load_transactions_filtered", lambda: api_main.pd.DataFrame([
+        {"date": api_main.pd.Timestamp("2026-01-01"), "account_id": "RH-BV", "broker": "robinhood", "category": "dividend", "subcategory": "cash_div", "amount": 25.0, "symbol": "AAPL"},
+    ]))
+    monkeypatch.setattr(api_main, "load_all_positions", lambda: api_main.pd.DataFrame([
+        {"Account": "RH-BV", "Ticker": "AAPL", "MARKET VALUE": 1200.0},
+    ]))
+    monkeypatch.setattr(api_main, "load_positions_from_db", lambda: api_main.pd.DataFrame([
+        {"Account": "RH-BV", "Ticker": "AAPL", "Name": "Apple", "Shares": 10, "Cost_Basis": 100.0, "PRICE": 120.0, "COST": 1000.0, "MARKET VALUE": 1200.0, "totalReturn": 200.0, "sector": "Technology"},
+    ]))
+    monkeypatch.setattr(api_main, "load_options_from_db", lambda: api_main.pd.DataFrame())
+    monkeypatch.setattr(api_main, "load_futures_from_db", lambda: api_main.pd.DataFrame())
+    monkeypatch.setattr(api_main, "load_crypto_from_db", lambda: api_main.pd.DataFrame())
+    monkeypatch.setattr(api_main.db, "load_account_balances", lambda: api_main.pd.DataFrame())
+    monkeypatch.setattr(api_main.db, "get_cash_balance", lambda: 100.0)
+    monkeypatch.setattr(api_main.db, "get_accounts_by_type", lambda account_type: [])
+
+    response = _client().get("/dashboard/portfolio")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["operation"] == "dashboard.portfolio"
+    data = payload["data"]
+    assert data["net_worth"]["net_worth"] == 1300.0
+    assert data["transaction_kpis"]["Div+Rewards"] == 25.0
+    assert data["account_summary"]
+    assert data["asset_class_breakdown"]
+    assert data["sector_summary"]
+
+
+def test_dashboard_performance_endpoint_serializes_summary_and_returns(monkeypatch):
+    monkeypatch.setattr(api_main, "load_all_positions", lambda: api_main.pd.DataFrame([
+        {"Account": "RH-BV", "Ticker": "AAPL", "MARKET VALUE": 1200.0},
+    ]))
+    monkeypatch.setattr(api_main.db, "load_snapshot_periods", lambda: api_main.pd.DataFrame([
+        {"account_id": "RH-BV", "value_1w": 1000.0, "value_1m": 900.0, "value_3m": None, "value_1y": None, "value_ytd_start": 800.0},
+    ]))
+    monkeypatch.setattr(api_main.db, "get_cash_balance", lambda: 100.0)
+
+    response = _client().get("/dashboard/performance")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["operation"] == "dashboard.performance"
+    assert payload["data"]["summary"][0]["Account"] == "RH-BV"
+    assert payload["data"]["returns"][0]["1-Week"] == 20.0
+    assert payload["data"]["has_snapshots"] is True
+
+
 def test_portfolio_summary_endpoint_routes_query_params(monkeypatch):
     seen = {}
 

@@ -2,11 +2,23 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import math
 from typing import Any
 
+import pandas as pd
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 
+from src import db
+from src.positions import (
+    load_all_positions,
+    load_crypto_from_db,
+    load_futures_from_db,
+    load_options_from_db,
+    load_positions_from_db,
+)
+from src.services import dashboard_performance
+from src.services import dashboard_portfolio
 from src.services import dashboard_capabilities
 from src.services import portfolio
 
@@ -55,6 +67,32 @@ def receipt(
     return payload
 
 
+def _clean(value: Any) -> Any:
+    if pd.isna(value):
+        return None
+    if isinstance(value, float):
+        if math.isinf(value) or math.isnan(value):
+            return None
+        return round(value, 4)
+    return value
+
+
+def _records(frame: pd.DataFrame) -> list[dict[str, Any]]:
+    if frame.empty:
+        return []
+    clean = frame.where(pd.notna(frame), None)
+    return [
+        {str(key): _clean(value) for key, value in row.items()}
+        for row in clean.to_dict(orient="records")
+    ]
+
+
+def _all_accounts(transactions: pd.DataFrame) -> list[str]:
+    if transactions.empty or "account_id" not in transactions.columns:
+        return []
+    return sorted(str(account) for account in transactions["account_id"].dropna().unique())
+
+
 def register_routes(app: FastAPI) -> None:
     @app.get("/")
     def root() -> dict[str, Any]:
@@ -86,6 +124,87 @@ def register_routes(app: FastAPI) -> None:
                 "capability_count": len(capabilities),
                 "capability_counts": dashboard_capabilities.tab_capability_counts(),
                 "capabilities": capabilities,
+            },
+        )
+
+    @app.get("/dashboard/portfolio")
+    def dashboard_portfolio_payload() -> dict[str, Any]:
+        transactions = portfolio.load_transactions_filtered()
+        all_positions = load_all_positions()
+        equity_positions = load_positions_from_db()
+        options = load_options_from_db()
+        futures = load_futures_from_db()
+        crypto = load_crypto_from_db()
+        account_balances = db.load_account_balances()
+        cash_balance = db.get_cash_balance()
+        accounts = _all_accounts(transactions)
+
+        equity, margin = dashboard_portfolio.split_equity_margin(equity_positions)
+        sector_labels = dashboard_portfolio.collapsed_sector_labels(equity) if not equity.empty else None
+        kpis = (
+            dashboard_portfolio.portfolio_kpi_row(portfolio.compute_metrics(transactions))
+            if not transactions.empty
+            else {}
+        )
+        account_summary = dashboard_portfolio.account_summary(
+            pos=equity,
+            margin_df=margin,
+            opts_all=options,
+            futs_all=futures,
+            cry_all=crypto,
+            account_balances=account_balances,
+            transactions=transactions,
+            all_accounts=accounts,
+            selected_accounts=accounts,
+            cash_balance=cash_balance,
+        )
+        asset_class = dashboard_portfolio.asset_class_breakdown(
+            pos=equity,
+            opts_all=options,
+            futs_all=futures,
+            cry_all=crypto,
+            cash_balance=cash_balance,
+            crypto_accounts=set(db.get_accounts_by_type("crypto")),
+        )
+        sector_allocation = dashboard_portfolio.sector_allocation(equity, sector_labels) if not equity.empty else pd.DataFrame()
+        sector_summary = dashboard_portfolio.sector_summary(
+            pos=equity,
+            transactions=transactions,
+            sector_labels=sector_labels,
+        ) if not equity.empty else pd.DataFrame()
+        futures_by_commodity = dashboard_portfolio.futures_by_commodity(futures) if not futures.empty else pd.DataFrame()
+
+        return receipt(
+            operation="dashboard.portfolio",
+            data={
+                "net_worth": dashboard_portfolio.net_worth_banner(
+                    account_balances=account_balances,
+                    all_positions=all_positions,
+                    cash_balance=cash_balance,
+                ),
+                "transaction_kpis": {key: _clean(value) for key, value in kpis.items()},
+                "account_summary": _records(account_summary),
+                "asset_class_breakdown": _records(asset_class),
+                "futures_by_commodity": _records(futures_by_commodity),
+                "sector_allocation": _records(sector_allocation),
+                "positions_by_account": _records(equity),
+                "sector_summary": _records(sector_summary),
+            },
+        )
+
+    @app.get("/dashboard/performance")
+    def dashboard_performance_payload() -> dict[str, Any]:
+        result = dashboard_performance.performance_tables(
+            all_positions=load_all_positions(),
+            snapshot_periods=db.load_snapshot_periods(),
+            cash_balance=db.get_cash_balance(),
+        )
+        return receipt(
+            operation="dashboard.performance",
+            data={
+                "summary": _records(result["summary"]),
+                "returns": _records(result["returns"]),
+                "has_snapshots": result["has_snapshots"],
             },
         )
 

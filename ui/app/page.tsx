@@ -43,6 +43,28 @@ type PositionsPayload = {
   canonical_positions: Array<Record<string, unknown>>;
 };
 
+type DashboardPortfolioPayload = {
+  net_worth: {
+    net_worth: number;
+    market_value: number;
+    margin: number;
+    source: string;
+  };
+  transaction_kpis: Record<string, number>;
+  account_summary: Array<Record<string, unknown>>;
+  asset_class_breakdown: Array<Record<string, unknown>>;
+  futures_by_commodity: Array<Record<string, unknown>>;
+  sector_allocation: Array<Record<string, unknown>>;
+  positions_by_account: Array<Record<string, unknown>>;
+  sector_summary: Array<Record<string, unknown>>;
+};
+
+type DashboardPerformancePayload = {
+  summary: Array<Record<string, unknown>>;
+  returns: Array<Record<string, unknown>>;
+  has_snapshots: boolean;
+};
+
 type TransactionsPayload = {
   count: number;
   transactions: Array<Record<string, unknown>>;
@@ -170,8 +192,9 @@ export default function Home() {
   const [activePositionTab, setActivePositionTab] = useState<PositionTabId>("equity");
   const [summary, setSummary] = useState<ApiReceipt<PortfolioSummary> | null>(null);
   const [positions, setPositions] = useState<ApiReceipt<PositionsPayload> | null>(null);
+  const [dashboardPortfolio, setDashboardPortfolio] = useState<ApiReceipt<DashboardPortfolioPayload> | null>(null);
+  const [dashboardPerformance, setDashboardPerformance] = useState<ApiReceipt<DashboardPerformancePayload> | null>(null);
   const [transactions, setTransactions] = useState<ApiReceipt<TransactionsPayload> | null>(null);
-  const [performance, setPerformance] = useState<ApiReceipt<Array<Record<string, unknown>>> | null>(null);
   const [yearlySummary, setYearlySummary] = useState<ApiReceipt<MetricsRow[]> | null>(null);
   const [accountSummary, setAccountSummary] = useState<ApiReceipt<MetricsRow[]> | null>(null);
   const [capabilities, setCapabilities] = useState<ApiReceipt<CapabilityPayload> | null>(null);
@@ -184,16 +207,18 @@ export default function Home() {
         const [
           summaryData,
           positionsData,
+          dashboardPortfolioData,
+          dashboardPerformanceData,
           transactionData,
-          performanceData,
           yearlySummaryData,
           accountSummaryData,
           capabilityData
         ] = await Promise.all([
           getJson<PortfolioSummary>("/portfolio/summary?include_live_net_worth=false"),
           getJson<PositionsPayload>("/portfolio/positions"),
+          getJson<DashboardPortfolioPayload>("/dashboard/portfolio"),
+          getJson<DashboardPerformancePayload>("/dashboard/performance"),
           getJson<TransactionsPayload>("/transactions?limit=25"),
-          getJson<Array<Record<string, unknown>>>("/portfolio/performance"),
           getJson<MetricsRow[]>("/portfolio/yearly-summary"),
           getJson<MetricsRow[]>("/portfolio/account-summary"),
           getJson<CapabilityPayload>("/dashboard/capabilities")
@@ -201,8 +226,9 @@ export default function Home() {
         if (!cancelled) {
           setSummary(summaryData);
           setPositions(positionsData);
+          setDashboardPortfolio(dashboardPortfolioData);
+          setDashboardPerformance(dashboardPerformanceData);
           setTransactions(transactionData);
-          setPerformance(performanceData);
           setYearlySummary(yearlySummaryData);
           setAccountSummary(accountSummaryData);
           setCapabilities(capabilityData);
@@ -222,7 +248,8 @@ export default function Home() {
 
   const positionRows = positions?.data?.canonical_positions ?? [];
   const transactionRows = transactions?.data?.transactions ?? [];
-  const performanceRows = performance?.data ?? [];
+  const performanceSummaryRows = dashboardPerformance?.data?.summary ?? [];
+  const performanceReturnRows = dashboardPerformance?.data?.returns ?? [];
   const yearlyRows = yearlySummary?.data ?? [];
   const accountRows = accountSummary?.data ?? [];
   const assetRows = useMemo(() => {
@@ -277,13 +304,43 @@ export default function Home() {
         {activeTab === "portfolio" ? (
           <div className="stack">
             <div className="metricsGrid">
-              <Metric label="Net Cash Flow" value={currency(summary?.data?.net_cash_flow)} />
-              <Metric label="Dividends" value={currency(summary?.data?.dividends)} />
-              <Metric label="Rewards" value={currency(summary?.data?.rewards)} />
+              <Metric label="Net Worth" value={currency(dashboardPortfolio?.data?.net_worth?.net_worth)} />
+              <Metric label="Market Value" value={currency(dashboardPortfolio?.data?.net_worth?.market_value)} />
+              <Metric label="Margin Borrowed" value={currency(dashboardPortfolio?.data?.net_worth?.margin)} />
               <Metric label="Net Income" value={currency(summary?.data?.net_income)} />
             </div>
+            <Panel title="Transaction KPIs">
+              <DataTable rows={[dashboardPortfolio?.data?.transaction_kpis ?? {}]} columns={["Cash In/Out", "Div+Rewards", "Costs", "Net Income"]} />
+            </Panel>
+            <Panel title="Account Summary">
+              <DataTable
+                rows={dashboardPortfolio?.data?.account_summary ?? []}
+                columns={["Account", "Broker", "Market Value", "Cost Basis", "Margin", "Net Equity"]}
+              />
+            </Panel>
             <Panel title="Asset Class Breakdown">
-              <DataTable rows={assetRows} columns={["asset_class", "count", "market_value"]} />
+              <DataTable
+                rows={dashboardPortfolio?.data?.asset_class_breakdown ?? assetRows}
+                columns={["Asset Class", "Market Value", "Allocation"]}
+              />
+            </Panel>
+            <Panel title="Futures by Commodity">
+              <DataTable rows={dashboardPortfolio?.data?.futures_by_commodity ?? []} columns={["Commodity", "Contracts", "Net_MV"]} />
+            </Panel>
+            <Panel title="Sector Allocation">
+              <DataTable rows={dashboardPortfolio?.data?.sector_allocation ?? []} columns={["sector", "MARKET VALUE"]} />
+            </Panel>
+            <Panel title="Positions by Account">
+              <DataTable
+                rows={(dashboardPortfolio?.data?.positions_by_account ?? []).slice(0, 75)}
+                columns={["Account", "Ticker", "Name", "TYPE", "sector", "Shares", "PRICE", "COST", "MARKET VALUE", "totalReturn"]}
+              />
+            </Panel>
+            <Panel title="Sector Summary">
+              <DataTable
+                rows={dashboardPortfolio?.data?.sector_summary ?? []}
+                columns={["sector", "Market_Value", "Total_Cost", "PnL", "Alloc_%", "Return_%", "Dividends"]}
+              />
             </Panel>
           </div>
         ) : null}
@@ -344,9 +401,14 @@ export default function Home() {
         ) : null}
 
         {activeTab === "performance" ? (
-          <Panel title="Portfolio Performance">
-            <DataTable rows={performanceRows} columns={["account_id", "current_value", "returns"]} />
-          </Panel>
+          <div className="stack">
+            <Panel title="Portfolio Summary">
+              <DataTable rows={performanceSummaryRows} columns={["Account", "Current Value", "1W Ago", "$ Change", "% Change"]} />
+            </Panel>
+            <Panel title="Portfolio Returns">
+              <DataTable rows={performanceReturnRows} columns={["Account", "1-Week", "1-Month", "3-Month", "YTD", "1-Year"]} />
+            </Panel>
+          </div>
         ) : null}
 
         {activeTab === "broker" ? (
