@@ -13,14 +13,14 @@ Full regression at this checkpoint:
 
 ```bash
 rtk pytest -q
-# 503 passed
+# 505 passed
 ```
 
 Latest Phase 8 focused backend checkpoint:
 
 ```bash
 rtk pytest tests/unit/test_api_main.py tests/unit/test_cli_main.py -q
-# 15 passed
+# 17 passed
 ```
 
 ## Completed Phases
@@ -155,6 +155,8 @@ GET /
 GET /health
 GET /dashboard/capabilities
 GET /portfolio/summary
+GET /portfolio/yearly-summary
+GET /portfolio/account-summary
 GET /portfolio/positions
 GET /portfolio/performance
 GET /transactions
@@ -194,10 +196,12 @@ capability contract:
 Current API-backed UI coverage:
 
 - Portfolio metrics and asset-class breakdown
+- Yearly Summary metrics by year plus total
+- By Account metrics by account plus total
 - Positions table from canonical current positions
 - Recent Transactions table
 - Performance table
-- Capability rows for Yearly Summary, By Account, Broker MCP, and Settings
+- Capability rows for Broker MCP and Settings
 
 The UI dependency line is pinned to conservative, verified versions after
 Next 16/React 19 showed unreliable hydration in Chrome during local smoke
@@ -212,6 +216,8 @@ Browser smoke on `http://127.0.0.1:3000/` verified:
 - API fetches to `http://127.0.0.1:8000`
 - capability count updates to 37
 - Portfolio renders non-zero metrics
+- Yearly Summary renders 8 API-backed rows
+- By Account renders 9 API-backed rows
 - Positions tab renders 181 rows
 - Transactions tab renders 25 recent rows
 - Performance tab renders account performance rows
@@ -284,16 +290,14 @@ reduced where there is clear reuse value.
 
 ## Remaining TODO
 
-1. Add API endpoints for Yearly Summary and By Account so those tabs move from
-   capability placeholders to real read-only data.
-2. Recreate the Positions tab's four sub-tabs in the Next UI:
+1. Recreate the Positions tab's four sub-tabs in the Next UI:
    Equity, Options, Futures, Crypto.
-3. Decide the replacement shape for Broker MCP and Settings. Keep mutation
+2. Decide the replacement shape for Broker MCP and Settings. Keep mutation
    flows in CLI/MCP until explicit write workflows are designed and tested.
-4. Add frontend tests or a lightweight browser smoke script for tab switching
+3. Add frontend tests or a lightweight browser smoke script for tab switching
    and API-backed rendering.
-5. Keep Streamlit active until the new UI reaches verified capability parity.
-6. Review line-ending-only local noise before staging any future commits.
+4. Keep Streamlit active until the new UI reaches verified capability parity.
+5. Review line-ending-only local noise before staging any future commits.
 
 ## Verification Commands Used
 

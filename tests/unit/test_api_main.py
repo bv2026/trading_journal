@@ -76,6 +76,44 @@ def test_positions_endpoint_returns_empty_receipt(monkeypatch):
     assert payload["warnings"]
 
 
+def test_yearly_summary_endpoint_routes_account_param(monkeypatch):
+    seen = {}
+
+    def fake_yearly_summary(**kwargs):
+        seen.update(kwargs)
+        return [{"label": "2026", "net_income": 42.0}]
+
+    monkeypatch.setattr(api_main.portfolio, "get_yearly_summary", fake_yearly_summary)
+
+    response = _client().get("/portfolio/yearly-summary", params={"account": "RH-BV"})
+
+    assert response.status_code == 200
+    assert seen == {"account_id": "RH-BV"}
+    payload = response.json()
+    assert payload["operation"] == "portfolio.yearly_summary"
+    assert payload["count"] == 1
+    assert payload["data"][0]["label"] == "2026"
+
+
+def test_account_summary_endpoint_routes_year_param(monkeypatch):
+    seen = {}
+
+    def fake_account_summary(**kwargs):
+        seen.update(kwargs)
+        return [{"label": "SCHWAB", "broker": "schwab", "net_income": 99.0}]
+
+    monkeypatch.setattr(api_main.portfolio, "get_account_summary", fake_account_summary)
+
+    response = _client().get("/portfolio/account-summary", params={"year": 2026})
+
+    assert response.status_code == 200
+    assert seen == {"year": 2026}
+    payload = response.json()
+    assert payload["operation"] == "portfolio.account_summary"
+    assert payload["count"] == 1
+    assert payload["data"][0]["label"] == "SCHWAB"
+
+
 def test_transactions_endpoint_enforces_limit_and_returns_payload(monkeypatch):
     seen = {}
 

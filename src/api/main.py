@@ -109,6 +109,34 @@ def register_routes(app: FastAPI) -> None:
             )
         return receipt(operation="portfolio.summary", data=result)
 
+    @app.get("/portfolio/yearly-summary")
+    def portfolio_yearly_summary(
+        account_id: str | None = Query(default=None, alias="account"),
+    ) -> dict[str, Any]:
+        result = portfolio.get_yearly_summary(account_id=account_id)
+        if result is None:
+            return receipt(
+                operation="portfolio.yearly_summary",
+                status="empty",
+                data=[],
+                warnings=["No matching transactions found."],
+                count=0,
+            )
+        return receipt(operation="portfolio.yearly_summary", data=result, count=len(result))
+
+    @app.get("/portfolio/account-summary")
+    def portfolio_account_summary(year: int | None = None) -> dict[str, Any]:
+        result = portfolio.get_account_summary(year=year)
+        if result is None:
+            return receipt(
+                operation="portfolio.account_summary",
+                status="empty",
+                data=[],
+                warnings=["No matching transactions found."],
+                count=0,
+            )
+        return receipt(operation="portfolio.account_summary", data=result, count=len(result))
+
     @app.get("/portfolio/positions")
     def portfolio_positions(
         account_id: str | None = Query(default=None, alias="account"),

@@ -48,6 +48,17 @@ type TransactionsPayload = {
   transactions: Array<Record<string, unknown>>;
 };
 
+type MetricsRow = {
+  label: string;
+  broker?: string;
+  net_cash_flow: number;
+  dividends: number;
+  rewards: number;
+  margin_interest: number;
+  fees: number;
+  net_income: number;
+};
+
 type CapabilityPayload = {
   tabs: string[];
   capability_count: number;
@@ -151,6 +162,8 @@ export default function Home() {
   const [positions, setPositions] = useState<ApiReceipt<PositionsPayload> | null>(null);
   const [transactions, setTransactions] = useState<ApiReceipt<TransactionsPayload> | null>(null);
   const [performance, setPerformance] = useState<ApiReceipt<Array<Record<string, unknown>>> | null>(null);
+  const [yearlySummary, setYearlySummary] = useState<ApiReceipt<MetricsRow[]> | null>(null);
+  const [accountSummary, setAccountSummary] = useState<ApiReceipt<MetricsRow[]> | null>(null);
   const [capabilities, setCapabilities] = useState<ApiReceipt<CapabilityPayload> | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -158,11 +171,21 @@ export default function Home() {
     let cancelled = false;
     async function load() {
       try {
-        const [summaryData, positionsData, transactionData, performanceData, capabilityData] = await Promise.all([
+        const [
+          summaryData,
+          positionsData,
+          transactionData,
+          performanceData,
+          yearlySummaryData,
+          accountSummaryData,
+          capabilityData
+        ] = await Promise.all([
           getJson<PortfolioSummary>("/portfolio/summary?include_live_net_worth=false"),
           getJson<PositionsPayload>("/portfolio/positions"),
           getJson<TransactionsPayload>("/transactions?limit=25"),
           getJson<Array<Record<string, unknown>>>("/portfolio/performance"),
+          getJson<MetricsRow[]>("/portfolio/yearly-summary"),
+          getJson<MetricsRow[]>("/portfolio/account-summary"),
           getJson<CapabilityPayload>("/dashboard/capabilities")
         ]);
         if (!cancelled) {
@@ -170,6 +193,8 @@ export default function Home() {
           setPositions(positionsData);
           setTransactions(transactionData);
           setPerformance(performanceData);
+          setYearlySummary(yearlySummaryData);
+          setAccountSummary(accountSummaryData);
           setCapabilities(capabilityData);
           setError(null);
         }
@@ -188,6 +213,8 @@ export default function Home() {
   const positionRows = positions?.data?.canonical_positions ?? [];
   const transactionRows = transactions?.data?.transactions ?? [];
   const performanceRows = performance?.data ?? [];
+  const yearlyRows = yearlySummary?.data ?? [];
+  const accountRows = accountSummary?.data ?? [];
   const assetRows = useMemo(() => {
     const rows = positions?.data?.summary?.by_asset_class;
     return Array.isArray(rows) ? (rows as Array<Record<string, unknown>>) : [];
@@ -247,14 +274,20 @@ export default function Home() {
         ) : null}
 
         {activeTab === "yearly" ? (
-          <Panel title="Yearly Summary">
-            <DataTable rows={capabilityRows(capabilities, "Yearly Summary")} columns={["capability", "source"]} />
+          <Panel title={`${yearlyRows.length.toLocaleString()} Yearly Summary Rows`}>
+            <DataTable
+              rows={yearlyRows}
+              columns={["label", "net_cash_flow", "dividends", "rewards", "margin_interest", "fees", "net_income"]}
+            />
           </Panel>
         ) : null}
 
         {activeTab === "account" ? (
-          <Panel title="By Account">
-            <DataTable rows={capabilityRows(capabilities, "By Account")} columns={["capability", "source"]} />
+          <Panel title={`${accountRows.length.toLocaleString()} Account Summary Rows`}>
+            <DataTable
+              rows={accountRows}
+              columns={["label", "broker", "net_cash_flow", "dividends", "rewards", "margin_interest", "fees", "net_income"]}
+            />
           </Panel>
         ) : null}
 
