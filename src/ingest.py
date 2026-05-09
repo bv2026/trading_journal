@@ -164,19 +164,28 @@ def _compute_snapshot_map() -> dict[str, dict]:
             snap.setdefault(str(acct), {"market_value": 0.0, "cost_basis": None, "margin": 0.0})
             snap[str(acct)]["market_value"] += mv
 
-    # Broker-reported account balances are authoritative when present. They
-    # capture cash-only sub-accounts and broker equity that may not be modeled
-    # as individual position rows.
+    # Ensure manual CASH balance always reflects latest CLI value.
+    cash_balance = float(db.get_cash_balance() or 0.0)
+    if cash_balance > 0:
+        snap["CASH"] = {
+            "market_value": cash_balance,
+            "cost_basis": cash_balance,
+            "margin": 0.0,
+        }
+
+    # Include broker balances only for accounts not already represented by
+    # freshly computed position snapshots above. This avoids stale
+    # account_balances rows overriding newly synced position data.
     latest_balances = db.load_account_balances()
     if not latest_balances.empty:
         for _, row in latest_balances.iterrows():
             account_id = str(row["account_id"])
+            if account_id in snap:
+                continue
             persisted_cost = row.get("cost_basis")
             snap[account_id] = {
                 "market_value": float(row.get("market_value") or 0.0),
-                "cost_basis": persisted_cost
-                if pd.notna(persisted_cost)
-                else snap.get(account_id, {}).get("cost_basis"),
+                "cost_basis": persisted_cost if pd.notna(persisted_cost) else None,
                 "margin": float(row.get("margin") or 0.0),
             }
 

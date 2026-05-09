@@ -550,6 +550,10 @@ def write_schwab(
     # Use persisted futures equity override if no value passed explicitly
     if futures_account_value is None:
         futures_account_value = db.get_futures_equity_override(account_id)
+    else:
+        # Persist explicit override so downstream account-summary views use the
+        # same value that was applied for this ingest run.
+        db.upsert_futures_equity_override(account_id, float(futures_account_value))
 
     # Futures account value adjustment row.
     # The sum of individual notional MVs (signed_qty × mark × multiplier) differs from

@@ -368,9 +368,20 @@ def normalize_balances(summary_resp: dict) -> dict:
     Returns dict with keys: equity, margin, market_value, buying_power.
     """
     margin = float(summary_resp.get("margin_balance", 0) or 0)
+    equity = float(summary_resp.get("equity", 0) or 0)
+    # Schwab account-level value should be based on net liquidation/account value.
+    # long_market_value is securities-only and can overstate totals when combined
+    # with cash/margin components elsewhere.
+    market_value = float(
+        summary_resp.get("liquidation_value")
+        or summary_resp.get("net_liquidation")
+        or summary_resp.get("account_value")
+        or summary_resp.get("equity")
+        or 0
+    )
     return {
-        "equity":        float(summary_resp.get("equity", 0) or 0),
-        "market_value":  float(summary_resp.get("long_market_value", 0) or 0),
+        "equity":        equity,
+        "market_value":  market_value,
         "buying_power":  float(summary_resp.get("buying_power", 0) or 0),
         "margin":        abs(margin) if margin < 0 else 0.0,
     }

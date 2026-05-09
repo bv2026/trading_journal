@@ -267,11 +267,33 @@ def normalize_balances(balances_resp: dict, account_id: str = "TS") -> dict:
     )
     combined  = acct_data.get("combined", {}) or {}
 
-    cash = float(combined.get("currentCashBalance", 0) or 0)
+    cash = float(
+        combined.get("currentCashBalance")
+        or combined.get("cashBalance")
+        or combined.get("cash")
+        or 0
+    )
+    margin = abs(cash) if cash < 0 else 0.0
+    equity = float(
+        combined.get("currentEquity")
+        or combined.get("accountBalance")
+        or combined.get("netLiq")
+        or combined.get("netLiquidation")
+        or 0
+    )
+    market_value = float(
+        combined.get("currentMarketValue")
+        or combined.get("marketValue")
+        or combined.get("totalMarketValue")
+        or 0
+    )
+    if market_value <= 0 and equity > 0:
+        market_value = equity + margin
+
     return {
-        "market_value": float(combined.get("currentMarketValue", 0) or 0),
-        "equity":       float(combined.get("currentEquity", 0) or 0),
+        "market_value": market_value,
+        "equity":       equity,
         "cash_balance": cash,
-        "margin":       abs(cash) if cash < 0 else 0.0,
+        "margin":       margin,
         "cost_of_positions": float(combined.get("costOfPositions", 0) or 0),
     }

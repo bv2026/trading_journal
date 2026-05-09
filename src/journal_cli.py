@@ -13,6 +13,7 @@ import subprocess
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 
@@ -242,11 +243,18 @@ def _account_sources() -> dict[str, str]:
     return {account_id: _source_label(labels) for account_id, labels in sources.items()}
 
 
-def _balance_row(market_value: float, margin: float, source: str, detail: str = "") -> dict:
+def _balance_row(
+    market_value: float,
+    margin: float,
+    source: str,
+    detail: str = "",
+    *,
+    net_equity: float | None = None,
+) -> dict:
     return {
         "market_value": float(market_value),
         "margin": float(margin),
-        "net_equity": float(market_value) - float(margin),
+        "net_equity": float(net_equity) if net_equity is not None else (float(market_value) - float(margin)),
         "balance_source": source,
         "balance_detail": detail,
     }
@@ -319,8 +327,9 @@ def _robinhood_live_balances() -> dict[str, dict]:
                 positions = asyncio.run(rh_cli.fetch_positions(token, account_number))
                 bal = normalize_portfolio(portfolio)
                 margin = _as_float(bal.get("margin"))
-                equity = _as_float(bal.get("equity"))
-                rows[account_id] = _balance_row(equity + margin, margin, "Live MCP", f"profile {profile}")
+                equity = _as_float(bal.get("equity"))  # authoritative account value
+                gross_mv = equity + margin
+                rows[account_id] = _balance_row(gross_mv, margin, "Live MCP", f"profile {profile}", net_equity=equity)
                 rows[account_id]["cost_basis"] = sum(
                     _as_float(pos.get("quantity")) * _as_float(pos.get("avg_cost"))
                     for pos in positions.get("positions", [])
@@ -341,10 +350,17 @@ def _tradier_live_balance(db_margin: float) -> dict | None:
         margin = _as_float(bal.get("marginBalance") or bal.get("margin_balance"))
         if margin <= 0:
             margin = abs(cash) if cash < 0 else db_margin
-        market_value = _as_float(bal.get("marketValue") or bal.get("market_value"))
+        long_stock = _as_float(bal.get("longStockValue"))
+        short_stock = _as_float(bal.get("shortStockValue"))
+        long_option = _as_float(bal.get("longOptionValue"))
+        short_option = _as_float(bal.get("shortOptionValue"))
+        # Positions value shown by Tradier account details (gross holdings net shorts)
+        market_value = long_stock + short_stock + long_option + short_option
+        if market_value <= 0:
+            market_value = _as_float(bal.get("marketValue") or bal.get("market_value"))
         if market_value <= 0:
             market_value = equity + margin
-        return _balance_row(market_value, margin, "Live API")
+        return _balance_row(market_value, margin, "Live API", net_equity=equity if equity > 0 else None)
 
     async def mcp_balance() -> dict:
         from mcp.client.auth import OAuthClientProvider  # noqa: PLC0415
@@ -394,10 +410,16 @@ def _tradier_live_balance(db_margin: float) -> dict | None:
         margin = _as_float(bal.get("marginBalance") or bal.get("margin_balance"))
         if margin <= 0:
             margin = abs(cash) if cash < 0 else db_margin
-        market_value = _as_float(bal.get("marketValue") or bal.get("market_value"))
+        long_stock = _as_float(bal.get("longStockValue"))
+        short_stock = _as_float(bal.get("shortStockValue"))
+        long_option = _as_float(bal.get("longOptionValue"))
+        short_option = _as_float(bal.get("shortOptionValue"))
+        market_value = long_stock + short_stock + long_option + short_option
+        if market_value <= 0:
+            market_value = _as_float(bal.get("marketValue") or bal.get("market_value"))
         if market_value <= 0:
             market_value = equity + margin
-        return _balance_row(market_value, margin, "Live MCP")
+        return _balance_row(market_value, margin, "Live MCP", net_equity=equity if equity > 0 else None)
 
 
 def _schwab_cached_balance() -> dict | None:
@@ -409,11 +431,20 @@ def _schwab_cached_balance() -> dict | None:
         if not summary:
             return None
         bal = normalize_balances(summary)
+        futures_value = _as_float(db.get_futures_equity_override("SCHWAB") or 0.0)
+        securities_mv = _as_float(summary.get("long_market_value") or bal.get("market_value"))
+        equity = _as_float(summary.get("equity") or summary.get("liquidation_value") or bal.get("equity"))
+        margin = _as_float(bal.get("margin"))
+        market_value = securities_mv + futures_value
+        if market_value <= 0:
+            market_value = equity + margin
+        net_equity = equity + futures_value if equity > 0 else None
         return _balance_row(
-            _as_float(bal.get("market_value")),
-            _as_float(bal.get("margin")),
+            market_value,
+            margin,
             "Claude JSON",
             f"summary {schwab_cli._file_age_str(schwab_cli.SUMMARY_FILE)}",
+            net_equity=net_equity,
         )
     except Exception as exc:  # noqa: BLE001
         return {"error": str(exc)}
@@ -428,11 +459,17 @@ def _tradestation_cached_balance() -> dict | None:
         if not balances:
             return None
         bal = normalize_balances(balances, "TS")
+        # TS balances page semantics:
+        # - market value/gross holdings = currentMarketValue
+        # - account value/net equity = currentEquity
+        ts_total_value = _as_float(bal.get("equity")) if _as_float(bal.get("equity")) > 0 else _as_float(bal.get("market_value"))
+        ts_market_value = _as_float(bal.get("market_value")) if _as_float(bal.get("market_value")) > 0 else ts_total_value
         return _balance_row(
-            _as_float(bal.get("market_value")),
+            ts_market_value,
             _as_float(bal.get("margin")),
             "Claude JSON",
             f"balances {ts_cli._file_age_str(ts_cli.BALANCES_FILE)}",
+            net_equity=ts_total_value if ts_total_value > 0 else None,
         )
     except Exception as exc:  # noqa: BLE001
         return {"error": str(exc)}
@@ -473,7 +510,8 @@ def _webull_cached_balances(db_market_values: pd.Series) -> dict[str, dict]:
         if account_id == "WEBULL-CASH" and cost_basis <= 0:
             cost_basis = market_value
         margin = abs(cash) if cash < 0 else 0.0
-        rows[account_id] = _balance_row(market_value, margin, "Claude JSON")
+        net_equity = net_liquidation if net_liquidation > 0 else None
+        rows[account_id] = _balance_row(market_value, margin, "Claude JSON", net_equity=net_equity)
         rows[account_id]["cost_basis"] = cost_basis
     return rows
 
@@ -576,9 +614,12 @@ def _account_summary(health: pd.DataFrame | None = None) -> pd.DataFrame:
         if override:
             market_value = _as_float(override.get("market_value"))
             margin_value = _as_float(override.get("margin"))
+            net_equity_value = _as_float(override.get("net_equity"), market_value - margin_value)
             if override.get("cost_basis") is not None:
                 cost_value = _as_float(override.get("cost_basis"))
             balance_source = str(override.get("balance_source") or balance_source)
+        else:
+            net_equity_value = market_value - margin_value
         source = account_sources.get(
             account_id,
             "MCP" if account_id in MCP_POSITION_ACCOUNTS else "CSV",
@@ -595,7 +636,7 @@ def _account_summary(health: pd.DataFrame | None = None) -> pd.DataFrame:
             "Market Value": market_value,
             "Cost Basis": cost_value,
             "Margin": margin_value,
-            "Net Equity": market_value - margin_value,
+            "Net Equity": net_equity_value,
         })
 
     cash = db.get_cash_balance()
@@ -808,6 +849,122 @@ def _csv_files_changed() -> bool:
     return False
 
 
+async def _fetch_schwab_payloads_to_tmp() -> tuple[bool, str]:
+    from mcp.client.session import ClientSession  # noqa: PLC0415
+    from mcp.client.stdio import StdioServerParameters, stdio_client  # noqa: PLC0415
+    from src.mcp_tools.health import load_mcp_servers  # noqa: PLC0415
+
+    servers = load_mcp_servers()
+    server = servers.get("schwab-smartspreads-file")
+    if not server:
+        return False, "schwab-smartspreads-file MCP server is not configured"
+    command = server.get("command")
+    if not command:
+        return False, "schwab-smartspreads-file MCP server has no command configured"
+
+    env = os.environ.copy()
+    env.update(server.get("env") or {})
+    env.setdefault("FASTMCP_LOG_LEVEL", "ERROR")
+    env.setdefault("LOG_LEVEL", "ERROR")
+    params = StdioServerParameters(
+        command=str(command),
+        args=[str(arg) for arg in (server.get("args") or [])],
+        env=env,
+        cwd=server.get("cwd"),
+    )
+
+    def _content_to_text(result) -> str:
+        return "\n".join(
+            getattr(item, "text", "")
+            for item in result.content
+            if getattr(item, "text", "")
+        )
+
+    def _extract_json_text(result) -> str:
+        text = _content_to_text(result).strip()
+        if not text:
+            raise RuntimeError("empty MCP response")
+        payload = json.loads(text)
+        if isinstance(payload, dict) and isinstance(payload.get("result"), str):
+            raw = payload["result"].strip()
+            if raw:
+                return raw
+        return text
+
+    tmp = REPO_ROOT / "data" / "tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    out_files = {
+        "equity": tmp / "schwab_equity.json",
+        "futures": tmp / "schwab_futures.json",
+        "summary": tmp / "schwab_summary.json",
+    }
+
+    with open(os.devnull, "w", encoding="utf-8") as errlog:
+        async with stdio_client(params, errlog=errlog) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                eq = await session.call_tool("get_equity_positions", {})
+                fut = await session.call_tool("get_futures_positions", {})
+                summ = await session.call_tool("get_account_summary", {})
+
+    out_files["equity"].write_text(_extract_json_text(eq), encoding="utf-8")
+    out_files["futures"].write_text(_extract_json_text(fut), encoding="utf-8")
+    out_files["summary"].write_text(_extract_json_text(summ), encoding="utf-8")
+    return True, "wrote fresh schwab_equity/futures/summary JSON to data\\tmp"
+
+
+def _fetch_schwab_payloads_to_tmp_sync() -> bool:
+    print("\nSchwab MCP fetch (local -> data\\tmp)")
+    print("=" * 33)
+    try:
+        ok, detail = asyncio.run(_fetch_schwab_payloads_to_tmp())
+    except Exception as exc:  # noqa: BLE001
+        print(f"Schwab MCP fetch failed: {exc}")
+        return False
+    print(detail)
+    return ok
+
+
+def _validate_ts_tmp_payloads(max_age_hours: int = 6) -> bool:
+    print("\nTradeStation payload precheck")
+    print("=" * 27)
+    pos_path = REPO_ROOT / "data" / "tmp" / "ts_positions.json"
+    bal_path = REPO_ROOT / "data" / "tmp" / "ts_balances.json"
+
+    missing = [str(p) for p in (pos_path, bal_path) if not p.exists()]
+    if missing:
+        print("Missing required TS payload file(s):")
+        for m in missing:
+            print(f"  - {m}")
+        print("Update both files before running TS ingest.")
+        return False
+
+    now = datetime.now(timezone.utc)
+    ok = True
+    for p in (pos_path, bal_path):
+        try:
+            text = p.read_text(encoding="utf-8-sig")
+            obj = json.loads(text)
+            if not isinstance(obj, dict):
+                raise ValueError("root is not an object")
+        except Exception as exc:  # noqa: BLE001
+            print(f"Invalid JSON in {p.name}: {exc}")
+            ok = False
+            continue
+        age_hours = (now - datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)).total_seconds() / 3600.0
+        freshness = "OK" if age_hours <= max_age_hours else "STALE"
+        print(f"{p.name}: {freshness} ({age_hours:.1f}h old)")
+        if freshness != "OK":
+            ok = False
+
+    if not ok:
+        print(
+            "TS precheck failed. Refresh ts_positions.json and ts_balances.json "
+            "with live MCP payloads, then rerun sync."
+        )
+    return ok
+
+
 def sync_all_ingest_workflow() -> None:
     print("\nSync all (cached payloads + CSV + snapshot)")
     print("=" * 42)
@@ -824,6 +981,7 @@ def sync_all_ingest_workflow() -> None:
             "--balances-map", "data\\tmp\\wb_balances_map.json",
         ],
     )
+    ok &= _fetch_schwab_payloads_to_tmp_sync()
     ok &= _run_best_effort(
         "Schwab ingest",
         [
@@ -844,6 +1002,7 @@ def sync_all_ingest_workflow() -> None:
             "--balances", "data\\tmp\\tradier_balances.json",
         ],
     )
+    ok &= _validate_ts_tmp_payloads()
     ok &= _run_best_effort(
         "TradeStation ingest",
         [
@@ -892,6 +1051,15 @@ def sync_all_ingest_workflow() -> None:
         )
 
     ok &= _run_best_effort("Snapshot only", [sys.executable, "-m", "src.ingest", "--snapshot-only"])
+    try:
+        # Keep dashboard account summary aligned with latest sync by refreshing
+        # persisted account_balances immediately after ingest/snapshot.
+        health = show_mcp_health(force=True, compact=True)
+        _account_summary(health)
+        print("Account balances refreshed from latest sync inputs.")
+    except Exception as exc:  # noqa: BLE001 - non-fatal post-sync refresh
+        ok = False
+        print(f"Account balance refresh failed: {exc}")
     print("\nSync-all completed." if ok else "\nSync-all completed with errors (see steps above).")
     input("Press Enter to continue...")
 
