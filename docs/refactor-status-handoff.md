@@ -326,6 +326,33 @@ Important note: some legacy CLI and dashboard code still reads DB helpers
 directly. The refactor is additive and incremental; direct DB reads are being
 reduced where there is clear reuse value.
 
+## Repo Structure Audit (2026-05-09)
+
+### Redundant CLI Entry Points
+
+Three CLI interfaces exist with overlapping functionality:
+
+| Module | Size | Status |
+|--------|------|--------|
+| `src/cli/main.py` | 428 lines | **Canonical** — unified non-interactive CLI |
+| `src/journal_cli.py` | 33.7K lines | **Legacy** — interactive terminal browser, not imported anywhere |
+| `src/cash.py` | 1.2K lines | **Superseded** — duplicated by `cli/main.py account cash get/set` |
+| `src/margin.py` | 2.6K lines | **Superseded** — duplicated by `cli/main.py account margin get/set` |
+
+`cash.py` and `margin.py` are fully superseded by the unified CLI and can be
+deprecated with a print redirect. `journal_cli.py` is intentionally preserved
+as the interactive terminal UI — decide its fate when the Next.js UI is
+feature-complete.
+
+### Clean Findings (no action needed)
+
+- All `__init__.py` files present across all packages
+- All core modules imported and used — no dead code in service/API layers
+- `ui/node_modules/` and `ui/.next/` already in `.gitignore`
+- Test structure is clean: `tests/unit/`, `tests/integration/`, `tests/smoke_ui.py`
+- No duplicate business logic detected between services, API, and CLI
+- Consistent naming conventions across parsers, fetchers, and services
+
 ## Remaining TODO
 
 1. Decide the replacement shape for Broker MCP and Settings. Keep mutation
