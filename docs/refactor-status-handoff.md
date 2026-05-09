@@ -2,6 +2,23 @@
 
 Date: 2026-05-09
 
+## Status: Closed / Superseded
+
+This document is now historical context for Phase 8 refactor progress.
+Operational sync/health/process workflows moved to:
+
+- `docs/handoff-2026-05-09-sync-stabilization.md` (primary current handoff)
+- `docs/prompt-guide.md` (Claude + CLI execution prompts)
+- `docs/USAGE.md` (runtime operations and cleanup commands)
+
+Reason for closure:
+- The original "in progress" state in this file has been overtaken by
+  production fixes for sync reliability, account-balance consistency, Health
+  Checks data freshness, and zombie-process cleanup scripts.
+
+Open items to carry forward are tracked in:
+- `docs/handoff-2026-05-09-sync-stabilization.md` -> "Remaining Follow-ups"
+
 ## Current Status
 
 Phase 8 (FastAPI + Next.js) is feature-complete for read-only parity. The
