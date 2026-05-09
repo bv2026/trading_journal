@@ -788,19 +788,12 @@ def _launch_next_dashboard() -> None:
         input("Press Enter to continue...")
         return
 
-    base_kwargs: dict = {
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-        "stdin": subprocess.DEVNULL,
-    }
-    if sys.platform == "win32":
-        base_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-
     if not api_up:
+        api_cmd = f'"{sys.executable}" -m uvicorn src.api.main:app --host 127.0.0.1 --port {api_port}'
         subprocess.Popen(
-            [sys.executable, "-m", "uvicorn", "src.api.main:app",
-             "--host", "127.0.0.1", "--port", str(api_port)],
-            cwd=REPO_ROOT, **base_kwargs,
+            f'cmd /c start /b "" {api_cmd}',
+            cwd=REPO_ROOT, shell=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         print(f"  Started API on http://127.0.0.1:{api_port}")
     else:
@@ -810,8 +803,9 @@ def _launch_next_dashboard() -> None:
         ui_dir = REPO_ROOT / "ui"
         next_bin = ui_dir / "node_modules" / "next" / "dist" / "bin" / "next"
         subprocess.Popen(
-            ["node", str(next_bin), "dev", "-p", str(ui_port)],
-            cwd=str(ui_dir), **base_kwargs,
+            f'cmd /c start /b "" node "{next_bin}" dev -p {ui_port}',
+            cwd=str(ui_dir), shell=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         print(f"  Started UI on http://localhost:{ui_port}")
     else:
