@@ -13,14 +13,14 @@ Full regression at this checkpoint:
 
 ```bash
 rtk pytest -q
-# 509 passed
+# 510 passed
 ```
 
 Latest Phase 8 focused backend checkpoint:
 
 ```bash
 rtk pytest tests/unit/test_api_main.py tests/unit/test_cli_main.py -q
-# 21 passed
+# 22 passed
 ```
 
 ## Completed Phases
@@ -166,10 +166,12 @@ GET /portfolio/performance
 GET /transactions
 ```
 
-Unified CLI now has an API launcher:
+Unified CLI now has API and dashboard launchers:
 
 ```bash
 python -m src.cli.main api launch --host 127.0.0.1 --port 8000 --reload
+python -m src.cli.main dashboard next --reload
+python -m src.cli.main dashboard next --api-port 8000 --ui-port 3000 --reload
 ```
 
 The API is intentionally read-only at this checkpoint. Mutating workflows
@@ -219,6 +221,19 @@ testing:
 - `next@15.5.18`
 - `react@18.3.1`
 - `react-dom@18.3.1`
+
+UI formatting polish applied:
+
+- Currency formatting with `$1,234.56` for all money columns
+- Percentage columns with `+/-` signs
+- Red/green coloring for negative/positive values
+- Column header mapping from API field names to human-readable labels
+- Transaction KPIs rendered as styled metric cards
+- Sticky table headers with row hover highlights
+- Scrollable capped tables for large datasets (Positions by Account)
+- Segmented control fixed (missing `--ink` CSS variable)
+
+Smoke test script added: `tests/smoke_ui.py` (15 checks, all passing)
 
 Browser smoke on `http://127.0.0.1:3000/` verified:
 
@@ -305,10 +320,10 @@ reduced where there is clear reuse value.
 
 1. Decide the replacement shape for Broker MCP and Settings. Keep mutation
    flows in CLI/MCP until explicit write workflows are designed and tested.
-2. Add frontend tests or a lightweight browser smoke script for tab switching
-   and API-backed rendering.
+2. ~~Add frontend tests or a lightweight browser smoke script~~ — done:
+   `tests/smoke_ui.py` (15 checks covering all API endpoints and UI rendering).
 3. Keep Streamlit active until the new UI reaches verified capability parity.
-4. Review line-ending-only local noise before staging any future commits.
+4. ~~Review line-ending-only local noise~~ — confirmed clean, no accidental changes.
 
 ## Verification Commands Used
 
@@ -316,9 +331,11 @@ reduced where there is clear reuse value.
 rtk python -m py_compile dashboard/app.py src/services/*.py
 rtk python -m py_compile src/api/main.py src/api/__init__.py
 rtk python -m src.cli.main dashboard capabilities
+rtk python -m src.cli.main dashboard next --help
 rtk python -m src.cli.main api launch --host 127.0.0.1 --port 8000 --reload
 rtk pytest tests/unit/test_api_main.py tests/unit/test_cli_main.py -q
 rtk pytest -q
+python tests/smoke_ui.py
 cd ui
 npm audit --json
 npm run typecheck
