@@ -22,9 +22,7 @@ WEBULL:
   - data\tmp\wb_balances_map.json
 
 SCHWAB:
-- get_equity_positions -> data\tmp\schwab_equity.json
-- get_futures_positions -> data\tmp\schwab_futures.json
-- get_account_summary -> data\tmp\schwab_summary.json
+- skip (handled locally by journal CLI sync-all now)
 
 TRADIER:
 - get_positions -> data\tmp\tradier_pos.json
@@ -42,6 +40,35 @@ ROBINHOOD:
 Return a final file checklist and any broker errors.
 ```
 
+### TradeStation fallback prompt (when Claude cannot write Windows files)
+
+Use this exact prompt and paste output manually into local files:
+
+```text
+Fetch fresh TradeStation MCP payloads and return ONLY raw JSON in two separate fenced blocks.
+
+1) Call get-positions-details for account 11908624.
+2) Call get-balances-details for account 11908624.
+
+Output format exactly:
+
+FILE: ts_positions.json
+```json
+<full JSON object>
+```
+
+FILE: ts_balances.json
+```json
+<full JSON object>
+```
+
+Rules:
+- No summaries.
+- No markdown outside FILE labels + json blocks.
+- Do not truncate.
+- Do not transform keys/values.
+```
+
 ## 2) CLI Ingest (single command)
 
 ```powershell
@@ -51,7 +78,9 @@ python -m src.journal_cli
 
 - Choose `9` (Sync all brokers + CSV + snapshot)
 - This will:
+  - fetch fresh Schwab MCP payloads locally into `data\tmp\schwab_*.json`
   - ingest MCP broker payloads from `data\tmp\`
+  - run TradeStation JSON precheck (exists + parse + freshness)
   - run Coinbase sync
   - run CSV ingest only when tracked files changed
   - optionally prompt for CASH update
@@ -80,6 +109,20 @@ Then open `http://localhost:3000` and check **Health Checks**:
 - `CSV Sync State`
 - `Account Sync Status`
 
+## 4) If Ports/Processes Are Stuck
+
+Use the repo cleanup script:
+
+```powershell
+cd C:\work\trading-journal
+
+# Preview
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\kill_not_needed.ps1
+
+# Apply
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\kill_not_needed.ps1 -Apply
+```
+
 ## Notes
 
 - If `operations/status` is unavailable, UI falls back and status may be less precise.
@@ -87,3 +130,4 @@ Then open `http://localhost:3000` and check **Health Checks**:
 - Fidelity freshness depends on:
   - `activity\fidelity_Investment_income_balance.csv`
   - `activity\positions-fidelity.csv`
+- If TS values do not match broker UI, verify `data\tmp\ts_balances.json` and `data\tmp\ts_positions.json` are freshly replaced and valid JSON before ingest.
