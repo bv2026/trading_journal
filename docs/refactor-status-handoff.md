@@ -378,6 +378,23 @@ feature-complete.
 4. ~~Review line-ending-only local noise~~ — confirmed clean, no accidental changes.
 5. Add column sorting to Next.js DataTable component. Streamlit tables support
    click-to-sort on any column header; the Next.js tables are currently static.
+6. Add transaction filters (category, broker, year multiselect + search box)
+   and CSV export button. Next.js currently shows only 25 recent rows.
+7. Add positions broker filter (Streamlit has a multiselect across all
+   position sub-tabs).
+8. Add sector allocation pie chart (Streamlit renders Plotly pie; Next.js
+   shows only the table).
+9. Add position sub-tab KPI cards (Market Value, Cost, P&L, Return %,
+   Dividends for equity; Contracts + MV for options/futures).
+10. Add collapsible sections for options/futures grouped by account
+    (Streamlit uses expanders; Next.js shows flat tables).
+11. Add bold styling on TOTAL rows in tables.
+12. Add global sidebar controls (date range, account filter, refresh,
+    internal transfers toggle).
+
+Data accuracy verified 2026-05-09: API values match service layer exactly
+across all endpoints (net worth, market value, margin, position counts,
+yearly summary, performance returns). No calculation divergence.
 
 ## Verification Commands Used
 
