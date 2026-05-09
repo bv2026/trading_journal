@@ -784,7 +784,8 @@ def _launch_next_dashboard() -> None:
         cwd=REPO_ROOT, **base_kwargs,
     )
     ui_dir = REPO_ROOT / "ui"
-    subprocess.Popen(["npx", "next", "dev", "-p", "3000"], cwd=str(ui_dir), **base_kwargs)
+    next_bin = ui_dir / "node_modules" / "next" / "dist" / "bin" / "next"
+    subprocess.Popen(["node", str(next_bin), "dev", "-p", "3000"], cwd=str(ui_dir), **base_kwargs)
     print("API: http://127.0.0.1:8000  UI: http://localhost:3000")
     input("Press Enter to continue...")
 

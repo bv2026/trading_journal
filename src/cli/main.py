@@ -266,7 +266,8 @@ def _cmd_dashboard_next(args: argparse.Namespace) -> int:
 
     subprocess.Popen(api_cmd, cwd=str(ROOT), **base_kwargs)
 
-    ui_cmd = ["npx", "next", "dev", "-p", str(args.ui_port)]
+    next_bin = ui_dir / "node_modules" / "next" / "dist" / "bin" / "next"
+    ui_cmd = ["node", str(next_bin), "dev", "-p", str(args.ui_port)]
     subprocess.Popen(ui_cmd, cwd=str(ui_dir), **base_kwargs)
 
     _print_json(_receipt(
