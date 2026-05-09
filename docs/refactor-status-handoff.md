@@ -6,15 +6,23 @@ Date: 2026-05-09
 
 Phase 8 (FastAPI + Next.js) is feature-complete for read-only parity. The
 service-layer refactor landed at `8b1bbfd`; the latest Phase 8 commit is
-`89d4513`. A read-only FastAPI backend and a polished Next.js dashboard exist
+`047ed93`. A read-only FastAPI backend and a polished Next.js dashboard exist
 side-by-side with the existing Streamlit dashboard. Streamlit remains the
 active UI until write workflows (Broker MCP, Settings) are decided.
 
+The interactive CLI (`python -m src.journal_cli`) now has a working "Launch
+Next.js dashboard" option (menu item 7) that starts both the API and UI,
+waits for them to become ready, and auto-opens the browser.
+
 Key recent commits (newest first):
 
+- `047ed93` Auto-open browser when Next.js dashboard launches
+- `160c1a4` Rewrite Next.js launcher to kill stale processes and verify startup
+- `c51e5e9` Use cmd /c start /b for Next.js dashboard launcher on Windows
+- `12c15d0` Fix Next.js dashboard launcher with port conflict detection
+- `deafb27` Use node directly instead of npx to launch Next.js dev server
+- `aad9a0d` Add Launch Next.js dashboard to interactive CLI housekeeping menu
 - `89d4513` Update handoff doc with formatting polish and smoke test
-- `edd6b2a` Add dashboard next CLI command to launch Next.js UI
-- `7034790` Polish Next.js dashboard formatting and add smoke test
 - `ee204c4` Back yearly and account dashboard sections with API data
 - `8f9608c` Add FastAPI backend and Next dashboard scaffold
 - `8b1bbfd` Refactor journal services and dashboard calculations
@@ -64,6 +72,13 @@ python -m src.cli.main health
 python -m src.cli.main dashboard launch
 python -m src.cli.main dashboard capabilities
 ```
+
+The interactive CLI (`python -m src.journal_cli`) housekeeping menu includes:
+
+- Option 6: Launch Streamlit dashboard (auto-opens browser)
+- Option 7: Launch Next.js dashboard (kills stale processes, waits for
+  API + UI readiness, auto-opens browser)
+- Option 8: Stop dashboard (kills Streamlit, API, and Next.js processes)
 
 Legacy CLIs were intentionally preserved:
 
