@@ -770,6 +770,26 @@ def _launch_dashboard() -> None:
     input("Press Enter to continue...")
 
 
+def _launch_next_dashboard() -> None:
+    print("\nLaunching Next.js dashboard (API :8000 + UI :3000) ...")
+    base_kwargs: dict = {
+        "cwd": REPO_ROOT,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "stdin": subprocess.DEVNULL,
+    }
+    if sys.platform == "win32":
+        base_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "src.api.main:app", "--host", "127.0.0.1", "--port", "8000", "--reload"],
+        **base_kwargs,
+    )
+    ui_dir = REPO_ROOT / "ui"
+    subprocess.Popen(["npx", "next", "dev", "-p", "3000"], cwd=str(ui_dir), **base_kwargs)
+    print("API: http://127.0.0.1:8000  UI: http://localhost:3000")
+    input("Press Enter to continue...")
+
+
 def _stop_dashboard() -> None:
     if sys.platform != "win32":
         print("Stop dashboard is currently implemented for Windows only.")
@@ -795,9 +815,10 @@ def housekeeping_menu() -> None:
         print("3. Write snapshot only")
         print("4. Sync Coinbase")
         print("5. Dry-run Coinbase sync")
-        print("6. Launch dashboard")
-        print("7. Stop dashboard")
-        print("8. Run tests")
+        print("6. Launch Streamlit dashboard")
+        print("7. Launch Next.js dashboard")
+        print("8. Stop dashboard")
+        print("9. Run tests")
         print("0. Back")
 
         choice = input("Select: ").strip()
@@ -818,11 +839,13 @@ def housekeeping_menu() -> None:
         elif choice == "6":
             _launch_dashboard()
         elif choice == "7":
-            _stop_dashboard()
+            _launch_next_dashboard()
         elif choice == "8":
+            _stop_dashboard()
+        elif choice == "9":
             _run_command("Run tests", [sys.executable, "-m", "pytest", "tests/", "-q"])
         else:
-            print("Choose 0-8.")
+            print("Choose 0-9.")
 
 
 def _prompt_date(label: str, default: date) -> str | None:
