@@ -65,6 +65,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         ("transactions.sync_run_id", "transactions", "sync_run_id", "sync_run_id INTEGER REFERENCES sync_runs(sync_run_id)"),
         ("positions.sync_run_id", "positions", "sync_run_id", "sync_run_id INTEGER REFERENCES sync_runs(sync_run_id)"),
         ("options_positions.sync_run_id", "options_positions", "sync_run_id", "sync_run_id INTEGER REFERENCES sync_runs(sync_run_id)"),
+        ("futures_positions.data_source", "futures_positions", "data_source", "data_source TEXT"),
+        ("crypto_positions.data_source", "crypto_positions", "data_source", "data_source TEXT"),
         ("futures_positions.sync_run_id", "futures_positions", "sync_run_id", "sync_run_id INTEGER REFERENCES sync_runs(sync_run_id)"),
         ("crypto_positions.sync_run_id", "crypto_positions", "sync_run_id", "sync_run_id INTEGER REFERENCES sync_runs(sync_run_id)"),
         ("portfolio_snapshots.sync_run_id", "portfolio_snapshots", "sync_run_id", "sync_run_id INTEGER REFERENCES sync_runs(sync_run_id)"),
@@ -411,7 +413,7 @@ def insert_futures(records: list[dict]) -> int:
         return 0
     df = pd.DataFrame(records)
     cols = ["account_id", "symbol", "underlying", "description",
-            "qty", "price", "market_value", "source_file", "sync_run_id"]
+            "qty", "price", "market_value", "data_source", "source_file", "sync_run_id"]
     for col in cols:
         if col not in df.columns:
             df[col] = None
@@ -423,9 +425,9 @@ def insert_futures(records: list[dict]) -> int:
     with get_conn() as conn:
         cursor = conn.executemany(
             "INSERT OR REPLACE INTO futures_positions "
-            "(account_id, symbol, underlying, description, qty, price, market_value, source_file, sync_run_id) "
+            "(account_id, symbol, underlying, description, qty, price, market_value, data_source, source_file, sync_run_id) "
             "VALUES (:account_id, :symbol, :underlying, :description, "
-            "        :qty, :price, :market_value, :source_file, :sync_run_id)",
+            "        :qty, :price, :market_value, :data_source, :source_file, :sync_run_id)",
             rows,
         )
         conn.commit()
@@ -439,7 +441,7 @@ def load_futures_db() -> pd.DataFrame:
         with get_conn() as conn:
             return pd.read_sql_query(
                 "SELECT account_id, symbol, underlying, description, "
-                "qty, price, market_value, source_file, sync_run_id "
+                "qty, price, market_value, data_source, source_file, sync_run_id "
                 "FROM futures_positions f "
                 "WHERE EXISTS ("
                 "  SELECT 1 FROM accounts a "
@@ -464,7 +466,7 @@ def insert_crypto(records: list[dict]) -> int:
         return 0
     df = pd.DataFrame(records)
     cols = ["account_id", "symbol", "name", "qty", "price",
-            "cost_basis", "market_value", "source_file", "sync_run_id"]
+            "cost_basis", "market_value", "data_source", "source_file", "sync_run_id"]
     for col in cols:
         if col not in df.columns:
             df[col] = None
@@ -476,9 +478,9 @@ def insert_crypto(records: list[dict]) -> int:
     with get_conn() as conn:
         cursor = conn.executemany(
             "INSERT OR REPLACE INTO crypto_positions "
-            "(account_id, symbol, name, qty, price, cost_basis, market_value, source_file, sync_run_id) "
+            "(account_id, symbol, name, qty, price, cost_basis, market_value, data_source, source_file, sync_run_id) "
             "VALUES (:account_id, :symbol, :name, :qty, :price, "
-            "        :cost_basis, :market_value, :source_file, :sync_run_id)",
+            "        :cost_basis, :market_value, :data_source, :source_file, :sync_run_id)",
             rows,
         )
         conn.commit()
@@ -492,7 +494,7 @@ def load_crypto_db() -> pd.DataFrame:
         with get_conn() as conn:
             return pd.read_sql_query(
                 "SELECT account_id, symbol, name, qty, price, "
-                "cost_basis, market_value, source_file, sync_run_id "
+                "cost_basis, market_value, data_source, source_file, sync_run_id "
                 "FROM crypto_positions c "
                 "WHERE EXISTS ("
                 "  SELECT 1 FROM accounts a "
@@ -967,3 +969,151 @@ def get_accounts_by_type(account_type: str) -> list[str]:
         return [r[0] for r in rows]
     except Exception:
         return []
+
+
+def load_account_operations_status() -> pd.DataFrame:
+    """Return per-account operational status for UI/CLI operations views.
+
+    Includes last ingest timestamps by asset class, last txn/snapshot timestamps,
+    and a normalized source signal inferred from stored data_source/source_file.
+    """
+    if not DB_PATH.exists():
+        return pd.DataFrame()
+    with get_conn() as conn:
+        return pd.read_sql_query(
+            """
+            WITH eq AS (
+                SELECT account_id,
+                       MAX(ingested_at) AS eq_last_ingested_at,
+                       GROUP_CONCAT(DISTINCT UPPER(COALESCE(data_source, CASE WHEN source_file IS NOT NULL THEN 'csv' END))) AS eq_sources
+                FROM positions
+                GROUP BY account_id
+            ),
+            opt AS (
+                SELECT account_id,
+                       MAX(ingested_at) AS opt_last_ingested_at,
+                       GROUP_CONCAT(DISTINCT UPPER(COALESCE(data_source, CASE WHEN source_file IS NOT NULL THEN 'csv' END))) AS opt_sources
+                FROM options_positions
+                GROUP BY account_id
+            ),
+            fut AS (
+                SELECT account_id,
+                       MAX(ingested_at) AS fut_last_ingested_at,
+                       GROUP_CONCAT(DISTINCT UPPER(COALESCE(data_source, CASE WHEN source_file IS NOT NULL THEN 'csv' END))) AS fut_sources
+                FROM futures_positions
+                GROUP BY account_id
+            ),
+            cry AS (
+                SELECT account_id,
+                       MAX(ingested_at) AS cry_last_ingested_at,
+                       GROUP_CONCAT(DISTINCT UPPER(COALESCE(data_source, CASE WHEN source_file IS NOT NULL THEN 'csv' END))) AS cry_sources
+                FROM crypto_positions
+                GROUP BY account_id
+            ),
+            txn AS (
+                SELECT account_id,
+                       MAX(created_at) AS txn_last_created_at,
+                       GROUP_CONCAT(DISTINCT UPPER(COALESCE(data_source, CASE WHEN source_file IS NOT NULL THEN 'csv' END))) AS txn_sources
+                FROM transactions
+                GROUP BY account_id
+            ),
+            snap AS (
+                SELECT account_id,
+                       MAX(snapshot_date) AS last_snapshot_date
+                FROM portfolio_snapshots
+                GROUP BY account_id
+            )
+            SELECT
+                a.account_id,
+                a.broker,
+                a.account_type,
+                a.price_source,
+                a.active,
+                eq.eq_last_ingested_at,
+                opt.opt_last_ingested_at,
+                fut.fut_last_ingested_at,
+                cry.cry_last_ingested_at,
+                txn.txn_last_created_at,
+                snap.last_snapshot_date,
+                TRIM(
+                    COALESCE(eq.eq_sources, '') ||
+                    CASE WHEN opt.opt_sources IS NOT NULL THEN ',' || opt.opt_sources ELSE '' END ||
+                    CASE WHEN fut.fut_sources IS NOT NULL THEN ',' || fut.fut_sources ELSE '' END ||
+                    CASE WHEN cry.cry_sources IS NOT NULL THEN ',' || cry.cry_sources ELSE '' END ||
+                    CASE WHEN txn.txn_sources IS NOT NULL THEN ',' || txn.txn_sources ELSE '' END
+                , ',') AS raw_sources
+            FROM accounts a
+            LEFT JOIN eq   ON eq.account_id = a.account_id
+            LEFT JOIN opt  ON opt.account_id = a.account_id
+            LEFT JOIN fut  ON fut.account_id = a.account_id
+            LEFT JOIN cry  ON cry.account_id = a.account_id
+            LEFT JOIN txn  ON txn.account_id = a.account_id
+            LEFT JOIN snap ON snap.account_id = a.account_id
+            ORDER BY a.account_id
+            """,
+            conn,
+        )
+
+
+def upsert_csv_ingest_state(
+    *,
+    file_path: str,
+    account_id: str | None,
+    file_role: str,
+    file_mtime_utc: str | None,
+    file_size_bytes: int | None,
+    rows_written: int,
+    status: str = "ok",
+    detail: str | None = None,
+    last_sync_run_id: int | None = None,
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO csv_ingest_state
+                (file_path, account_id, file_role, file_mtime_utc, file_size_bytes,
+                 last_ingested_at, last_sync_run_id, rows_written, status, detail)
+            VALUES
+                (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?)
+            ON CONFLICT(file_path) DO UPDATE SET
+                account_id       = excluded.account_id,
+                file_role        = excluded.file_role,
+                file_mtime_utc   = excluded.file_mtime_utc,
+                file_size_bytes  = excluded.file_size_bytes,
+                last_ingested_at = excluded.last_ingested_at,
+                last_sync_run_id = excluded.last_sync_run_id,
+                rows_written     = excluded.rows_written,
+                status           = excluded.status,
+                detail           = excluded.detail
+            """,
+            (
+                file_path,
+                account_id,
+                file_role,
+                file_mtime_utc,
+                file_size_bytes,
+                last_sync_run_id,
+                rows_written,
+                status,
+                detail,
+            ),
+        )
+        conn.commit()
+
+
+def load_csv_ingest_state() -> pd.DataFrame:
+    if not DB_PATH.exists():
+        return pd.DataFrame()
+    try:
+        with get_conn() as conn:
+            return pd.read_sql_query(
+                """
+                SELECT file_path, account_id, file_role, file_mtime_utc, file_size_bytes,
+                       last_ingested_at, last_sync_run_id, rows_written, status, detail
+                FROM csv_ingest_state
+                ORDER BY file_path
+                """,
+                conn,
+            )
+    except Exception:
+        return pd.DataFrame()

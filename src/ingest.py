@@ -19,8 +19,10 @@ Special cases:
 import sys
 import argparse
 import inspect
+from datetime import datetime, timezone
 from datetime import date as _date
 from pathlib import Path
+from datetime import timezone
 
 import pandas as pd
 
@@ -228,6 +230,17 @@ def run(reset: bool = False, include_mcp_position_csv: bool = False) -> None:
         if skipped:
             status += f"  ({skipped} already in DB)"
         print(f"  OK    {acct}: {status}")
+        stat = path.stat()
+        db.upsert_csv_ingest_state(
+            file_path=str(path.resolve()),
+            account_id=acct,
+            file_role="transactions",
+            file_mtime_utc=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat() if stat else None,
+            file_size_bytes=stat.st_size if stat else None,
+            rows_written=inserted,
+            status="ok",
+            detail=f"new={inserted}, skipped={skipped}",
+        )
 
     print(f"\nDone — {total_new} new records added, {total_skipped} already existed.")
     if total_skipped and not reset:
@@ -252,6 +265,17 @@ def run(reset: bool = False, include_mcp_position_csv: bool = False) -> None:
         written = db.insert_positions(recs)
         pos_total += written
         print(f"  OK    positions {acct}: {written} rows")
+        stat = path.stat()
+        db.upsert_csv_ingest_state(
+            file_path=str(path.resolve()),
+            account_id=acct,
+            file_role="positions",
+            file_mtime_utc=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat() if stat else None,
+            file_size_bytes=stat.st_size if stat else None,
+            rows_written=written,
+            status="ok",
+            detail=f"rows={written}",
+        )
 
     if pos_total:
         print(f"\nPositions — {pos_total} rows written across accounts.")

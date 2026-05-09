@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import math
 from typing import Any
+from pathlib import Path
 
 import pandas as pd
 from fastapi import FastAPI, Query
@@ -22,6 +23,7 @@ from src.services import dashboard_portfolio
 from src.services import dashboard_transactions
 from src.services import dashboard_capabilities
 from src.services import portfolio
+from src.mcp_tools.health import check_mcp_health
 
 
 def create_app() -> FastAPI:
@@ -125,6 +127,85 @@ def register_routes(app: FastAPI) -> None:
                 "capability_count": len(capabilities),
                 "capability_counts": dashboard_capabilities.tab_capability_counts(),
                 "capabilities": capabilities,
+            },
+        )
+
+    @app.get("/operations/status")
+    def operations_status() -> dict[str, Any]:
+        ops = db.load_account_operations_status()
+        if ops.empty:
+            return receipt(operation="operations.status", data={"accounts": [], "health": []})
+
+        def _source_signal(raw: Any) -> str:
+            if raw in (None, ""):
+                return "UNKNOWN"
+            parts = sorted({str(p).strip().upper() for p in str(raw).split(",") if str(p).strip()})
+            if not parts:
+                return "UNKNOWN"
+            if len(parts) == 1:
+                return parts[0]
+            return "MIXED"
+
+        for col in [
+            "eq_last_ingested_at", "opt_last_ingested_at", "fut_last_ingested_at",
+            "cry_last_ingested_at", "txn_last_created_at",
+        ]:
+            ops[col] = pd.to_datetime(ops[col], errors="coerce", utc=True)
+        ops["last_synced_ts"] = ops[
+            ["eq_last_ingested_at", "opt_last_ingested_at", "fut_last_ingested_at", "cry_last_ingested_at", "txn_last_created_at"]
+        ].max(axis=1)
+        with db.get_conn() as conn:
+            cash_upd = conn.execute("SELECT updated_at FROM cash_accounts WHERE account_id='CASH'").fetchone()
+            fid_margin_upd = conn.execute("SELECT updated_at FROM margin_overrides WHERE account_id='FIDELITY'").fetchone()
+        cash_ts = pd.to_datetime(cash_upd[0], errors="coerce", utc=True) if cash_upd and cash_upd[0] else pd.NaT
+        fid_margin_ts = pd.to_datetime(fid_margin_upd[0], errors="coerce", utc=True) if fid_margin_upd and fid_margin_upd[0] else pd.NaT
+        ops.loc[ops["account_id"] == "CASH", "last_synced_ts"] = cash_ts
+        fidelity_mask = ops["account_id"] == "FIDELITY"
+        if fidelity_mask.any() and pd.notna(fid_margin_ts):
+            existing = ops.loc[fidelity_mask, "last_synced_ts"]
+            fill = pd.Series([fid_margin_ts] * len(existing), index=existing.index)
+            ops.loc[fidelity_mask, "last_synced_ts"] = existing.combine_first(fill)
+        now_utc = pd.Timestamp.now(tz="UTC")
+        ops["age_hours"] = (now_utc - ops["last_synced_ts"]).dt.total_seconds() / 3600.0
+        ops["source_signal"] = ops["raw_sources"].map(_source_signal)
+        ops["status_label"] = ops.apply(
+            lambda r: (
+                "STALE" if int(r.get("active") or 0) == 1 and (pd.isna(r["last_synced_ts"]) or (pd.notna(r["age_hours"]) and r["age_hours"] > 36))
+                else "OK"
+            ),
+            axis=1,
+        )
+        account_rows = ops[[
+            "account_id", "broker", "account_type", "active", "source_signal",
+            "last_synced_ts", "last_snapshot_date", "age_hours", "status_label",
+            "eq_last_ingested_at", "opt_last_ingested_at", "fut_last_ingested_at",
+            "cry_last_ingested_at", "txn_last_created_at",
+        ]]
+        activity = Path(__file__).resolve().parents[2] / "activity"
+        fid_income = activity / "fidelity_Investment_income_balance.csv"
+        fid_positions = activity / "positions-fidelity.csv"
+        fidelity_upload_ts = None
+        if fid_income.exists() and fid_positions.exists():
+            fidelity_upload_ts = max(
+                datetime.fromtimestamp(fid_income.stat().st_mtime, tz=timezone.utc),
+                datetime.fromtimestamp(fid_positions.stat().st_mtime, tz=timezone.utc),
+            ).isoformat()
+        elif fid_income.exists():
+            fidelity_upload_ts = datetime.fromtimestamp(fid_income.stat().st_mtime, tz=timezone.utc).isoformat()
+        elif fid_positions.exists():
+            fidelity_upload_ts = datetime.fromtimestamp(fid_positions.stat().st_mtime, tz=timezone.utc).isoformat()
+
+        return receipt(
+            operation="operations.status",
+            data={
+                "accounts": _records(account_rows),
+                "health": check_mcp_health(),
+                "csv_ingest_state": _records(db.load_csv_ingest_state()),
+                "csv_uploads": {
+                    "fidelity_income_csv": datetime.fromtimestamp(fid_income.stat().st_mtime, tz=timezone.utc).isoformat() if fid_income.exists() else None,
+                    "fidelity_positions_csv": datetime.fromtimestamp(fid_positions.stat().st_mtime, tz=timezone.utc).isoformat() if fid_positions.exists() else None,
+                    "fidelity_last_upload_ts": fidelity_upload_ts,
+                },
             },
         )
 

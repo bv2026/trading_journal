@@ -39,6 +39,41 @@ def test_dashboard_capabilities_endpoint_exposes_tab_contract():
     assert "positions.crypto_subtab" in capability_ids
 
 
+def test_operations_status_endpoint_returns_accounts_and_health(monkeypatch):
+    monkeypatch.setattr(
+        api_main.db,
+        "load_account_operations_status",
+        lambda: api_main.pd.DataFrame([
+            {
+                "account_id": "RH-BV",
+                "broker": "robinhood",
+                "account_type": "equity",
+                "active": 1,
+                "raw_sources": "mcp",
+                "eq_last_ingested_at": "2026-05-09T20:00:00Z",
+                "opt_last_ingested_at": None,
+                "fut_last_ingested_at": None,
+                "cry_last_ingested_at": None,
+                "txn_last_created_at": "2026-05-09T20:00:00Z",
+                "last_snapshot_date": "2026-05-09",
+            }
+        ]),
+    )
+    monkeypatch.setattr(
+        api_main,
+        "check_mcp_health",
+        lambda: [{"Broker": "Robinhood", "Status": "OK", "Tools": 10}],
+    )
+
+    response = _client().get("/operations/status")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["operation"] == "operations.status"
+    assert payload["data"]["accounts"][0]["account_id"] == "RH-BV"
+    assert payload["data"]["accounts"][0]["source_signal"] == "MCP"
+    assert payload["data"]["health"][0]["Broker"] == "Robinhood"
+
+
 def test_dashboard_portfolio_endpoint_serializes_dashboard_sections(monkeypatch):
     monkeypatch.setattr(api_main.portfolio, "load_transactions_filtered", lambda: api_main.pd.DataFrame([
         {"date": api_main.pd.Timestamp("2026-01-01"), "account_id": "RH-BV", "broker": "robinhood", "category": "dividend", "subcategory": "cash_div", "amount": 25.0, "symbol": "AAPL"},

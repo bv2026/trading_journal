@@ -298,6 +298,7 @@ def write_webull(
 
     totals = {"equity": 0, "options": 0, "futures": 0, "crypto": 0, "instruments": 0}
     per_account: dict[str, dict] = {}
+    errors: list[str] = []
 
     for wb_id, positions_text in positions_by_wb_id.items():
         journal_id = id_map.get(wb_id)
@@ -305,7 +306,17 @@ def write_webull(
             print(f"  SKIP  unknown webull account {wb_id} — not in CLASS_TO_ACCOUNT_ID map")
             continue
 
-        parsed = webull_fetcher.parse_positions_text(positions_text)
+        raw_text = positions_text
+        if isinstance(positions_text, dict):
+            raw_text = positions_text.get("result") or json.dumps(positions_text)
+        if not isinstance(raw_text, str):
+            raw_text = str(raw_text)
+        if "Traceback" in raw_text and "UnicodeEncodeError" in raw_text:
+            errors.append(f"{journal_id}: positions payload contains traceback text, not MCP result")
+            print(f"  ERROR {journal_id}: invalid positions payload (traceback text detected)")
+            continue
+
+        parsed = webull_fetcher.parse_positions_text(raw_text)
         eq_recs, opt_recs, fut_recs, cry_recs = webull_fetcher.normalize_positions(
             parsed, journal_id
         )
@@ -338,7 +349,10 @@ def write_webull(
         instr_w = db.upsert_instruments(instr_recs) if instr_recs else 0
 
         if balance_by_wb_id and wb_id in balance_by_wb_id:
-            bal = webull_fetcher.parse_balance_text(balance_by_wb_id[wb_id])
+            bal_text = balance_by_wb_id[wb_id]
+            if isinstance(bal_text, dict):
+                bal_text = bal_text.get("result") or json.dumps(bal_text)
+            bal = webull_fetcher.parse_balance_text(str(bal_text))
             print(f"  [{journal_id}] MV={bal['market_value']:.2f}  "
                   f"margin={bal['margin']:.2f}  net_liq={bal['net_liquidation']:.2f}")
             _insert_margin_sentinel(journal_id, bal["margin"])
@@ -353,7 +367,9 @@ def write_webull(
             totals[k] += per_account[journal_id].get(k, 0)
 
     _enrich()
-    return {"per_account": per_account, "totals": totals}
+    if not per_account and errors:
+        raise ValueError("Webull ingest failed: " + "; ".join(errors))
+    return {"per_account": per_account, "totals": totals, "errors": errors}
 
 
 # ── Coinbase ─────────────────────────────────────────────────────────────

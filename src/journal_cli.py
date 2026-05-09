@@ -14,7 +14,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -754,17 +754,171 @@ def _run_command(label: str, args: list[str], *, pause: bool = True) -> int:
     return result.returncode
 
 
+def _run_best_effort(label: str, args: list[str]) -> bool:
+    code = _run_command(label, args, pause=False)
+    return code == 0
+
+
+def _prompt_optional_float(prompt: str) -> float | None:
+    raw = input(prompt).strip().replace("$", "").replace(",", "")
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        print("Invalid number; skipped.")
+        return None
+
+
+def _csv_files_changed() -> bool:
+    tracked = [
+        REPO_ROOT / "activity" / "WEBULL-inv.csv",
+        REPO_ROOT / "activity" / "WEBULL-cash.csv",
+        REPO_ROOT / "activity" / "schwab.csv",
+        REPO_ROOT / "activity" / "robinhood-inv-bv.csv",
+        REPO_ROOT / "activity" / "robinhood-inv-kd.csv",
+        REPO_ROOT / "activity" / "coinbase-main.csv",
+        REPO_ROOT / "activity" / "tradier.csv",
+        REPO_ROOT / "activity" / "tdstation-cash.csv",
+        REPO_ROOT / "activity" / "fidelity_Investment_income_balance.csv",
+        REPO_ROOT / "activity" / "positions-fidelity.csv",
+    ]
+    state = db.load_csv_ingest_state()
+    state_map = {
+        str(Path(row["file_path"]).resolve()): row
+        for _, row in state.iterrows()
+        if row.get("file_path")
+    } if not state.empty else {}
+    for path in tracked:
+        if not path.exists():
+            continue
+        key = str(path.resolve())
+        row = state_map.get(key)
+        stat = path.stat()
+        if row is None:
+            return True
+        try:
+            old_size = int(row.get("file_size_bytes")) if pd.notna(row.get("file_size_bytes")) else -1
+        except Exception:
+            old_size = -1
+        old_mtime = str(row.get("file_mtime_utc") or "")
+        cur_mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
+        if old_size != stat.st_size or old_mtime != cur_mtime:
+            return True
+    return False
+
+
+def sync_all_ingest_workflow() -> None:
+    print("\nSync all (cached payloads + CSV + snapshot)")
+    print("=" * 42)
+    print("This runs broker ingests from data/tmp, optional cash/margin inputs, then snapshot.")
+
+    ok = True
+    ok &= _run_best_effort(
+        "Webull ingest",
+        [
+            sys.executable, "-m", "src.mcp_ingest",
+            "--broker", "webull",
+            "--account-list", "data\\tmp\\wb_account_list.txt",
+            "--positions-map", "data\\tmp\\wb_positions_map.rebuilt.json",
+            "--balances-map", "data\\tmp\\wb_balances_map.json",
+        ],
+    )
+    ok &= _run_best_effort(
+        "Schwab ingest",
+        [
+            sys.executable, "-m", "src.mcp_ingest",
+            "--broker", "schwab",
+            "--equity", "data\\tmp\\schwab_equity.json",
+            "--futures", "data\\tmp\\schwab_futures.json",
+            "--summary", "data\\tmp\\schwab_summary.json",
+        ],
+    )
+    ok &= _run_best_effort(
+        "Tradier ingest",
+        [
+            sys.executable, "-m", "src.mcp_ingest",
+            "--broker", "tradier",
+            "--positions", "data\\tmp\\tradier_pos.json",
+            "--quotes", "data\\tmp\\tradier_quotes.json",
+            "--balances", "data\\tmp\\tradier_balances.json",
+        ],
+    )
+    ok &= _run_best_effort(
+        "TradeStation ingest",
+        [
+            sys.executable, "-m", "src.mcp_ingest",
+            "--broker", "ts",
+            "--positions", "data\\tmp\\ts_positions.json",
+            "--balances", "data\\tmp\\ts_balances.json",
+        ],
+    )
+    ok &= _run_best_effort(
+        "Robinhood RH-BV ingest",
+        [
+            sys.executable, "-m", "src.mcp_ingest",
+            "--broker", "robinhood",
+            "--account-id", "RH-BV",
+            "--positions", "data\\tmp\\rh_pos.json",
+            "--portfolio", "data\\tmp\\rh_port.json",
+        ],
+    )
+    ok &= _run_best_effort(
+        "Robinhood RH-KD ingest",
+        [
+            sys.executable, "-m", "src.mcp_ingest",
+            "--broker", "robinhood",
+            "--account-id", "RH-KD",
+            "--positions", "data\\tmp\\rh_kd_pos.json",
+            "--portfolio", "data\\tmp\\rh_kd_port.json",
+        ],
+    )
+    ok &= _run_best_effort("Coinbase sync", [sys.executable, "scripts/sync_coinbase.py"])
+    if _csv_files_changed():
+        ok &= _run_best_effort("CSV ingest (changed files detected)", [sys.executable, "-m", "src.ingest"])
+    else:
+        print("\nCSV ingest skipped (no tracked CSV file changes detected).")
+
+    cash = _prompt_optional_float("CASH update (blank to skip): ")
+    if cash is not None:
+        ok &= _run_best_effort("Set CASH", [sys.executable, "-m", "src.cash", str(cash)])
+
+    print("\nOptional fidelity margin override (blank = skip):")
+    fidelity_margin = _prompt_optional_float("  FIDELITY margin amount: ")
+    if fidelity_margin is not None:
+        ok &= _run_best_effort(
+            "Set margin FIDELITY",
+            [sys.executable, "-m", "src.mcp_ingest", "--set-margin", "FIDELITY", str(fidelity_margin)],
+        )
+
+    ok &= _run_best_effort("Snapshot only", [sys.executable, "-m", "src.ingest", "--snapshot-only"])
+    print("\nSync-all completed." if ok else "\nSync-all completed with errors (see steps above).")
+    input("Press Enter to continue...")
+
+
 def _kill_next_dashboard() -> None:
     """Kill any existing API/Next.js processes before launching."""
     if sys.platform != "win32":
         return
     subprocess.run(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-         "Get-CimInstance Win32_Process | "
-         "Where-Object { "
-         "($_.CommandLine -match 'uvicorn' -and $_.CommandLine -match 'src\\.api\\.main') -or "
-         "($_.CommandLine -match 'next' -and $_.CommandLine -match 'dev.*-p') "
-         "} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"],
+        [
+            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+            "Get-CimInstance Win32_Process | "
+            "Where-Object { "
+            "($_.CommandLine -match 'uvicorn' -and $_.CommandLine -match 'src\\.api\\.main') -or "
+            "($_.CommandLine -match 'next' -and $_.CommandLine -match 'dev.*-p.*3000') "
+            "} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+        ],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        [
+            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+            "$ports=3000,8000; foreach($p in $ports){ "
+            "Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue | "
+            "Select-Object -ExpandProperty OwningProcess -Unique | "
+            "ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }"
+        ],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
 
@@ -835,7 +989,11 @@ def _stop_dashboard() -> None:
         "($_.CommandLine -match 'uvicorn' -and $_.CommandLine -match 'src\\.api\\.main') -or "
         "($_.CommandLine -match 'next' -and $_.CommandLine -match 'dev.*-p.*3000') "
         "} | "
-        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; "
+        "$ports=3000,8000; foreach($p in $ports){ "
+        "Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue | "
+        "Select-Object -ExpandProperty OwningProcess -Unique | "
+        "ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }"
     )
     _run_command(
         "Stop dashboard",
@@ -854,6 +1012,7 @@ def housekeeping_menu() -> None:
         print("6. Launch Next.js dashboard")
         print("7. Stop dashboard")
         print("8. Run tests")
+        print("9. Sync all brokers + CSV + snapshot")
         print("0. Back")
 
         choice = input("Select: ").strip()
@@ -877,8 +1036,10 @@ def housekeeping_menu() -> None:
             _stop_dashboard()
         elif choice == "8":
             _run_command("Run tests", [sys.executable, "-m", "pytest", "tests/", "-q"])
+        elif choice == "9":
+            sync_all_ingest_workflow()
         else:
-            print("Choose 0-8.")
+            print("Choose 0-9.")
 
 
 def _prompt_date(label: str, default: date) -> str | None:
@@ -960,6 +1121,7 @@ def main() -> int:
         print("6. Housekeeping")
         print("7. Broker Live View")
         print("8. Transaction history")
+        print("9. Sync all brokers + CSV + snapshot")
         print("0. Exit")
 
         choice = input("Select: ").strip()
@@ -981,8 +1143,10 @@ def main() -> int:
             _broker_live_view()
         elif choice == "8":
             transaction_history_menu()
+        elif choice == "9":
+            sync_all_ingest_workflow()
         else:
-            print("Choose 0-8.")
+            print("Choose 0-9.")
 
 
 if __name__ == "__main__":

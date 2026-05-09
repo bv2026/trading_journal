@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS futures_positions (
     qty          REAL,
     price        REAL,
     market_value REAL,
+    data_source  TEXT,   -- mcp | csv | computed
     source_file  TEXT,
     sync_run_id  INTEGER REFERENCES sync_runs(sync_run_id),
     ingested_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -137,6 +138,7 @@ CREATE TABLE IF NOT EXISTS crypto_positions (
     price        REAL,
     cost_basis   REAL,
     market_value REAL,
+    data_source  TEXT,   -- mcp | csv
     source_file  TEXT,
     sync_run_id  INTEGER REFERENCES sync_runs(sync_run_id),
     ingested_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -168,6 +170,19 @@ CREATE TABLE IF NOT EXISTS account_balances (
     detail          TEXT,
     sync_run_id     INTEGER REFERENCES sync_runs(sync_run_id),
     as_of           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS csv_ingest_state (
+    file_path         TEXT PRIMARY KEY,
+    account_id        TEXT,
+    file_role         TEXT, -- transactions | positions
+    file_mtime_utc    TEXT,
+    file_size_bytes   INTEGER,
+    last_ingested_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_sync_run_id  INTEGER REFERENCES sync_runs(sync_run_id),
+    rows_written      INTEGER DEFAULT 0,
+    status            TEXT DEFAULT 'ok',
+    detail            TEXT
 );
 
 -- ── v_positions_all ──────────────────────────────────────────────────────────

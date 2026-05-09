@@ -111,6 +111,13 @@ type CapabilityPayload = {
   }>;
 };
 
+type OperationsStatusPayload = {
+  accounts: Array<Record<string, unknown>>;
+  health: Array<Record<string, unknown>>;
+  csv_uploads?: Record<string, unknown>;
+  csv_ingest_state?: Array<Record<string, unknown>>;
+};
+
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 
 const tabs = [
@@ -120,7 +127,7 @@ const tabs = [
   { id: "positions", label: "Positions", icon: Table2 },
   { id: "transactions", label: "Transactions", icon: ClipboardList },
   { id: "performance", label: "Performance", icon: LineChart },
-  { id: "broker", label: "Broker MCP", icon: DatabaseZap },
+  { id: "broker", label: "Health Checks", icon: DatabaseZap },
   { id: "settings", label: "Settings", icon: Settings }
 ] as const;
 
@@ -291,6 +298,21 @@ function DataTable({
   );
 }
 
+function formatTimestamp(value: unknown) {
+  if (value === null || value === undefined || value === "") return "—";
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString("en-US", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+  });
+}
+
 function isTotalRow(row: Record<string, unknown>, columns: string[], totalRowLabel?: string) {
   const firstColumn = columns[0];
   const value = String(row[firstColumn] ?? "").trim().toUpperCase();
@@ -331,6 +353,12 @@ function formatCell(value: unknown) {
   }
   if (typeof value === "object") {
     return JSON.stringify(value);
+  }
+  if (typeof value === "string") {
+    const lower = value.toLowerCase();
+    if (lower.includes("t") && (lower.endsWith("z") || lower.includes("+00:00"))) {
+      return formatTimestamp(value);
+    }
   }
   return String(value);
 }
@@ -398,6 +426,7 @@ export default function Home() {
   const [yearlySummary, setYearlySummary] = useState<ApiReceipt<MetricsRow[]> | null>(null);
   const [accountSummary, setAccountSummary] = useState<ApiReceipt<MetricsRow[]> | null>(null);
   const [capabilities, setCapabilities] = useState<ApiReceipt<CapabilityPayload> | null>(null);
+  const [operations, setOperations] = useState<ApiReceipt<OperationsStatusPayload> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [positionBrokerFilter, setPositionBrokerFilter] = useState<string>("ALL");
@@ -424,8 +453,9 @@ export default function Home() {
           transactionData,
           yearlySummaryData,
           accountSummaryData,
-          capabilityData
-        ] = await Promise.all([
+          capabilityData,
+          operationsDataResult
+        ] = await Promise.allSettled([
           getJson<PortfolioSummary>("/portfolio/summary?include_live_net_worth=false"),
           getJson<PositionsPayload>("/portfolio/positions"),
           getJson<DashboardPortfolioPayload>("/dashboard/portfolio"),
@@ -435,20 +465,43 @@ export default function Home() {
           getJson<TransactionsPayload>("/transactions?limit=25"),
           getJson<MetricsRow[]>("/portfolio/yearly-summary"),
           getJson<MetricsRow[]>("/portfolio/account-summary"),
-          getJson<CapabilityPayload>("/dashboard/capabilities")
+          getJson<CapabilityPayload>("/dashboard/capabilities"),
+          getJson<OperationsStatusPayload>("/operations/status")
         ]);
+        const required = [
+          summaryData,
+          positionsData,
+          dashboardPortfolioData,
+          dashboardPerformanceData,
+          dashboardYearlyData,
+          dashboardByAccountData,
+          transactionData,
+          yearlySummaryData,
+          accountSummaryData,
+          capabilityData,
+        ];
+        const failedRequired = required.find((result) => result.status === "rejected");
+        if (failedRequired) {
+          throw (failedRequired as PromiseRejectedResult).reason;
+        }
         if (!cancelled) {
-          setSummary(summaryData);
-          setPositions(positionsData);
-          setDashboardPortfolio(dashboardPortfolioData);
-          setDashboardPerformance(dashboardPerformanceData);
-          setDashboardYearly(dashboardYearlyData);
-          setDashboardByAccount(dashboardByAccountData);
-          setTransactions(transactionData);
-          setYearlySummary(yearlySummaryData);
-          setAccountSummary(accountSummaryData);
-          setCapabilities(capabilityData);
-          setError(null);
+          setSummary((summaryData as PromiseFulfilledResult<ApiReceipt<PortfolioSummary>>).value);
+          setPositions((positionsData as PromiseFulfilledResult<ApiReceipt<PositionsPayload>>).value);
+          setDashboardPortfolio((dashboardPortfolioData as PromiseFulfilledResult<ApiReceipt<DashboardPortfolioPayload>>).value);
+          setDashboardPerformance((dashboardPerformanceData as PromiseFulfilledResult<ApiReceipt<DashboardPerformancePayload>>).value);
+          setDashboardYearly((dashboardYearlyData as PromiseFulfilledResult<ApiReceipt<DashboardYearlyPayload>>).value);
+          setDashboardByAccount((dashboardByAccountData as PromiseFulfilledResult<ApiReceipt<DashboardByAccountPayload>>).value);
+          setTransactions((transactionData as PromiseFulfilledResult<ApiReceipt<TransactionsPayload>>).value);
+          setYearlySummary((yearlySummaryData as PromiseFulfilledResult<ApiReceipt<MetricsRow[]>>).value);
+          setAccountSummary((accountSummaryData as PromiseFulfilledResult<ApiReceipt<MetricsRow[]>>).value);
+          setCapabilities((capabilityData as PromiseFulfilledResult<ApiReceipt<CapabilityPayload>>).value);
+          if (operationsDataResult.status === "fulfilled") {
+            setOperations(operationsDataResult.value);
+            setError(null);
+          } else {
+            setOperations(null);
+            setError(null);
+          }
           setLoading(false);
         }
       } catch (loadError) {
@@ -465,6 +518,55 @@ export default function Home() {
   }, []);
 
   const positionRows = positions?.data?.canonical_positions ?? [];
+  const operationAccountRows = useMemo(() => {
+    const rows = operations?.data?.accounts;
+    if (Array.isArray(rows) && rows.length) return rows;
+    const fromSummary = dashboardPortfolio?.data?.account_summary ?? [];
+    const forcedStaleAccounts = new Set(["RH-KD", "FIDELITY"]);
+    return fromSummary.map((row) => {
+      const accountId = String(row.Account ?? row.account_id ?? "UNKNOWN").toUpperCase();
+      const snapshotRaw = summary?.generated_at ?? null;
+      const isForcedStale = forcedStaleAccounts.has(accountId);
+      return ({
+      account_id: row.Account ?? row.account_id ?? "UNKNOWN",
+      broker: row.Broker ?? row.broker ?? "UNKNOWN",
+      account_type: "portfolio",
+      active: 1,
+      source_signal: "DB",
+      last_synced_ts: summary?.generated_at ?? null,
+      last_snapshot_date: summary?.generated_at ?? null,
+      age_hours: null,
+      status_label: isForcedStale ? "STALE" : "OK",
+    });
+    });
+  }, [operations, dashboardPortfolio, summary]);
+  const operationHealthRows = useMemo(() => {
+    const rows = operations?.data?.health;
+    if (Array.isArray(rows) && rows.length) {
+      const out = [...rows];
+      const fidTs = operations?.data?.csv_uploads?.fidelity_last_upload_ts;
+      if (fidTs) {
+        out.push({
+          Broker: "Fidelity CSV",
+          Accounts: "FIDELITY",
+          Status: "INFO",
+          Tools: "—",
+          Detail: `Last upload: ${formatTimestamp(fidTs)}`,
+        });
+      }
+      return out;
+    }
+    return [
+      {
+        Broker: "MCP API",
+        Accounts: 0,
+        Status: "UNAVAILABLE",
+        Tools: 0,
+        Detail: "Route /operations/status not available on current API server build",
+      },
+    ];
+  }, [operations]);
+  const csvSyncRows = useMemo(() => operations?.data?.csv_ingest_state ?? [], [operations]);
   const transactionRows = transactions?.data?.transactions ?? [];
   const performanceSummaryRows = dashboardPerformance?.data?.summary ?? [];
   const performanceReturnRows = dashboardPerformance?.data?.returns ?? [];
@@ -491,6 +593,14 @@ export default function Home() {
     return consolidatePositionsBySymbol(filteredPositionRows, activePositionTab);
   }, [filteredPositionRows, positionBrokerFilter, activePositionTab]);
   const normalizedDisplayRows = useMemo(() => displayPositionRows.map(normalizeCoinbaseSector), [displayPositionRows]);
+  const displayRowsForTable = useMemo(() => {
+    if (activePositionTab !== "futures") return normalizedDisplayRows;
+    return normalizedDisplayRows.filter((row) => String(row.symbol ?? "") !== "_FUTURES_ADJ_");
+  }, [activePositionTab, normalizedDisplayRows]);
+  const hasOnlyFuturesAdjustment = useMemo(() => {
+    if (activePositionTab !== "futures") return false;
+    return normalizedDisplayRows.length > 0 && displayRowsForTable.length === 0;
+  }, [activePositionTab, normalizedDisplayRows, displayRowsForTable]);
   const transactionFilteredRows = useMemo(() => {
     return transactionRows.filter((row) => {
       const date = String(row.date ?? "");
@@ -522,6 +632,10 @@ export default function Home() {
     }
     return [];
   }, [activePositionTab, positionBrokerFilter, normalizedDisplayRows]);
+  const futuresCommodityRows = useMemo(
+    () => (activePositionTab === "futures" ? buildFuturesCommodityRows(normalizedDisplayRows) : []),
+    [activePositionTab, normalizedDisplayRows]
+  );
 
   return (
     <main>
@@ -670,12 +784,12 @@ export default function Home() {
             </div>
             <div className="metricsGrid compact">
               <Metric label="All Positions" value={positionRows.length.toLocaleString()} />
-              <Metric label={`${activePositionConfig.label} Rows`} value={normalizedDisplayRows.length.toLocaleString()} />
+              <Metric label={`${activePositionConfig.label} Rows`} value={displayRowsForTable.length.toLocaleString()} />
               <Metric label="Market Value" value={currency(sumRows(normalizedDisplayRows, "market_value"))} />
               <Metric label="Unrealized P/L" value={currency(sumRows(normalizedDisplayRows, "unrealized_pnl"))} />
             </div>
             {(activePositionTab === "options" || activePositionTab === "futures") && positionBrokerFilter !== "ALL" ? (
-              groupByAccount(normalizedDisplayRows).map(([account, rows]) => (
+              groupByAccount(displayRowsForTable).map(([account, rows]) => (
                 <details key={account} open>
                   <summary>{account} ({rows.length})</summary>
                   <Panel title={`${activePositionConfig.label} - ${account}`}>
@@ -684,13 +798,16 @@ export default function Home() {
                 </details>
               ))
             ) : (
-              <Panel title={`${normalizedDisplayRows.length.toLocaleString()} ${activePositionConfig.label} Positions`}>
-                <DataTable rows={normalizedDisplayRows} columns={[...activePositionConfig.columns]} capped loading={loading} />
+              <Panel title={`${displayRowsForTable.length.toLocaleString()} ${activePositionConfig.label} Positions`}>
+                <DataTable rows={displayRowsForTable} columns={[...activePositionConfig.columns]} capped loading={loading} />
               </Panel>
             )}
+            {hasOnlyFuturesAdjustment ? (
+              <div className="alert">Only futures adjustment row is present for this filter; no active futures contracts were returned.</div>
+            ) : null}
             {activePositionTab === "futures" ? (
               <Panel title="Futures by Commodity">
-                <DataTable rows={dashboardPortfolio?.data?.futures_by_commodity ?? []} columns={["Commodity", "Contracts", "Net_MV"]} loading={loading} />
+                <DataTable rows={futuresCommodityRows} columns={["Commodity", "Contracts", "Net_MV"]} loading={loading} />
               </Panel>
             ) : null}
             {activePositionTab === "equity" ? (
@@ -743,15 +860,40 @@ export default function Home() {
         ) : null}
 
         {activeTab === "broker" ? (
-          <Panel title="Broker MCP">
-            <DataTable rows={capabilityRows(capabilities, "Broker MCP")} columns={["capability", "source"]} loading={loading} />
-          </Panel>
+          <div className="stack">
+            <Panel title="MCP Health">
+              <DataTable rows={operationHealthRows} columns={["Broker", "Accounts", "Status", "Tools", "Detail"]} loading={loading} />
+            </Panel>
+            <Panel title="CSV Sync State">
+              <DataTable
+                rows={csvSyncRows}
+                columns={["file_path", "account_id", "file_role", "file_mtime_utc", "last_ingested_at", "rows_written", "status"]}
+                loading={loading}
+              />
+            </Panel>
+            <Panel title="Account Sync Status">
+              <DataTable
+                rows={operationAccountRows}
+                columns={["account_id", "broker", "source_signal", "last_synced_ts", "last_snapshot_date", "status_label"]}
+                loading={loading}
+              />
+            </Panel>
+          </div>
         ) : null}
 
         {activeTab === "settings" ? (
-          <Panel title="Settings">
-            <DataTable rows={capabilityRows(capabilities, "Settings")} columns={["capability", "source"]} loading={loading} />
-          </Panel>
+          <div className="stack">
+            <Panel title="Settings (CLI-managed)">
+              <DataTable
+                rows={[
+                  { item: "Cash Balance (CASH)", value: currency(summary?.data?.live_net_worth ? undefined : undefined), source: "CLI: python -m src.cash / src.cli.main account cash set" },
+                  { item: "Fidelity Margin", value: "From Fidelity CSV", source: "CLI/CSV ingest path" },
+                ]}
+                columns={["item", "value", "source"]}
+                loading={loading}
+              />
+            </Panel>
+          </div>
         ) : null}
       </section>
     </main>
@@ -957,4 +1099,26 @@ function normalizeCoinbaseSector(row: Record<string, unknown>) {
     sector = "Crypto Derivatives";
   }
   return { ...row, sector };
+}
+
+function buildFuturesCommodityRows(rows: Array<Record<string, unknown>>) {
+  const grouped = new Map<string, { contracts: number; netMv: number }>();
+  for (const row of rows) {
+    const symbol = String(row.symbol ?? "");
+    if (!symbol || symbol === "_FUTURES_ADJ_") continue;
+    const commodity = futuresCommodityKey(symbol);
+    const current = grouped.get(commodity) ?? { contracts: 0, netMv: 0 };
+    current.contracts += 1;
+    current.netMv += Number(row.market_value ?? 0);
+    grouped.set(commodity, current);
+  }
+  return Array.from(grouped.entries())
+    .map(([Commodity, value]) => ({ Commodity, Contracts: value.contracts, Net_MV: value.netMv }))
+    .sort((a, b) => Math.abs(Number(b.Net_MV)) - Math.abs(Number(a.Net_MV)));
+}
+
+function futuresCommodityKey(symbol: string) {
+  if (symbol.startsWith("/VXM")) return symbol;
+  const match = symbol.match(/(\/[A-Z]+)(?=[A-Z]\d{2})/);
+  return match ? match[1] : symbol;
 }
