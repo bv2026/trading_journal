@@ -212,33 +212,6 @@ def _cmd_health(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_dashboard_launch(args: argparse.Namespace) -> int:
-    app = ROOT / "dashboard" / "app.py"
-    if not app.exists():
-        _print_json(_receipt(
-            operation="dashboard.launch",
-            status="error",
-            message="dashboard/app.py not found.",
-        ))
-        return 1
-
-    cmd = [sys.executable, "-m", "streamlit", "run", str(app), "--server.headless", "true"]
-    kwargs: dict[str, Any] = {
-        "cwd": str(ROOT),
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-        "stdin": subprocess.DEVNULL,
-    }
-    if sys.platform == "win32":
-        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-    subprocess.Popen(cmd, **kwargs)
-    _print_json(_receipt(
-        operation="dashboard.launch",
-        url=args.url,
-    ))
-    return 0
-
-
 def _cmd_dashboard_next(args: argparse.Namespace) -> int:
     ui_dir = ROOT / "ui"
     if not (ui_dir / "package.json").exists():
@@ -404,9 +377,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     dashboard = sub.add_parser("dashboard", help="Dashboard commands")
     dashboard_sub = dashboard.add_subparsers(dest="dashboard_command", required=True)
-    dashboard_launch = dashboard_sub.add_parser("launch", help="Launch Streamlit dashboard")
-    dashboard_launch.add_argument("--url", default="http://localhost:8501")
-    dashboard_launch.set_defaults(func=_cmd_dashboard_launch)
     dashboard_next = dashboard_sub.add_parser("next", help="Launch Next.js dashboard (API + UI)")
     dashboard_next.add_argument("--api-host", default="127.0.0.1")
     dashboard_next.add_argument("--api-port", type=int, default=8000)

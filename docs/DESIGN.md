@@ -3,7 +3,7 @@
 ## Overview
 
 Personal portfolio tracker consolidating brokerage activity and live positions
-across 11 accounts into a single SQLite database, with a Streamlit dashboard
+across 11 accounts into a single SQLite database, with a Next.js dashboard
 and Claude Desktop MCP integration.
 
 ---
@@ -341,7 +341,7 @@ Each fetcher normalizes a single broker's API responses into DB-ready record dic
 
 ---
 
-## Dashboard (`dashboard/app.py`)
+## Dashboard (`ui/app/page.tsx`)
 
 ### Tabs
 
@@ -376,7 +376,7 @@ FastMCP server. Registered tools:
 | `get_performance` | read | Return % at 1W / 1M / 3M / YTD / 1Y |
 | `refresh_positions` | write | Fetch from broker APIs â†’ normalize â†’ write to DB |
 | `run_ingest` | write | Re-run CSV ingest pipeline |
-| `launch_dashboard` | action | Start Streamlit in background |
+| `dashboard.next` | action | Start Streamlit in background |
 
 ### `refresh_positions` flow
 

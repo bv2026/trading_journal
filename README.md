@@ -53,7 +53,7 @@ writes today's journal snapshot.
 
 ### Streamlit (current active UI)
 
-`http://localhost:8501` — eight tabs:
+`http://localhost:3000` — eight tabs:
 
 | Tab | Contents |
 |-----|----------|
@@ -103,7 +103,7 @@ trading-journal/
 â”‚       â”œâ”€â”€ robinhood.py
 â”‚       â””â”€â”€ schwab.py
 â”œâ”€â”€ dashboard/
-â”‚   â””â”€â”€ app.py              Streamlit dashboard
+â”‚   â””â”€â”€ app.py              Next.js dashboard
 â”œâ”€â”€ src/
 â”‚   â”œâ”€â”€ api/                FastAPI read-only backend
 â”‚   â”‚   â””â”€â”€ main.py         12 endpoints over the service layer
@@ -178,8 +178,8 @@ pip install -r requirements.txt
 # 3. Ingest
 python -m src.ingest
 
-# 4. Launch Streamlit dashboard
-streamlit run dashboard/app.py
+# 4. Launch Next.js dashboard
+python -m src.cli.main dashboard next --reload
 
 # Or launch Next.js dashboard (API + UI in one command)
 python -m src.cli.main dashboard next --reload
@@ -225,7 +225,7 @@ python -m src.cli.robinhood --logout-robinhood --profile bv
 `--link-robinhood` prompts for the Robinhood password at runtime and never
 writes it to disk.
 
-Streamlit dashboard runs at `http://localhost:8501`.
+Next.js dashboard runs at `http://localhost:3000`.
 Next.js dashboard runs at `http://localhost:3000` (API at `http://localhost:8000`).
 
 See [USAGE.md](docs/USAGE.md) for full details on file formats, MCP setup, and

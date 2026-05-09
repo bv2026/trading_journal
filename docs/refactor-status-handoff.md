@@ -7,7 +7,7 @@ Date: 2026-05-09
 Phase 8 (FastAPI + Next.js) is feature-complete for read-only parity. The
 service-layer refactor landed at `8b1bbfd`; the latest Phase 8 commit is
 `047ed93`. A read-only FastAPI backend and a polished Next.js dashboard exist
-side-by-side with the existing Streamlit dashboard. Streamlit remains the
+side-by-side with the existing Next.js dashboard. Streamlit remains the
 active UI until write workflows (Broker MCP, Settings) are decided.
 
 The interactive CLI (`python -m src.journal_cli`) now has a working "Launch
@@ -69,16 +69,16 @@ python -m src.cli.main account cash set
 python -m src.cli.main account margin get
 python -m src.cli.main account margin set
 python -m src.cli.main health
-python -m src.cli.main dashboard launch
+python -m src.cli.main dashboard next
 python -m src.cli.main dashboard capabilities
 ```
 
 The interactive CLI (`python -m src.journal_cli`) housekeeping menu includes:
 
-- Option 6: Launch Streamlit dashboard (auto-opens browser)
+- Option 6: Launch Next.js dashboard (auto-opens browser)
 - Option 7: Launch Next.js dashboard (kills stale processes, waits for
   API + UI readiness, auto-opens browser)
-- Option 8: Stop dashboard (kills Streamlit, API, and Next.js processes)
+- Option 8: Stop dashboard (kills API and Next.js processes)
 
 Legacy CLIs were intentionally preserved:
 
@@ -141,7 +141,7 @@ Extracted calculation-heavy tabs into services:
 - `src/services/dashboard_positions.py`
 - `src/services/dashboard_performance.py`
 
-The active Streamlit dashboard still exposes the same eight top-level tabs:
+The active Next.js dashboard still exposes the same eight top-level tabs:
 
 1. Portfolio
 2. Yearly Summary
@@ -288,7 +288,7 @@ npm run build
 
 ## Intentional Non-Extraction
 
-Broker MCP and Settings remain in `dashboard/app.py` for now.
+Broker MCP and Settings remain in `ui/app/page.tsx` for now.
 
 Rationale:
 
@@ -322,7 +322,7 @@ flowchart TD
     LegacyCLI["Legacy CLIs"]
     UnifiedCLI["src.cli.main"]
     MCP["src.mcp_server"]
-    Dashboard["dashboard/app.py"]
+    Dashboard["ui/app/page.tsx"]
     API["src.api.main"]
     NextUI["ui/ Next.js"]
     Services["src/services/*"]
@@ -374,7 +374,7 @@ feature-complete.
    flows in CLI/MCP until explicit write workflows are designed and tested.
 2. ~~Add frontend tests or a lightweight browser smoke script~~ — done:
    `tests/smoke_ui.py` (15 checks covering all API endpoints and UI rendering).
-3. Keep Streamlit active until the new UI reaches verified capability parity.
+3. Keep Next.js as the primary UI and continue closing remaining parity gaps.
 4. ~~Review line-ending-only local noise~~ — confirmed clean, no accidental changes.
 5. Add column sorting to Next.js DataTable component. Streamlit tables support
    click-to-sort on any column header; the Next.js tables are currently static.
@@ -399,7 +399,7 @@ yearly summary, performance returns). No calculation divergence.
 ## Verification Commands Used
 
 ```bash
-rtk python -m py_compile dashboard/app.py src/services/*.py
+rtk python -m py_compile ui/app/page.tsx src/services/*.py
 rtk python -m py_compile src/api/main.py src/api/__init__.py
 rtk python -m src.cli.main dashboard capabilities
 rtk python -m src.cli.main dashboard next --help

@@ -754,22 +754,6 @@ def _run_command(label: str, args: list[str], *, pause: bool = True) -> int:
     return result.returncode
 
 
-def _launch_dashboard() -> None:
-    print("\nLaunching dashboard at http://localhost:8501 ...")
-    args = [sys.executable, "-m", "streamlit", "run", "dashboard/app.py"]
-    kwargs: dict = {
-        "cwd": REPO_ROOT,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-        "stdin": subprocess.DEVNULL,
-    }
-    if sys.platform == "win32":
-        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-    subprocess.Popen(args, **kwargs)
-    print("Dashboard launch requested. Open http://localhost:8501 if it does not open automatically.")
-    input("Press Enter to continue...")
-
-
 def _kill_next_dashboard() -> None:
     """Kill any existing API/Next.js processes before launching."""
     if sys.platform != "win32":
@@ -848,7 +832,6 @@ def _stop_dashboard() -> None:
     command = (
         "Get-CimInstance Win32_Process | "
         "Where-Object { "
-        "($_.CommandLine -match 'streamlit' -and $_.CommandLine -match 'dashboard[/\\\\]app\\.py') -or "
         "($_.CommandLine -match 'uvicorn' -and $_.CommandLine -match 'src\\.api\\.main') -or "
         "($_.CommandLine -match 'next' -and $_.CommandLine -match 'dev.*-p.*3000') "
         "} | "
@@ -868,10 +851,9 @@ def housekeeping_menu() -> None:
         print("3. Write snapshot only")
         print("4. Sync Coinbase")
         print("5. Dry-run Coinbase sync")
-        print("6. Launch Streamlit dashboard")
-        print("7. Launch Next.js dashboard")
-        print("8. Stop dashboard")
-        print("9. Run tests")
+        print("6. Launch Next.js dashboard")
+        print("7. Stop dashboard")
+        print("8. Run tests")
         print("0. Back")
 
         choice = input("Select: ").strip()
@@ -890,15 +872,13 @@ def housekeeping_menu() -> None:
         elif choice == "5":
             _run_command("Dry-run Coinbase sync", [sys.executable, "scripts/sync_coinbase.py", "--dry-run"])
         elif choice == "6":
-            _launch_dashboard()
-        elif choice == "7":
             _launch_next_dashboard()
-        elif choice == "8":
+        elif choice == "7":
             _stop_dashboard()
-        elif choice == "9":
+        elif choice == "8":
             _run_command("Run tests", [sys.executable, "-m", "pytest", "tests/", "-q"])
         else:
-            print("Choose 0-9.")
+            print("Choose 0-8.")
 
 
 def _prompt_date(label: str, default: date) -> str | None:

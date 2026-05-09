@@ -4,7 +4,7 @@
 
 - Python 3.11+
 - Dependencies installed: `pip install -r requirements.txt`
-  (includes `mcp>=1.0.0`, `yfinance>=0.2.0`, `streamlit`, `plotly`, `pandas`)
+  (includes `mcp>=1.0.0`, `yfinance>=0.2.0`, `plotly`, `pandas`)
 
 ---
 
@@ -134,11 +134,11 @@ Writing portfolio snapshot …
 ## 4. Launch the dashboard
 
 ```bash
-streamlit run dashboard/app.py
+python -m src.cli.main dashboard next --reload
 # Or use python -m src.journal_cli -> Housekeeping -> Launch dashboard
 ```
 
-Opens at `http://localhost:8501`. Click **Refresh** in the sidebar after re-ingesting.
+Opens at `http://localhost:3000`. Click **Refresh** in the sidebar after re-ingesting.
 
 ---
 
@@ -318,7 +318,7 @@ refreshing positions directly from broker APIs.
 | `get_performance` | Account-level returns: 1W / 1M / 3M / YTD / 1Y |
 | `refresh_positions` | Fetch live positions from broker APIs and write to DB |
 | `run_ingest` | Re-run the CSV ingest pipeline |
-| `launch_dashboard` | Start the Streamlit dashboard in the background |
+| `dashboard.next` | Start the Next.js dashboard in the background |
 
 ### `refresh_positions` parameters
 

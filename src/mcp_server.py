@@ -15,7 +15,6 @@ Tools:
   set_margin             — directly set margin balance for an account
   refresh_positions      — fetch live positions from broker APIs and write to DB
   run_ingest             — re-load all broker CSVs into the database
-  launch_dashboard       — start the Streamlit dashboard
 """
 
 import sys
@@ -572,38 +571,6 @@ def refresh_positions(
         margin_mode=margin_mode,
         warnings=warnings,
         errors=errors,
-    )
-
-
-@mcp.tool()
-def launch_dashboard() -> str:
-    """
-    Launch the Streamlit dashboard in the background and open it in the
-    default browser at http://localhost:8501.
-    """
-    import webbrowser
-
-    app = ROOT / "dashboard" / "app.py"
-    if not app.exists():
-        return _json_response(
-            operation="dashboard.launch",
-            status="error",
-            message="dashboard/app.py not found.",
-            errors=["dashboard/app.py not found."],
-        )
-
-    subprocess.Popen(
-        [sys.executable, "-m", "streamlit", "run", str(app),
-         "--server.headless", "true"],
-        cwd=str(ROOT),
-        creationflags=subprocess.DETACHED_PROCESS if sys.platform == "win32" else 0,
-    )
-
-    webbrowser.open("http://localhost:8501")
-    return _json_response(
-        operation="dashboard.launch",
-        message="Dashboard launched.",
-        url="http://localhost:8501",
     )
 
 

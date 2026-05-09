@@ -19,7 +19,7 @@ python -m src.cash              # print current balance
 python -m src.cash 18500        # set balance
 
 # Launch dashboard (Streamlit — current active UI)
-streamlit run dashboard/app.py         # http://localhost:8501
+python -m src.cli.main dashboard next --reload         # http://localhost:3000
 
 # Launch dashboard (Next.js — new UI, read-only)
 python -m src.cli.main dashboard next --reload   # API :8000 + UI :3000
@@ -122,7 +122,7 @@ Margin accuracy by broker:
 
 ## Dashboard — Portfolio tab layout
 
-The Portfolio tab (first tab in `dashboard/app.py`) renders in this order:
+The Portfolio tab (first tab in `ui/app/page.tsx`) renders in this order:
 1. **Net Worth banner** — total net worth KPI row (equity + options + futures + crypto + cash − margin)
 2. **Account Summary** — 6 columns: Account, Broker, Market Value, Cost Basis, Margin, Net Equity; one row per account + CASH row at bottom; CASH row has Market Value = Cost Basis (zero P/L)
 3. **Asset Class Breakdown** — Stocks / Options / Futures / Crypto / Cash rows + TOTAL, with Allocation %

@@ -1,6 +1,6 @@
 # Dashboard Capability Parity
 
-This checklist captures the current Streamlit dashboard behavior that must be
+This checklist captures the current Next.js dashboard behavior that must be
 preserved as the app is refactored into shared services, CLI receipts, MCP
 tools, or a replacement UI.
 
@@ -101,7 +101,7 @@ The UI may change, but the workflow should not disappear.
 
 ## Migration Rule
 
-Before replacing or removing the existing Streamlit dashboard, run:
+Before replacing or removing the existing Next.js dashboard, run:
 
 ```bash
 pytest tests/unit/test_dashboard_capabilities.py tests/unit/test_cli_main.py -q

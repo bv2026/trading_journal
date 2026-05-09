@@ -199,11 +199,13 @@ function DataTable({
   columns,
   capped = false,
   totalRowLabel = "TOTAL",
+  loading = false,
 }: {
   rows: Array<Record<string, unknown>>;
   columns: string[];
   capped?: boolean;
   totalRowLabel?: string;
+  loading?: boolean;
 }) {
   const [sortColumn, setSortColumn] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
@@ -215,6 +217,9 @@ function DataTable({
     return sorted;
   }, [rows, sortColumn, sortDirection]);
 
+  if (loading) {
+    return <div className="empty">Loading…</div>;
+  }
   if (!rows.length) {
     return <div className="empty">No rows</div>;
   }
@@ -394,6 +399,7 @@ export default function Home() {
   const [accountSummary, setAccountSummary] = useState<ApiReceipt<MetricsRow[]> | null>(null);
   const [capabilities, setCapabilities] = useState<ApiReceipt<CapabilityPayload> | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
   const [positionBrokerFilter, setPositionBrokerFilter] = useState<string>("ALL");
   const [txCategory, setTxCategory] = useState<string>("ALL");
   const [txBroker, setTxBroker] = useState<string>("ALL");
@@ -406,6 +412,7 @@ export default function Home() {
   useEffect(() => {
     let cancelled = false;
     async function load() {
+      setLoading(true);
       try {
         const [
           summaryData,
@@ -442,10 +449,12 @@ export default function Home() {
           setAccountSummary(accountSummaryData);
           setCapabilities(capabilityData);
           setError(null);
+          setLoading(false);
         }
       } catch (loadError) {
         if (!cancelled) {
           setError(loadError instanceof Error ? loadError.message : "Failed to load API data");
+          setLoading(false);
         }
       }
     }
@@ -571,20 +580,22 @@ export default function Home() {
               <KpiRow data={dashboardPortfolio?.data?.transaction_kpis} />
             </Panel>
             <Panel title="Account Summary">
-              <DataTable
+                <DataTable
                 rows={dashboardPortfolio?.data?.account_summary ?? []}
                 columns={["Account", "Broker", "Market Value", "Cost Basis", "Margin", "Net Equity"]}
+                loading={loading}
               />
             </Panel>
             <Panel title="Asset Class Breakdown">
-              <DataTable
+                <DataTable
                 rows={withMarginAssetClass(dashboardPortfolio?.data?.asset_class_breakdown ?? assetRows, dashboardPortfolio?.data?.net_worth?.margin)}
                 columns={["Asset Class", "Market Value", "Allocation"]}
+                loading={loading}
               />
             </Panel>
             <Panel title="Sector Allocation">
               <SectorPie rows={sectorRows} />
-              <DataTable rows={sectorRows} columns={["sector", "MARKET VALUE"]} />
+              <DataTable rows={sectorRows} columns={["sector", "MARKET VALUE"]} loading={loading} />
             </Panel>
           </div>
         ) : null}
@@ -592,15 +603,16 @@ export default function Home() {
         {activeTab === "yearly" ? (
           <div className="stack">
             <Panel title="Year-over-Year Summary">
-              <DataTable rows={yearlyDashboardRows} columns={columnsFromRows(yearlyDashboardRows, ["Metric", "ALL"])} />
+                <DataTable rows={yearlyDashboardRows} columns={columnsFromRows(yearlyDashboardRows, ["Metric", "ALL"])} loading={loading} />
             </Panel>
             <Panel title="Income Breakdown by Type">
-              <DataTable rows={incomeBreakdownRows} columns={columnsFromRows(incomeBreakdownRows, ["Type", "ALL"])} />
+              <DataTable rows={incomeBreakdownRows} columns={columnsFromRows(incomeBreakdownRows, ["Type", "ALL"])} loading={loading} />
             </Panel>
             <Panel title={`${yearlyRows.length.toLocaleString()} Canonical Year Rows`}>
               <DataTable
                 rows={yearlyRows}
                 columns={["label", "net_cash_flow", "dividends", "rewards", "margin_interest", "fees", "net_income"]}
+                loading={loading}
               />
             </Panel>
           </div>
@@ -609,13 +621,13 @@ export default function Home() {
         {activeTab === "account" ? (
           <div className="stack">
             <Panel title="Net Cash Flow by Account">
-              <DataTable rows={byAccountData?.net_cash_flow ?? []} columns={columnsFromRows(byAccountData?.net_cash_flow ?? [], ["Account", "ALL"])} />
+              <DataTable rows={byAccountData?.net_cash_flow ?? []} columns={columnsFromRows(byAccountData?.net_cash_flow ?? [], ["Account", "ALL"])} loading={loading} />
             </Panel>
             <Panel title="Div + Rewards by Account">
-              <DataTable rows={byAccountData?.div_rewards ?? []} columns={columnsFromRows(byAccountData?.div_rewards ?? [], ["Account", "ALL"])} />
+              <DataTable rows={byAccountData?.div_rewards ?? []} columns={columnsFromRows(byAccountData?.div_rewards ?? [], ["Account", "ALL"])} loading={loading} />
             </Panel>
             <Panel title="Margin + Fees by Account">
-              <DataTable rows={byAccountData?.margin_fees ?? []} columns={columnsFromRows(byAccountData?.margin_fees ?? [], ["Account", "ALL"])} />
+              <DataTable rows={byAccountData?.margin_fees ?? []} columns={columnsFromRows(byAccountData?.margin_fees ?? [], ["Account", "ALL"])} loading={loading} />
             </Panel>
             <div className="metricsGrid compact">
               <Metric label="Crypto Total In" value={currency(byAccountData?.crypto_flow.total_in)} />
@@ -624,10 +636,10 @@ export default function Home() {
               <Metric label="Accounts" value={accountRows.length.toLocaleString()} />
             </div>
             <Panel title="Crypto Flow Inflows">
-              <DataTable rows={byAccountData?.crypto_flow.inflows ?? []} columns={["Type", "Amount", "Txns"]} />
+              <DataTable rows={byAccountData?.crypto_flow.inflows ?? []} columns={["Type", "Amount", "Txns"]} loading={loading} />
             </Panel>
             <Panel title="Crypto Flow Outflows">
-              <DataTable rows={byAccountData?.crypto_flow.outflows ?? []} columns={["Type", "Amount", "Txns"]} />
+              <DataTable rows={byAccountData?.crypto_flow.outflows ?? []} columns={["Type", "Amount", "Txns"]} loading={loading} />
             </Panel>
           </div>
         ) : null}
@@ -667,18 +679,18 @@ export default function Home() {
                 <details key={account} open>
                   <summary>{account} ({rows.length})</summary>
                   <Panel title={`${activePositionConfig.label} - ${account}`}>
-                    <DataTable rows={rows} columns={[...activePositionConfig.columns]} capped />
+                    <DataTable rows={rows} columns={[...activePositionConfig.columns]} capped loading={loading} />
                   </Panel>
                 </details>
               ))
             ) : (
               <Panel title={`${normalizedDisplayRows.length.toLocaleString()} ${activePositionConfig.label} Positions`}>
-                <DataTable rows={normalizedDisplayRows} columns={[...activePositionConfig.columns]} capped />
+                <DataTable rows={normalizedDisplayRows} columns={[...activePositionConfig.columns]} capped loading={loading} />
               </Panel>
             )}
             {activePositionTab === "futures" ? (
               <Panel title="Futures by Commodity">
-                <DataTable rows={dashboardPortfolio?.data?.futures_by_commodity ?? []} columns={["Commodity", "Contracts", "Net_MV"]} />
+                <DataTable rows={dashboardPortfolio?.data?.futures_by_commodity ?? []} columns={["Commodity", "Contracts", "Net_MV"]} loading={loading} />
               </Panel>
             ) : null}
             {activePositionTab === "equity" ? (
@@ -686,6 +698,7 @@ export default function Home() {
                 <DataTable
                   rows={filteredSectorSummaryRows}
                   columns={["sector", "Market_Value", "Total_Cost", "PnL", "Alloc_%", "Return_%", "Dividends"]}
+                  loading={loading}
                 />
               </Panel>
             ) : null}
@@ -694,6 +707,7 @@ export default function Home() {
                 <DataTable
                   rows={filteredSectorSummaryRows}
                   columns={["sector", "Market_Value", "Total_Cost", "PnL", "Alloc_%", "Return_%", "Dividends"]}
+                  loading={loading}
                 />
               </Panel>
             ) : null}
@@ -712,6 +726,7 @@ export default function Home() {
             <DataTable
               rows={transactionFilteredRows}
               columns={["date", "account_id", "broker", "category", "amount", "symbol", "description"]}
+              loading={loading}
             />
           </Panel>
         ) : null}
@@ -719,23 +734,23 @@ export default function Home() {
         {activeTab === "performance" ? (
           <div className="stack">
             <Panel title="Portfolio Summary">
-              <DataTable rows={performanceSummaryRows} columns={["Account", "Current Value", "1W Ago", "$ Change", "% Change"]} />
+              <DataTable rows={performanceSummaryRows} columns={["Account", "Current Value", "1W Ago", "$ Change", "% Change"]} loading={loading} />
             </Panel>
             <Panel title="Portfolio Returns">
-              <DataTable rows={performanceReturnRows} columns={["Account", "1-Week", "1-Month", "3-Month", "YTD", "1-Year"]} />
+              <DataTable rows={performanceReturnRows} columns={["Account", "1-Week", "1-Month", "3-Month", "YTD", "1-Year"]} loading={loading} />
             </Panel>
           </div>
         ) : null}
 
         {activeTab === "broker" ? (
           <Panel title="Broker MCP">
-            <DataTable rows={capabilityRows(capabilities, "Broker MCP")} columns={["capability", "source"]} />
+            <DataTable rows={capabilityRows(capabilities, "Broker MCP")} columns={["capability", "source"]} loading={loading} />
           </Panel>
         ) : null}
 
         {activeTab === "settings" ? (
           <Panel title="Settings">
-            <DataTable rows={capabilityRows(capabilities, "Settings")} columns={["capability", "source"]} />
+            <DataTable rows={capabilityRows(capabilities, "Settings")} columns={["capability", "source"]} loading={loading} />
           </Panel>
         ) : null}
       </section>
@@ -881,12 +896,19 @@ function SectorPie({ rows }: { rows: Array<Record<string, unknown>> }) {
 
 function withMarginAssetClass(rows: Array<Record<string, unknown>>, marginValue: unknown) {
   const margin = Number(marginValue ?? 0);
-  if (!Number.isFinite(margin) || margin === 0) return rows;
-  const nextRows = [...rows];
-  nextRows.push({
+  const nextRows = rows.filter((row) => String(row["Asset Class"] ?? "").toUpperCase() !== "TOTAL");
+  if (Number.isFinite(margin) && margin !== 0) {
+    nextRows.push({
     "Asset Class": "Margin",
     "Market Value": -Math.abs(margin),
     "Allocation": 0,
+    });
+  }
+  const total = nextRows.reduce((acc, row) => acc + Number(row["Market Value"] ?? 0), 0);
+  nextRows.push({
+    "Asset Class": "TOTAL",
+    "Market Value": total,
+    "Allocation": 100,
   });
   return nextRows;
 }
