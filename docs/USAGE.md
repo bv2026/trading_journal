@@ -136,6 +136,25 @@ Writing portfolio snapshot …
 ```bash
 python -m src.cli.main dashboard next --reload
 # Or use python -m src.journal_cli -> Housekeeping -> Launch dashboard
+
+### Windows process cleanup (zombie API/UI/MCP processes)
+
+If ports are stuck or dashboard/API behaves inconsistently, use:
+
+```powershell
+# Preview what will be killed
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\kill_not_needed.ps1
+
+# Kill matched unneeded python/node processes
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\kill_not_needed.ps1 -Apply
+```
+
+This script targets stale `uvicorn`/`next dev` and known MCP helper processes
+used during journal workflows, then prints what remains.
+
+Execution policy note:
+- Use `-ExecutionPolicy Bypass` on the command line as shown above.
+- This avoids changing your machine-wide policy.
 ```
 
 Opens at `http://localhost:3000`. Click **Refresh** in the sidebar after re-ingesting.
