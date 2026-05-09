@@ -477,6 +477,11 @@ export default function Home() {
       return assetMatch && brokerMatch;
     });
   }, [positionRows, activePositionTab, positionBrokerFilter]);
+  const displayPositionRows = useMemo(() => {
+    if (positionBrokerFilter !== "ALL") return filteredPositionRows;
+    return consolidatePositionsBySymbol(filteredPositionRows, activePositionTab);
+  }, [filteredPositionRows, positionBrokerFilter, activePositionTab]);
+  const normalizedDisplayRows = useMemo(() => displayPositionRows.map(normalizeCoinbaseSector), [displayPositionRows]);
   const transactionFilteredRows = useMemo(() => {
     return transactionRows.filter((row) => {
       const date = String(row.date ?? "");
@@ -501,6 +506,13 @@ export default function Home() {
   const txYears = Array.from(new Set(transactionRows.map((row) => String(row.date ?? "").slice(0, 4)).filter(Boolean))).sort().reverse();
   const positionBrokerOptions = Array.from(new Set(positionRows.map((row) => String(row.broker ?? row.account_id ?? "")).filter(Boolean))).sort();
   const sectorRows = dashboardPortfolio?.data?.sector_allocation ?? [];
+  const filteredSectorSummaryRows = useMemo(() => {
+    if (activePositionTab === "equity") return buildSectorSummary(normalizedDisplayRows);
+    if (positionBrokerFilter === "COINBASE" && (activePositionTab === "crypto" || activePositionTab === "futures")) {
+      return buildSectorSummary(normalizedDisplayRows);
+    }
+    return [];
+  }, [activePositionTab, positionBrokerFilter, normalizedDisplayRows]);
 
   return (
     <main>
@@ -566,29 +578,13 @@ export default function Home() {
             </Panel>
             <Panel title="Asset Class Breakdown">
               <DataTable
-                rows={dashboardPortfolio?.data?.asset_class_breakdown ?? assetRows}
+                rows={withMarginAssetClass(dashboardPortfolio?.data?.asset_class_breakdown ?? assetRows, dashboardPortfolio?.data?.net_worth?.margin)}
                 columns={["Asset Class", "Market Value", "Allocation"]}
               />
-            </Panel>
-            <Panel title="Futures by Commodity">
-              <DataTable rows={dashboardPortfolio?.data?.futures_by_commodity ?? []} columns={["Commodity", "Contracts", "Net_MV"]} />
             </Panel>
             <Panel title="Sector Allocation">
               <SectorPie rows={sectorRows} />
               <DataTable rows={sectorRows} columns={["sector", "MARKET VALUE"]} />
-            </Panel>
-            <Panel title={`Positions by Account (${(dashboardPortfolio?.data?.positions_by_account ?? []).length} rows)`}>
-              <DataTable
-                rows={(dashboardPortfolio?.data?.positions_by_account ?? []).slice(0, 75)}
-                columns={["Account", "Ticker", "Name", "TYPE", "sector", "Shares", "PRICE", "COST", "MARKET VALUE", "totalReturn"]}
-                capped
-              />
-            </Panel>
-            <Panel title="Sector Summary">
-              <DataTable
-                rows={dashboardPortfolio?.data?.sector_summary ?? []}
-                columns={["sector", "Market_Value", "Total_Cost", "PnL", "Alloc_%", "Return_%", "Dividends"]}
-              />
             </Panel>
           </div>
         ) : null}
@@ -662,12 +658,12 @@ export default function Home() {
             </div>
             <div className="metricsGrid compact">
               <Metric label="All Positions" value={positionRows.length.toLocaleString()} />
-              <Metric label={`${activePositionConfig.label} Rows`} value={filteredPositionRows.length.toLocaleString()} />
-              <Metric label="Market Value" value={currency(sumRows(filteredPositionRows, "market_value"))} />
-              <Metric label="Unrealized P/L" value={currency(sumRows(filteredPositionRows, "unrealized_pnl"))} />
+              <Metric label={`${activePositionConfig.label} Rows`} value={normalizedDisplayRows.length.toLocaleString()} />
+              <Metric label="Market Value" value={currency(sumRows(normalizedDisplayRows, "market_value"))} />
+              <Metric label="Unrealized P/L" value={currency(sumRows(normalizedDisplayRows, "unrealized_pnl"))} />
             </div>
-            {activePositionTab === "options" || activePositionTab === "futures" ? (
-              groupByAccount(filteredPositionRows).map(([account, rows]) => (
+            {(activePositionTab === "options" || activePositionTab === "futures") && positionBrokerFilter !== "ALL" ? (
+              groupByAccount(normalizedDisplayRows).map(([account, rows]) => (
                 <details key={account} open>
                   <summary>{account} ({rows.length})</summary>
                   <Panel title={`${activePositionConfig.label} - ${account}`}>
@@ -676,10 +672,31 @@ export default function Home() {
                 </details>
               ))
             ) : (
-              <Panel title={`${filteredPositionRows.length.toLocaleString()} ${activePositionConfig.label} Positions`}>
-                <DataTable rows={filteredPositionRows} columns={[...activePositionConfig.columns]} capped />
+              <Panel title={`${normalizedDisplayRows.length.toLocaleString()} ${activePositionConfig.label} Positions`}>
+                <DataTable rows={normalizedDisplayRows} columns={[...activePositionConfig.columns]} capped />
               </Panel>
             )}
+            {activePositionTab === "futures" ? (
+              <Panel title="Futures by Commodity">
+                <DataTable rows={dashboardPortfolio?.data?.futures_by_commodity ?? []} columns={["Commodity", "Contracts", "Net_MV"]} />
+              </Panel>
+            ) : null}
+            {activePositionTab === "equity" ? (
+              <Panel title="Sector Summary">
+                <DataTable
+                  rows={filteredSectorSummaryRows}
+                  columns={["sector", "Market_Value", "Total_Cost", "PnL", "Alloc_%", "Return_%", "Dividends"]}
+                />
+              </Panel>
+            ) : null}
+            {positionBrokerFilter === "COINBASE" && (activePositionTab === "crypto" || activePositionTab === "futures") ? (
+              <Panel title="Sector Summary">
+                <DataTable
+                  rows={filteredSectorSummaryRows}
+                  columns={["sector", "Market_Value", "Total_Cost", "PnL", "Alloc_%", "Return_%", "Dividends"]}
+                />
+              </Panel>
+            ) : null}
           </div>
         ) : null}
 
@@ -797,6 +814,30 @@ function groupByAccount(rows: Array<Record<string, unknown>>) {
   return Array.from(map.entries());
 }
 
+function consolidatePositionsBySymbol(rows: Array<Record<string, unknown>>, assetTab: PositionTabId) {
+  const grouped = new Map<string, Record<string, unknown>>();
+  for (const row of rows) {
+    const key = String(row.symbol ?? "");
+    if (!key) continue;
+    const existing = grouped.get(key);
+    if (!existing) {
+      grouped.set(key, { ...row, account_id: "ALL" });
+      continue;
+    }
+    for (const [k, v] of Object.entries(row)) {
+      if (["quantity", "cost_basis", "market_value", "unrealized_pnl"].includes(k)) {
+        existing[k] = Number(existing[k] ?? 0) + Number(v ?? 0);
+      }
+    }
+    if (assetTab === "equity" || assetTab === "crypto") {
+      const qty = Number(existing.quantity ?? 0);
+      const mv = Number(existing.market_value ?? 0);
+      existing.price = qty !== 0 ? mv / qty : existing.price;
+    }
+  }
+  return Array.from(grouped.values());
+}
+
 function downloadCsv(rows: Array<Record<string, unknown>>, filename: string) {
   if (!rows.length) return;
   const columns = Array.from(new Set(rows.flatMap((r) => Object.keys(r))));
@@ -836,4 +877,62 @@ function SectorPie({ rows }: { rows: Array<Record<string, unknown>> }) {
       </svg>
     </div>
   );
+}
+
+function withMarginAssetClass(rows: Array<Record<string, unknown>>, marginValue: unknown) {
+  const margin = Number(marginValue ?? 0);
+  if (!Number.isFinite(margin) || margin === 0) return rows;
+  const nextRows = [...rows];
+  nextRows.push({
+    "Asset Class": "Margin",
+    "Market Value": -Math.abs(margin),
+    "Allocation": 0,
+  });
+  return nextRows;
+}
+
+function buildSectorSummary(rows: Array<Record<string, unknown>>) {
+  const groups = new Map<string, { market: number; cost: number; dividends: number }>();
+  for (const row of rows) {
+    const sector = String(row.sector ?? "Other");
+    const market = Number(row.market_value ?? 0);
+    const cost = Number(row.cost_basis ?? 0);
+    const dividends = Number(row.dividends ?? 0);
+    const current = groups.get(sector) ?? { market: 0, cost: 0, dividends: 0 };
+    current.market += Number.isFinite(market) ? market : 0;
+    current.cost += Number.isFinite(cost) ? cost : 0;
+    current.dividends += Number.isFinite(dividends) ? dividends : 0;
+    groups.set(sector, current);
+  }
+  const totalMarket = Array.from(groups.values()).reduce((acc, g) => acc + g.market, 0);
+  return Array.from(groups.entries())
+    .map(([sector, value]) => {
+      const pnl = value.market - value.cost;
+      return {
+        sector,
+        Market_Value: value.market,
+        Total_Cost: value.cost,
+        PnL: pnl,
+        "Alloc_%": totalMarket !== 0 ? (value.market / totalMarket) * 100 : 0,
+        "Return_%": value.cost !== 0 ? (pnl / value.cost) * 100 : 0,
+        Dividends: value.dividends,
+      };
+    })
+    .sort((a, b) => Number(b.Market_Value) - Number(a.Market_Value));
+}
+
+function normalizeCoinbaseSector(row: Record<string, unknown>) {
+  const account = String(row.account_id ?? "");
+  if (account !== "COINBASE") return row;
+  const symbol = String(row.symbol ?? "").toUpperCase();
+  const assetClass = String(row.asset_class ?? "").toLowerCase();
+  let sector = "Crypto Derivatives";
+  if (symbol === "USD" || symbol === "USDC") {
+    sector = "Cash";
+  } else if (assetClass === "crypto") {
+    sector = "Crypto Derivatives";
+  } else if (assetClass === "futures") {
+    sector = "Crypto Derivatives";
+  }
+  return { ...row, sector };
 }
