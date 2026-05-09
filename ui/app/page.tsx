@@ -198,14 +198,36 @@ function DataTable({
   rows,
   columns,
   capped = false,
+  totalRowLabel = "TOTAL",
 }: {
   rows: Array<Record<string, unknown>>;
   columns: string[];
   capped?: boolean;
+  totalRowLabel?: string;
 }) {
+  const [sortColumn, setSortColumn] = useState<string | null>(null);
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+
+  const sortedRows = useMemo(() => {
+    if (!sortColumn) return rows;
+    const sorted = [...rows];
+    sorted.sort((a, b) => compareValues(a[sortColumn], b[sortColumn], sortColumn, sortDirection));
+    return sorted;
+  }, [rows, sortColumn, sortDirection]);
+
   if (!rows.length) {
     return <div className="empty">No rows</div>;
   }
+
+  function onSort(col: string) {
+    if (sortColumn !== col) {
+      setSortColumn(col);
+      setSortDirection("asc");
+      return;
+    }
+    setSortDirection((prev) => (prev === "asc" ? "desc" : "asc"));
+  }
+
   return (
     <div className={`tableWrap${capped ? " capped" : ""}`}>
       <table>
@@ -213,14 +235,19 @@ function DataTable({
           <tr>
             {columns.map((col) => (
               <th key={col} className={isNumericColumn(col) ? "num" : ""}>
-                {prettyHeader(col)}
+                <button type="button" className="sortBtn" onClick={() => onSort(col)}>
+                  <span>{prettyHeader(col)}</span>
+                  <span className="sortGlyph" aria-hidden="true">
+                    {sortColumn === col ? (sortDirection === "asc" ? "▲" : "▼") : "↕"}
+                  </span>
+                </button>
               </th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, rowIndex) => (
-            <tr key={rowIndex}>
+          {sortedRows.map((row, rowIndex) => (
+            <tr key={rowIndex} className={isTotalRow(row, columns, totalRowLabel) ? "footer-row" : ""}>
               {columns.map((col) => {
                 const raw = row[col];
                 const num = Number(raw);
@@ -257,6 +284,38 @@ function DataTable({
       </table>
     </div>
   );
+}
+
+function isTotalRow(row: Record<string, unknown>, columns: string[], totalRowLabel?: string) {
+  const firstColumn = columns[0];
+  const value = String(row[firstColumn] ?? "").trim().toUpperCase();
+  const target = (totalRowLabel ?? "TOTAL").toUpperCase();
+  return value === target;
+}
+
+function compareValues(left: unknown, right: unknown, column: string, direction: "asc" | "desc") {
+  const leftMissing = left === null || left === undefined || left === "";
+  const rightMissing = right === null || right === undefined || right === "";
+  if (leftMissing && rightMissing) return 0;
+  if (leftMissing) return 1;
+  if (rightMissing) return -1;
+
+  let comparison = 0;
+  if (isNumericColumn(column)) {
+    const leftNumber = Number(left);
+    const rightNumber = Number(right);
+    const leftValid = Number.isFinite(leftNumber);
+    const rightValid = Number.isFinite(rightNumber);
+    if (leftValid && rightValid) {
+      comparison = leftNumber - rightNumber;
+    } else {
+      comparison = String(left).localeCompare(String(right), undefined, { sensitivity: "base" });
+    }
+  } else {
+    comparison = String(left).localeCompare(String(right), undefined, { sensitivity: "base" });
+  }
+
+  return direction === "asc" ? comparison : -comparison;
 }
 
 function formatCell(value: unknown) {
@@ -335,6 +394,14 @@ export default function Home() {
   const [accountSummary, setAccountSummary] = useState<ApiReceipt<MetricsRow[]> | null>(null);
   const [capabilities, setCapabilities] = useState<ApiReceipt<CapabilityPayload> | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [positionBrokerFilter, setPositionBrokerFilter] = useState<string>("ALL");
+  const [txCategory, setTxCategory] = useState<string>("ALL");
+  const [txBroker, setTxBroker] = useState<string>("ALL");
+  const [txYear, setTxYear] = useState<string>("ALL");
+  const [txSearch, setTxSearch] = useState<string>("");
+  const [dateFrom, setDateFrom] = useState<string>("");
+  const [dateTo, setDateTo] = useState<string>("");
+  const [includeTransfers, setIncludeTransfers] = useState<boolean>(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -402,10 +469,38 @@ export default function Home() {
     return Array.isArray(rows) ? (rows as Array<Record<string, unknown>>) : [];
   }, [positions]);
   const activePositionConfig = positionTabs.find((tab) => tab.id === activePositionTab) ?? positionTabs[0];
-  const filteredPositionRows = useMemo(
-    () => positionRows.filter((row) => String(row.asset_class ?? "").toLowerCase() === activePositionTab),
-    [positionRows, activePositionTab]
-  );
+  const filteredPositionRows = useMemo(() => {
+    return positionRows.filter((row) => {
+      const assetMatch = String(row.asset_class ?? "").toLowerCase() === activePositionTab;
+      const brokerValue = String(row.broker ?? row.account_id ?? "");
+      const brokerMatch = positionBrokerFilter === "ALL" || brokerValue === positionBrokerFilter;
+      return assetMatch && brokerMatch;
+    });
+  }, [positionRows, activePositionTab, positionBrokerFilter]);
+  const transactionFilteredRows = useMemo(() => {
+    return transactionRows.filter((row) => {
+      const date = String(row.date ?? "");
+      const category = String(row.category ?? "");
+      const broker = String(row.broker ?? "");
+      const description = String(row.description ?? "");
+      const symbol = String(row.symbol ?? "");
+      const text = `${description} ${symbol}`.toLowerCase();
+      const year = date.length >= 4 ? date.slice(0, 4) : "";
+      const fromMatch = !dateFrom || date >= dateFrom;
+      const toMatch = !dateTo || date <= dateTo;
+      const categoryMatch = txCategory === "ALL" || category === txCategory;
+      const brokerMatch = txBroker === "ALL" || broker === txBroker;
+      const yearMatch = txYear === "ALL" || year === txYear;
+      const searchMatch = !txSearch.trim() || text.includes(txSearch.trim().toLowerCase());
+      const transferMatch = includeTransfers || category.toLowerCase() !== "internal transfer";
+      return fromMatch && toMatch && categoryMatch && brokerMatch && yearMatch && searchMatch && transferMatch;
+    });
+  }, [transactionRows, dateFrom, dateTo, txCategory, txBroker, txYear, txSearch, includeTransfers]);
+  const txCategories = uniqueValues(transactionRows, "category");
+  const txBrokers = uniqueValues(transactionRows, "broker");
+  const txYears = Array.from(new Set(transactionRows.map((row) => String(row.date ?? "").slice(0, 4)).filter(Boolean))).sort().reverse();
+  const positionBrokerOptions = Array.from(new Set(positionRows.map((row) => String(row.broker ?? row.account_id ?? "")).filter(Boolean))).sort();
+  const sectorRows = dashboardPortfolio?.data?.sector_allocation ?? [];
 
   return (
     <main>
@@ -443,6 +538,12 @@ export default function Home() {
           </div>
           <div className={`pill ${error ? "bad" : "good"}`}>{error ? "API offline" : "API online"}</div>
         </header>
+        <div className="globalControls">
+          <label>Date From<input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} /></label>
+          <label>Date To<input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} /></label>
+          <label className="checkbox"><input type="checkbox" checked={includeTransfers} onChange={(e) => setIncludeTransfers(e.target.checked)} />Include internal transfers</label>
+          <button type="button" onClick={() => window.location.reload()}>Refresh</button>
+        </div>
 
         {error ? <div className="alert">{error}</div> : null}
 
@@ -473,7 +574,8 @@ export default function Home() {
               <DataTable rows={dashboardPortfolio?.data?.futures_by_commodity ?? []} columns={["Commodity", "Contracts", "Net_MV"]} />
             </Panel>
             <Panel title="Sector Allocation">
-              <DataTable rows={dashboardPortfolio?.data?.sector_allocation ?? []} columns={["sector", "MARKET VALUE"]} />
+              <SectorPie rows={sectorRows} />
+              <DataTable rows={sectorRows} columns={["sector", "MARKET VALUE"]} />
             </Panel>
             <Panel title={`Positions by Account (${(dashboardPortfolio?.data?.positions_by_account ?? []).length} rows)`}>
               <DataTable
@@ -550,22 +652,48 @@ export default function Home() {
                 </button>
               ))}
             </div>
+            <div className="toolbar">
+              <label>Broker
+                <select value={positionBrokerFilter} onChange={(e) => setPositionBrokerFilter(e.target.value)}>
+                  <option value="ALL">All</option>
+                  {positionBrokerOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+                </select>
+              </label>
+            </div>
             <div className="metricsGrid compact">
               <Metric label="All Positions" value={positionRows.length.toLocaleString()} />
               <Metric label={`${activePositionConfig.label} Rows`} value={filteredPositionRows.length.toLocaleString()} />
               <Metric label="Market Value" value={currency(sumRows(filteredPositionRows, "market_value"))} />
               <Metric label="Unrealized P/L" value={currency(sumRows(filteredPositionRows, "unrealized_pnl"))} />
             </div>
-            <Panel title={`${filteredPositionRows.length.toLocaleString()} ${activePositionConfig.label} Positions`}>
-              <DataTable rows={filteredPositionRows} columns={[...activePositionConfig.columns]} capped />
-            </Panel>
+            {activePositionTab === "options" || activePositionTab === "futures" ? (
+              groupByAccount(filteredPositionRows).map(([account, rows]) => (
+                <details key={account} open>
+                  <summary>{account} ({rows.length})</summary>
+                  <Panel title={`${activePositionConfig.label} - ${account}`}>
+                    <DataTable rows={rows} columns={[...activePositionConfig.columns]} capped />
+                  </Panel>
+                </details>
+              ))
+            ) : (
+              <Panel title={`${filteredPositionRows.length.toLocaleString()} ${activePositionConfig.label} Positions`}>
+                <DataTable rows={filteredPositionRows} columns={[...activePositionConfig.columns]} capped />
+              </Panel>
+            )}
           </div>
         ) : null}
 
         {activeTab === "transactions" ? (
-          <Panel title={`${transactions?.data?.count ?? 0} Recent Transactions`}>
+          <Panel title={`${transactionFilteredRows.length} Filtered Transactions`}>
+            <div className="toolbar">
+              <label>Category<select value={txCategory} onChange={(e) => setTxCategory(e.target.value)}><option value="ALL">All</option>{txCategories.map((v) => <option key={v} value={v}>{v}</option>)}</select></label>
+              <label>Broker<select value={txBroker} onChange={(e) => setTxBroker(e.target.value)}><option value="ALL">All</option>{txBrokers.map((v) => <option key={v} value={v}>{v}</option>)}</select></label>
+              <label>Year<select value={txYear} onChange={(e) => setTxYear(e.target.value)}><option value="ALL">All</option>{txYears.map((v) => <option key={v} value={v}>{v}</option>)}</select></label>
+              <label>Search<input value={txSearch} onChange={(e) => setTxSearch(e.target.value)} placeholder="description or symbol" /></label>
+              <button type="button" onClick={() => downloadCsv(transactionFilteredRows, "transactions_filtered.csv")}>Export CSV</button>
+            </div>
             <DataTable
-              rows={transactionRows}
+              rows={transactionFilteredRows}
               columns={["date", "account_id", "broker", "category", "amount", "symbol", "description"]}
             />
           </Panel>
@@ -653,4 +781,59 @@ function columnsFromRows(rows: Array<Record<string, unknown>>, preferred: string
     }
   }
   return Array.from(seen);
+}
+
+function uniqueValues(rows: Array<Record<string, unknown>>, key: string) {
+  return Array.from(new Set(rows.map((row) => String(row[key] ?? "")).filter(Boolean))).sort();
+}
+
+function groupByAccount(rows: Array<Record<string, unknown>>) {
+  const map = new Map<string, Array<Record<string, unknown>>>();
+  for (const row of rows) {
+    const key = String(row.account_id ?? "UNKNOWN");
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)?.push(row);
+  }
+  return Array.from(map.entries());
+}
+
+function downloadCsv(rows: Array<Record<string, unknown>>, filename: string) {
+  if (!rows.length) return;
+  const columns = Array.from(new Set(rows.flatMap((r) => Object.keys(r))));
+  const lines = [columns.join(",")];
+  for (const row of rows) {
+    const line = columns.map((col) => `"${String(row[col] ?? "").replaceAll("\"", "\"\"")}"`).join(",");
+    lines.push(line);
+  }
+  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function SectorPie({ rows }: { rows: Array<Record<string, unknown>> }) {
+  const totals = rows.map((row) => ({
+    label: String(row.sector ?? "Other"),
+    value: Number(row["MARKET VALUE"] ?? 0),
+  })).filter((r) => Number.isFinite(r.value) && r.value > 0);
+  const sum = totals.reduce((acc, r) => acc + r.value, 0);
+  if (!sum) return null;
+  let start = 0;
+  const colors = ["#126a72", "#2c8b59", "#c2812e", "#b54f3a", "#5b6ca8", "#9a5fa8", "#6d7f40", "#8f4f73"];
+  return (
+    <div className="pieRow">
+      <svg viewBox="0 0 32 32" className="pieChart" aria-label="Sector allocation pie chart">
+        {totals.map((slice, idx) => {
+          const frac = slice.value / sum;
+          const dash = frac * 100;
+          const path = <circle key={slice.label} r="16" cx="16" cy="16" fill="transparent" stroke={colors[idx % colors.length]} strokeWidth="32" strokeDasharray={`${dash} ${100 - dash}`} strokeDashoffset={-start} />;
+          start += dash;
+          return path;
+        })}
+      </svg>
+    </div>
+  );
 }

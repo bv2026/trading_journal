@@ -301,6 +301,76 @@ th {
 th.num {
   text-align: right;
 }
+.globalControls,
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+.globalControls label,
+.toolbar label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.globalControls input,
+.toolbar input,
+.toolbar select,
+.globalControls button,
+.toolbar button {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 7px 9px;
+  background: #fff;
+}
+.globalControls .checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pieRow {
+  padding: 12px;
+}
+.pieChart {
+  width: 160px;
+  height: 160px;
+  border-radius: 50%;
+  transform: rotate(-90deg);
+}
+details > summary {
+  cursor: pointer;
+  font-weight: 700;
+  padding: 8px 2px;
+}
+
+.sortBtn {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-weight: inherit;
+  gap: 6px;
+  letter-spacing: inherit;
+  padding: 0;
+  text-transform: inherit;
+  width: 100%;
+}
+
+th.num .sortBtn {
+  justify-content: flex-end;
+}
+
+.sortGlyph {
+  color: #7a8a95;
+  font-size: 10px;
+  line-height: 1;
+}
 
 tbody tr:hover {
   background: #f6f9fb;
