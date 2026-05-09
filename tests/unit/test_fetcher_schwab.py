@@ -184,7 +184,9 @@ class TestNormalizeBalances:
         r = normalize_balances({"equity": 40000, "margin_balance": -15000,
                                 "long_market_value": 55000, "buying_power": 25000})
         assert r["equity"]       == pytest.approx(40000.0)
-        assert r["market_value"] == pytest.approx(55000.0)
+        # normalize_balances now prioritizes account-level equity/liquidation
+        # for market_value, with long_market_value treated as a secondary field.
+        assert r["market_value"] == pytest.approx(40000.0)
         assert r["margin"]       == pytest.approx(15000.0)
         assert r["buying_power"] == pytest.approx(25000.0)
 
