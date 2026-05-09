@@ -135,6 +135,31 @@ const positionTabs = [
 
 type PositionTabId = (typeof positionTabs)[number]["id"];
 
+const MONEY_KEYWORDS = [
+  "value", "cost", "basis", "margin", "equity", "pnl", "p&l",
+  "income", "dividend", "reward", "fee", "interest", "worth",
+  "amount", "cash", "flow", "mv", "alloc", "return", "change",
+  "price", "net_income", "net_cash", "net_equity", "market_value",
+  "cost_basis", "unrealized_pnl", "total_cost", "dividends",
+];
+
+const PCT_KEYWORDS = ["alloc_%", "return_%", "% change", "1-week", "1-month", "3-month", "ytd", "1-year"];
+
+function isMoneyColumn(col: string): boolean {
+  const lower = col.toLowerCase();
+  if (PCT_KEYWORDS.some((k) => lower.includes(k))) return false;
+  return MONEY_KEYWORDS.some((k) => lower.includes(k));
+}
+
+function isPctColumn(col: string): boolean {
+  return PCT_KEYWORDS.some((k) => col.toLowerCase().includes(k));
+}
+
+function isNumericColumn(col: string): boolean {
+  const lower = col.toLowerCase();
+  return isMoneyColumn(col) || isPctColumn(col) || ["quantity", "shares", "contracts", "strike", "txns"].some((k) => lower.includes(k));
+}
+
 function currency(value: unknown) {
   const number = Number(value ?? 0);
   return new Intl.NumberFormat("en-US", {
@@ -142,6 +167,23 @@ function currency(value: unknown) {
     currency: "USD",
     maximumFractionDigits: 0
   }).format(Number.isFinite(number) ? number : 0);
+}
+
+function currencyFine(value: unknown) {
+  const number = Number(value ?? 0);
+  if (!Number.isFinite(number)) return "$0.00";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }).format(number);
+}
+
+function pct(value: unknown) {
+  const number = Number(value ?? 0);
+  if (!Number.isFinite(number)) return "—";
+  return (number >= 0 ? "+" : "") + number.toFixed(2) + "%";
 }
 
 async function getJson<T>(path: string): Promise<ApiReceipt<T>> {
@@ -154,30 +196,61 @@ async function getJson<T>(path: string): Promise<ApiReceipt<T>> {
 
 function DataTable({
   rows,
-  columns
+  columns,
+  capped = false,
 }: {
   rows: Array<Record<string, unknown>>;
   columns: string[];
+  capped?: boolean;
 }) {
   if (!rows.length) {
     return <div className="empty">No rows</div>;
   }
   return (
-    <div className="tableWrap">
+    <div className={`tableWrap${capped ? " capped" : ""}`}>
       <table>
         <thead>
           <tr>
-            {columns.map((column) => (
-              <th key={column}>{column}</th>
+            {columns.map((col) => (
+              <th key={col} className={isNumericColumn(col) ? "num" : ""}>
+                {prettyHeader(col)}
+              </th>
             ))}
           </tr>
         </thead>
         <tbody>
           {rows.map((row, rowIndex) => (
             <tr key={rowIndex}>
-              {columns.map((column) => (
-                <td key={column}>{formatCell(row[column])}</td>
-              ))}
+              {columns.map((col) => {
+                const raw = row[col];
+                const num = Number(raw);
+                const isMoney = isMoneyColumn(col);
+                const isPct = isPctColumn(col);
+                const isNum = typeof raw === "number" || (typeof raw === "string" && raw !== "" && !isNaN(num));
+                const negative = isNum && num < 0;
+
+                let display: string;
+                if (raw === null || raw === undefined || raw === "") {
+                  display = "—";
+                } else if (isMoney && isNum) {
+                  display = currencyFine(raw);
+                } else if (isPct && isNum) {
+                  display = pct(raw);
+                } else {
+                  display = formatCell(raw);
+                }
+                return (
+                  <td
+                    key={col}
+                    className={[
+                      isNum ? "num" : "",
+                      negative ? "neg" : (isNum && num > 0 && (isMoney || isPct) ? "pos" : ""),
+                    ].join(" ").trim() || undefined}
+                  >
+                    {display}
+                  </td>
+                );
+              })}
             </tr>
           ))}
         </tbody>
@@ -187,14 +260,56 @@ function DataTable({
 }
 
 function formatCell(value: unknown) {
-  if (value === null || value === undefined) return "";
+  if (value === null || value === undefined) return "—";
   if (typeof value === "number") {
-    return Number.isInteger(value) ? value.toLocaleString() : value.toFixed(2);
+    if (!Number.isFinite(value)) return "—";
+    return Number.isInteger(value) ? value.toLocaleString() : value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
   if (typeof value === "object") {
     return JSON.stringify(value);
   }
   return String(value);
+}
+
+const HEADER_MAP: Record<string, string> = {
+  account_id: "Account",
+  symbol: "Symbol",
+  name: "Name",
+  quantity: "Qty",
+  price: "Price",
+  cost_basis: "Cost Basis",
+  market_value: "Market Value",
+  unrealized_pnl: "Unrealized P/L",
+  sector: "Sector",
+  underlying: "Underlying",
+  expiration: "Expiration",
+  strike: "Strike",
+  call_put: "Type",
+  totalReturn: "Total Return",
+  net_cash_flow: "Net Cash Flow",
+  dividends: "Dividends",
+  rewards: "Rewards",
+  margin_interest: "Margin Interest",
+  fees: "Fees",
+  net_income: "Net Income",
+  description: "Description",
+  category: "Category",
+  broker: "Broker",
+  date: "Date",
+  amount: "Amount",
+  "Alloc_%": "Alloc %",
+  "Return_%": "Return %",
+  "PnL": "P/L",
+  "Market_Value": "Market Value",
+  "Total_Cost": "Total Cost",
+  "Net_MV": "Net MV",
+};
+
+function prettyHeader(col: string): string {
+  if (HEADER_MAP[col]) return HEADER_MAP[col];
+  return col
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
@@ -340,7 +455,7 @@ export default function Home() {
               <Metric label="Net Income" value={currency(summary?.data?.net_income)} />
             </div>
             <Panel title="Transaction KPIs">
-              <DataTable rows={[dashboardPortfolio?.data?.transaction_kpis ?? {}]} columns={["Cash In/Out", "Div+Rewards", "Costs", "Net Income"]} />
+              <KpiRow data={dashboardPortfolio?.data?.transaction_kpis} />
             </Panel>
             <Panel title="Account Summary">
               <DataTable
@@ -360,10 +475,11 @@ export default function Home() {
             <Panel title="Sector Allocation">
               <DataTable rows={dashboardPortfolio?.data?.sector_allocation ?? []} columns={["sector", "MARKET VALUE"]} />
             </Panel>
-            <Panel title="Positions by Account">
+            <Panel title={`Positions by Account (${(dashboardPortfolio?.data?.positions_by_account ?? []).length} rows)`}>
               <DataTable
                 rows={(dashboardPortfolio?.data?.positions_by_account ?? []).slice(0, 75)}
                 columns={["Account", "Ticker", "Name", "TYPE", "sector", "Shares", "PRICE", "COST", "MARKET VALUE", "totalReturn"]}
+                capped
               />
             </Panel>
             <Panel title="Sector Summary">
@@ -441,7 +557,7 @@ export default function Home() {
               <Metric label="Unrealized P/L" value={currency(sumRows(filteredPositionRows, "unrealized_pnl"))} />
             </div>
             <Panel title={`${filteredPositionRows.length.toLocaleString()} ${activePositionConfig.label} Positions`}>
-              <DataTable rows={filteredPositionRows.slice(0, 75)} columns={[...activePositionConfig.columns]} />
+              <DataTable rows={filteredPositionRows} columns={[...activePositionConfig.columns]} capped />
             </Panel>
           </div>
         ) : null}
@@ -479,6 +595,20 @@ export default function Home() {
         ) : null}
       </section>
     </main>
+  );
+}
+
+function KpiRow({ data }: { data?: Record<string, number> }) {
+  if (!data) return <div className="empty">No data</div>;
+  return (
+    <div className="kpiRow">
+      {Object.entries(data).map(([label, value]) => (
+        <div key={label} className="kpi">
+          <span>{label}</span>
+          <strong className={Number(value) < 0 ? "neg" : ""}>{currency(value)}</strong>
+        </div>
+      ))}
+    </div>
   );
 }
 
