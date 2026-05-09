@@ -770,46 +770,68 @@ def _launch_dashboard() -> None:
     input("Press Enter to continue...")
 
 
-def _is_port_in_use(port: int) -> bool:
-    import socket
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        return s.connect_ex(("127.0.0.1", port)) == 0
+def _kill_next_dashboard() -> None:
+    """Kill any existing API/Next.js processes before launching."""
+    if sys.platform != "win32":
+        return
+    subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+         "Get-CimInstance Win32_Process | "
+         "Where-Object { "
+         "($_.CommandLine -match 'uvicorn' -and $_.CommandLine -match 'src\\.api\\.main') -or "
+         "($_.CommandLine -match 'next' -and $_.CommandLine -match 'dev.*-p') "
+         "} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
+def _wait_for_port(port: int, timeout: int = 15) -> bool:
+    import socket, time
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex(("127.0.0.1", port)) == 0:
+                return True
+        time.sleep(1)
+    return False
 
 
 def _launch_next_dashboard() -> None:
+    import time
     print("\nLaunching Next.js dashboard (API :8000 + UI :3000) ...")
+    print("  Stopping any existing instances ...")
+    _kill_next_dashboard()
+    time.sleep(2)
 
     api_port, ui_port = 8000, 3000
-    api_up = _is_port_in_use(api_port)
-    ui_up = _is_port_in_use(ui_port)
+    log_dir = REPO_ROOT / "data" / "tmp"
+    log_dir.mkdir(parents=True, exist_ok=True)
 
-    if api_up and ui_up:
-        print(f"Both API (:{api_port}) and UI (:{ui_port}) are already running.")
-        input("Press Enter to continue...")
-        return
+    api_cmd = f'"{sys.executable}" -m uvicorn src.api.main:app --host 127.0.0.1 --port {api_port}'
+    subprocess.Popen(
+        f'cmd /c start /b "" {api_cmd} 2>"{log_dir / "api.log"}"',
+        cwd=REPO_ROOT, shell=True,
+    )
 
-    if not api_up:
-        api_cmd = f'"{sys.executable}" -m uvicorn src.api.main:app --host 127.0.0.1 --port {api_port}'
-        subprocess.Popen(
-            f'cmd /c start /b "" {api_cmd}',
-            cwd=REPO_ROOT, shell=True,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        print(f"  Started API on http://127.0.0.1:{api_port}")
+    ui_dir = REPO_ROOT / "ui"
+    next_bin = ui_dir / "node_modules" / "next" / "dist" / "bin" / "next"
+    subprocess.Popen(
+        f'cmd /c start /b "" node "{next_bin}" dev -p {ui_port} 2>"{log_dir / "ui.log"}"',
+        cwd=str(ui_dir), shell=True,
+    )
+
+    print("  Waiting for services to start ...")
+    api_ok = _wait_for_port(api_port, timeout=10)
+    ui_ok = _wait_for_port(ui_port, timeout=15)
+
+    if api_ok:
+        print(f"  API ready at http://127.0.0.1:{api_port}")
     else:
-        print(f"  API already running on :{api_port}, skipping.")
-
-    if not ui_up:
-        ui_dir = REPO_ROOT / "ui"
-        next_bin = ui_dir / "node_modules" / "next" / "dist" / "bin" / "next"
-        subprocess.Popen(
-            f'cmd /c start /b "" node "{next_bin}" dev -p {ui_port}',
-            cwd=str(ui_dir), shell=True,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        print(f"  Started UI on http://localhost:{ui_port}")
+        print(f"  API failed to start. Check {log_dir / 'api.log'}")
+    if ui_ok:
+        print(f"  UI  ready at http://localhost:{ui_port}")
     else:
-        print(f"  UI already running on :{ui_port}, skipping.")
+        print(f"  UI  failed to start. Check {log_dir / 'ui.log'}")
 
     input("Press Enter to continue...")
 
