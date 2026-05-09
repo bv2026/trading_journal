@@ -829,7 +829,10 @@ def _launch_next_dashboard() -> None:
     else:
         print(f"  API failed to start. Check {log_dir / 'api.log'}")
     if ui_ok:
-        print(f"  UI  ready at http://localhost:{ui_port}")
+        import webbrowser
+        url = f"http://localhost:{ui_port}"
+        print(f"  UI  ready at {url}")
+        webbrowser.open(url)
     else:
         print(f"  UI  failed to start. Check {log_dir / 'ui.log'}")
 
