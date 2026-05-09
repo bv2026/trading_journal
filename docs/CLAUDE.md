@@ -18,8 +18,12 @@ python -m src.ingest --snapshot-only
 python -m src.cash              # print current balance
 python -m src.cash 18500        # set balance
 
-# Launch dashboard
+# Launch dashboard (Streamlit — current active UI)
 streamlit run dashboard/app.py         # http://localhost:8501
+
+# Launch dashboard (Next.js — new UI, read-only)
+python -m src.cli.main dashboard next --reload   # API :8000 + UI :3000
+python -m src.cli.main api launch --port 8000 --reload  # API only
 
 # MCP server (for Claude Desktop)
 python -m src.mcp_server
@@ -227,7 +231,7 @@ python -m src.ingest --cash 18500  # alternative via ingest flag
 
 ## Test coverage
 
-426 tests passing across 10 files:
+510 tests passing across 12 files:
 
 | File | Tests | Scope |
 |------|-------|-------|
@@ -241,6 +245,10 @@ python -m src.ingest --cash 18500  # alternative via ingest flag
 | `tests/integration/test_snapshot_performance.py` | 13 | `v_snapshot_periods` — net-of-margin returns, multi-account, NULL history |
 | `tests/integration/test_positions_db.py` | ~60 | positions table CRUD |
 | `tests/integration/test_static_positions_db.py` | ~58 | options/futures/crypto tables CRUD |
+| `tests/unit/test_api_main.py` | 12 | FastAPI backend endpoints — receipts, query params, monkeypatched services |
+| `tests/unit/test_cli_main.py` | 10 | Unified CLI — portfolio, transactions, ingest, dashboard, API launch |
+
+Smoke test (requires running servers): `python tests/smoke_ui.py`
 
 Run all: `python -m pytest tests/ -q`
 

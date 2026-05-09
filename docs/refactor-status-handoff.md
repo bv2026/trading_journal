@@ -1,13 +1,23 @@
 # Trading Journal Refactor Status Handoff
 
-Date: 2026-05-08
+Date: 2026-05-09
 
 ## Current Status
 
-The service-layer refactor has been pushed to `master` at commit `8b1bbfd`.
-Phase 8 is in progress: a read-only FastAPI backend and a Next.js dashboard
-scaffold now exist side-by-side with the existing Streamlit dashboard. Streamlit
-remains the active UI until the new UI reaches verified capability parity.
+Phase 8 (FastAPI + Next.js) is feature-complete for read-only parity. The
+service-layer refactor landed at `8b1bbfd`; the latest Phase 8 commit is
+`89d4513`. A read-only FastAPI backend and a polished Next.js dashboard exist
+side-by-side with the existing Streamlit dashboard. Streamlit remains the
+active UI until write workflows (Broker MCP, Settings) are decided.
+
+Key recent commits (newest first):
+
+- `89d4513` Update handoff doc with formatting polish and smoke test
+- `edd6b2a` Add dashboard next CLI command to launch Next.js UI
+- `7034790` Polish Next.js dashboard formatting and add smoke test
+- `ee204c4` Back yearly and account dashboard sections with API data
+- `8f9608c` Add FastAPI backend and Next dashboard scaffold
+- `8b1bbfd` Refactor journal services and dashboard calculations
 
 Full regression at this checkpoint:
 
