@@ -773,7 +773,6 @@ def _launch_dashboard() -> None:
 def _launch_next_dashboard() -> None:
     print("\nLaunching Next.js dashboard (API :8000 + UI :3000) ...")
     base_kwargs: dict = {
-        "cwd": REPO_ROOT,
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
         "stdin": subprocess.DEVNULL,
@@ -782,7 +781,7 @@ def _launch_next_dashboard() -> None:
         base_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
     subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "src.api.main:app", "--host", "127.0.0.1", "--port", "8000", "--reload"],
-        **base_kwargs,
+        cwd=REPO_ROOT, **base_kwargs,
     )
     ui_dir = REPO_ROOT / "ui"
     subprocess.Popen(["npx", "next", "dev", "-p", "3000"], cwd=str(ui_dir), **base_kwargs)
