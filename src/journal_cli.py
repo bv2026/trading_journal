@@ -849,6 +849,35 @@ def _csv_files_changed() -> bool:
     return False
 
 
+def _touch_csv_state_skipped() -> None:
+    tracked = [
+        (REPO_ROOT / "activity" / "WEBULL-inv.csv", "WEBULL", "transactions"),
+        (REPO_ROOT / "activity" / "WEBULL-cash.csv", "WEBULL", "transactions"),
+        (REPO_ROOT / "activity" / "schwab.csv", "SCHWAB", "transactions"),
+        (REPO_ROOT / "activity" / "robinhood-inv-bv.csv", "RH-BV", "transactions"),
+        (REPO_ROOT / "activity" / "robinhood-inv-kd.csv", "RH-KD", "transactions"),
+        (REPO_ROOT / "activity" / "coinbase-main.csv", "COINBASE", "transactions"),
+        (REPO_ROOT / "activity" / "tradier.csv", "TRADIER", "transactions"),
+        (REPO_ROOT / "activity" / "tdstation-cash.csv", "TS", "transactions"),
+        (REPO_ROOT / "activity" / "fidelity_Investment_income_balance.csv", "FIDELITY", "transactions"),
+        (REPO_ROOT / "activity" / "positions-fidelity.csv", "FIDELITY", "positions"),
+    ]
+    for path, acct, role in tracked:
+        if not path.exists():
+            continue
+        stat = path.stat()
+        db.upsert_csv_ingest_state(
+            file_path=str(path.resolve()),
+            account_id=acct,
+            file_role=role,
+            file_mtime_utc=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+            file_size_bytes=stat.st_size,
+            rows_written=0,
+            status="skipped_unchanged",
+            detail="sync-all: unchanged; ingest skipped",
+        )
+
+
 async def _fetch_schwab_payloads_to_tmp() -> tuple[bool, str]:
     from mcp.client.session import ClientSession  # noqa: PLC0415
     from mcp.client.stdio import StdioServerParameters, stdio_client  # noqa: PLC0415
@@ -1037,6 +1066,7 @@ def sync_all_ingest_workflow() -> None:
         ok &= _run_best_effort("CSV ingest (changed files detected)", [sys.executable, "-m", "src.ingest"])
     else:
         print("\nCSV ingest skipped (no tracked CSV file changes detected).")
+        _touch_csv_state_skipped()
 
     cash = _prompt_optional_float("CASH update (blank to skip): ")
     if cash is not None:
