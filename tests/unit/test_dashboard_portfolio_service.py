@@ -145,6 +145,20 @@ def test_futures_by_commodity_strips_contract_month():
     ]
 
 
+def test_futures_by_commodity_keeps_vxm_by_contract():
+    futs = pd.DataFrame([
+        {"Ticker": "/VXMH27", "qty": 1, "MARKET VALUE": 10.0},
+        {"Ticker": "/VXMU27", "qty": 2, "MARKET VALUE": -5.0},
+    ])
+
+    result = svc.futures_by_commodity(futs)
+
+    assert result.to_dict(orient="records") == [
+        {"Commodity": "/VXMH27", "Contracts": 1, "Net_MV": 10.0},
+        {"Commodity": "/VXMU27", "Contracts": 1, "Net_MV": -5.0},
+    ]
+
+
 def test_sector_summary_uses_collapsed_labels_and_lifetime_dividends():
     pos, _ = svc.split_equity_margin(_positions())
     result = svc.sector_summary(pos=pos, transactions=_transactions())

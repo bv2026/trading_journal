@@ -261,8 +261,12 @@ def futures_by_commodity(futs_all: pd.DataFrame) -> pd.DataFrame:
 
 
 def _futures_root(ticker: str) -> str:
-    match = re.match(r"(/[A-Z]+)(?=[A-Z]\d{2})", str(ticker))
-    return match.group(1) if match else str(ticker)
+    symbol = str(ticker)
+    # Keep VXM contracts distinct by expiry (e.g. /VXMH27 vs /VXMU27).
+    if symbol.startswith("/VXM"):
+        return symbol
+    match = re.match(r"(/[A-Z]+)(?=[A-Z]\d{2})", symbol)
+    return match.group(1) if match else symbol
 
 
 def collapsed_sector_labels(pos: pd.DataFrame) -> pd.Series:
