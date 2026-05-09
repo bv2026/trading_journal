@@ -1181,21 +1181,22 @@ def _stop_dashboard() -> None:
         input("Press Enter to continue...")
         return
 
-    command = (
-        "Get-CimInstance Win32_Process | "
-        "Where-Object { "
-        "($_.CommandLine -match 'uvicorn' -and $_.CommandLine -match 'src\\.api\\.main') -or "
-        "($_.CommandLine -match 'next' -and $_.CommandLine -match 'dev.*-p.*3000') "
-        "} | "
-        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; "
-        "$ports=3000,8000; foreach($p in $ports){ "
-        "Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue | "
-        "Select-Object -ExpandProperty OwningProcess -Unique | "
-        "ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }"
-    )
+    script = REPO_ROOT / "scripts" / "kill_zombies.ps1"
+    if not script.exists():
+        print(f"Missing script: {script}")
+        input("Press Enter to continue...")
+        return
     _run_command(
         "Stop dashboard",
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            "-IncludePorts",
+        ],
     )
 
 
