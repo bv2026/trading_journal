@@ -770,8 +770,24 @@ def _launch_dashboard() -> None:
     input("Press Enter to continue...")
 
 
+def _is_port_in_use(port: int) -> bool:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
 def _launch_next_dashboard() -> None:
     print("\nLaunching Next.js dashboard (API :8000 + UI :3000) ...")
+
+    api_port, ui_port = 8000, 3000
+    api_up = _is_port_in_use(api_port)
+    ui_up = _is_port_in_use(ui_port)
+
+    if api_up and ui_up:
+        print(f"Both API (:{api_port}) and UI (:{ui_port}) are already running.")
+        input("Press Enter to continue...")
+        return
+
     base_kwargs: dict = {
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
@@ -779,14 +795,28 @@ def _launch_next_dashboard() -> None:
     }
     if sys.platform == "win32":
         base_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-    subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "src.api.main:app", "--host", "127.0.0.1", "--port", "8000", "--reload"],
-        cwd=REPO_ROOT, **base_kwargs,
-    )
-    ui_dir = REPO_ROOT / "ui"
-    next_bin = ui_dir / "node_modules" / "next" / "dist" / "bin" / "next"
-    subprocess.Popen(["node", str(next_bin), "dev", "-p", "3000"], cwd=str(ui_dir), **base_kwargs)
-    print("API: http://127.0.0.1:8000  UI: http://localhost:3000")
+
+    if not api_up:
+        subprocess.Popen(
+            [sys.executable, "-m", "uvicorn", "src.api.main:app",
+             "--host", "127.0.0.1", "--port", str(api_port)],
+            cwd=REPO_ROOT, **base_kwargs,
+        )
+        print(f"  Started API on http://127.0.0.1:{api_port}")
+    else:
+        print(f"  API already running on :{api_port}, skipping.")
+
+    if not ui_up:
+        ui_dir = REPO_ROOT / "ui"
+        next_bin = ui_dir / "node_modules" / "next" / "dist" / "bin" / "next"
+        subprocess.Popen(
+            ["node", str(next_bin), "dev", "-p", str(ui_port)],
+            cwd=str(ui_dir), **base_kwargs,
+        )
+        print(f"  Started UI on http://localhost:{ui_port}")
+    else:
+        print(f"  UI already running on :{ui_port}, skipping.")
+
     input("Press Enter to continue...")
 
 
@@ -798,7 +828,11 @@ def _stop_dashboard() -> None:
 
     command = (
         "Get-CimInstance Win32_Process | "
-        "Where-Object { $_.CommandLine -match 'streamlit' -and $_.CommandLine -match 'dashboard[/\\\\]app\\.py' } | "
+        "Where-Object { "
+        "($_.CommandLine -match 'streamlit' -and $_.CommandLine -match 'dashboard[/\\\\]app\\.py') -or "
+        "($_.CommandLine -match 'uvicorn' -and $_.CommandLine -match 'src\\.api\\.main') -or "
+        "($_.CommandLine -match 'next' -and $_.CommandLine -match 'dev.*-p.*3000') "
+        "} | "
         "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
     )
     _run_command(
