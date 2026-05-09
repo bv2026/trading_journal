@@ -1,8 +1,9 @@
 ﻿# Trading Journal
 
 A personal portfolio tracker that consolidates brokerage activity and current
-positions across 10 accounts into a single SQLite database and Streamlit
-dashboard, with Claude Desktop MCP integration for natural-language queries.
+positions across 11 accounts into a single SQLite database, with a Streamlit
+dashboard, a read-only FastAPI + Next.js dashboard, a unified CLI, and Claude
+Desktop MCP integration for natural-language queries.
 
 ## Accounts
 
@@ -48,18 +49,29 @@ This reads the MCP server settings from Claude Desktop config, captures a fresh
 Coinbase snapshot with spot USD prices, imports COINBASE crypto positions, and
 writes today's journal snapshot.
 
-## Dashboard
+## Dashboards
 
-Single dashboard at `http://localhost:8501`. Six tabs:
+### Streamlit (current active UI)
+
+`http://localhost:8501` — eight tabs:
 
 | Tab | Contents |
 |-----|----------|
-| **Portfolio** | Net worth banner Â· account summary (MV, cost, P&L, margin, income) Â· sector pie Â· positions by account with options sub-tables Â· sector summary Â· options summary Â· futures summary |
-| **Yearly Summary** | Year-over-year table Â· income breakdown by type |
-| **By Account** | Prev Year / Current Year / ALL pivot tables per account |
-| **Positions** | Broker filter Â· four sub-tabs: Equity (by symbol) Â· Options (by account) Â· Futures (by account) Â· Crypto |
-| **Transactions** | Broker filter Â· filterable/searchable log Â· CSV export |
-| **Performance** | Current value vs 1W ago Â· return % over 1W / 1M / 3M / YTD / 1Y per account |
+| **Portfolio** | Net worth banner, account summary, asset class breakdown, sector allocation, futures by commodity, positions by account, sector summary |
+| **Yearly Summary** | Year-over-year table, income breakdown by type |
+| **By Account** | Net cash flow, dividends/rewards, margin/fees pivots, Coinbase crypto flow |
+| **Positions** | Four sub-tabs: Equity, Options, Futures, Crypto |
+| **Transactions** | Filterable/searchable log with CSV export |
+| **Performance** | Portfolio summary and returns (1W / 1M / 3M / YTD / 1Y) |
+| **Broker MCP** | MCP health checks and live broker balance queries |
+| **Settings** | Cash balance, margin overrides, account configuration |
+
+### Next.js (new read-only UI)
+
+`http://localhost:3000` — same eight tabs backed by a FastAPI API at `:8000`.
+Covers all read-only dashboard capabilities with currency formatting, color-coded
+gains/losses, and responsive layout. Broker MCP and Settings are placeholder
+capability lists until write workflows are designed.
 
 ## Project structure
 
@@ -92,17 +104,27 @@ trading-journal/
 â”‚       â””â”€â”€ schwab.py
 â”œâ”€â”€ dashboard/
 â”‚   â””â”€â”€ app.py              Streamlit dashboard
-â”œâ”€â”€ scripts/                Operator utilities (MCP auth, Coinbase sync)
 â”œâ”€â”€ src/
+â”‚   â”œâ”€â”€ api/                FastAPI read-only backend
+â”‚   â”‚   â””â”€â”€ main.py         12 endpoints over the service layer
+â”‚   â”œâ”€â”€ cli/                Unified non-interactive CLI
+â”‚   â”‚   â””â”€â”€ main.py         `python -m src.cli.main`
+â”‚   â”œâ”€â”€ services/           Shared business logic (portfolio, positions, dashboard)
 â”‚   â”œâ”€â”€ mcp_server.py       FastMCP server â€” query tools + refresh_positions write tool
 â”‚   â”œâ”€â”€ mcp_ingest.py       write_* functions â€” normalize MCP responses â†’ DB
 â”‚   â”œâ”€â”€ ingest.py           CSV ingest pipeline â†’ journal.db; daily portfolio snapshot
 â”‚   â”œâ”€â”€ journal_cli.py      Terminal account/position browser
 │   ├── schema.sql          All tables + SQL views
 â”‚   â””â”€â”€ ...
+â”œâ”€â”€ ui/                     Next.js dashboard (React 18 + Next 15)
+â”‚   â””â”€â”€ app/
+â”‚       â”œâ”€â”€ page.tsx        Single-page app with 8 tabs
+â”‚       â””â”€â”€ styles.css
+â”œâ”€â”€ scripts/                Operator utilities (MCP auth, Coinbase sync)
+â”œâ”€â”€ tests/                  510 tests (unit + integration + smoke)
 â”œâ”€â”€ requirements.txt
 â”œâ”€â”€ README.md
-â””â”€â”€ docs/USAGE.md           Full usage guide
+â””â”€â”€ docs/                   USAGE.md, CLAUDE.md, handoff docs
 ```
 
 ## Example prompts (Claude Desktop)
@@ -156,11 +178,17 @@ pip install -r requirements.txt
 # 3. Ingest
 python -m src.ingest
 
-python -m src.journal_cli
-
-# 4. Launch dashboard
+# 4. Launch Streamlit dashboard
 streamlit run dashboard/app.py
-# Or use python -m src.journal_cli -> Housekeeping -> Launch dashboard
+
+# Or launch Next.js dashboard (API + UI in one command)
+python -m src.cli.main dashboard next --reload
+
+# Unified CLI
+python -m src.cli.main portfolio summary
+python -m src.cli.main portfolio positions --asset-class equity
+python -m src.cli.main transactions --category dividend --limit 10
+python -m src.cli.main dashboard capabilities
 ```
 
 The CLI checks configured broker MCP server health before showing account
@@ -197,7 +225,8 @@ python -m src.cli.robinhood --logout-robinhood --profile bv
 `--link-robinhood` prompts for the Robinhood password at runtime and never
 writes it to disk.
 
-Dashboard runs at `http://localhost:8501`.
+Streamlit dashboard runs at `http://localhost:8501`.
+Next.js dashboard runs at `http://localhost:3000` (API at `http://localhost:8000`).
 
 See [USAGE.md](docs/USAGE.md) for full details on file formats, MCP setup, and
 the MCP-first positions workflow.
