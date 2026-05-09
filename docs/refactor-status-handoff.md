@@ -376,6 +376,8 @@ feature-complete.
    `tests/smoke_ui.py` (15 checks covering all API endpoints and UI rendering).
 3. Keep Streamlit active until the new UI reaches verified capability parity.
 4. ~~Review line-ending-only local noise~~ — confirmed clean, no accidental changes.
+5. Add column sorting to Next.js DataTable component. Streamlit tables support
+   click-to-sort on any column header; the Next.js tables are currently static.
 
 ## Verification Commands Used
 
