@@ -239,6 +239,44 @@ def _cmd_dashboard_launch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_dashboard_next(args: argparse.Namespace) -> int:
+    ui_dir = ROOT / "ui"
+    if not (ui_dir / "package.json").exists():
+        _print_json(_receipt(
+            operation="dashboard.next",
+            status="error",
+            message="ui/package.json not found.",
+        ))
+        return 1
+
+    api_cmd = [
+        sys.executable, "-m", "uvicorn", "src.api.main:app",
+        "--host", args.api_host, "--port", str(args.api_port),
+    ]
+    if args.reload:
+        api_cmd.append("--reload")
+
+    base_kwargs: dict[str, Any] = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "stdin": subprocess.DEVNULL,
+    }
+    if sys.platform == "win32":
+        base_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+    subprocess.Popen(api_cmd, cwd=str(ROOT), **base_kwargs)
+
+    ui_cmd = ["npx", "next", "dev", "-p", str(args.ui_port)]
+    subprocess.Popen(ui_cmd, cwd=str(ui_dir), **base_kwargs)
+
+    _print_json(_receipt(
+        operation="dashboard.next",
+        api_url=f"http://{args.api_host}:{args.api_port}",
+        ui_url=f"http://localhost:{args.ui_port}",
+    ))
+    return 0
+
+
 def _cmd_dashboard_capabilities(args: argparse.Namespace) -> int:
     capabilities = dashboard_capabilities.list_dashboard_capabilities()
     payload = _receipt(
@@ -368,6 +406,12 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard_launch = dashboard_sub.add_parser("launch", help="Launch Streamlit dashboard")
     dashboard_launch.add_argument("--url", default="http://localhost:8501")
     dashboard_launch.set_defaults(func=_cmd_dashboard_launch)
+    dashboard_next = dashboard_sub.add_parser("next", help="Launch Next.js dashboard (API + UI)")
+    dashboard_next.add_argument("--api-host", default="127.0.0.1")
+    dashboard_next.add_argument("--api-port", type=int, default=8000)
+    dashboard_next.add_argument("--ui-port", type=int, default=3000)
+    dashboard_next.add_argument("--reload", action="store_true")
+    dashboard_next.set_defaults(func=_cmd_dashboard_next)
     dashboard_caps = dashboard_sub.add_parser("capabilities", help="List required dashboard capabilities")
     dashboard_caps.set_defaults(func=_cmd_dashboard_capabilities)
 

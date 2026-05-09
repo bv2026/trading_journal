@@ -168,6 +168,32 @@ def test_dashboard_capabilities_outputs_parity_contract(capsys):
     assert "settings.save_all" in capability_ids
 
 
+def test_dashboard_next_launches_api_and_ui(monkeypatch, capsys):
+    launched = []
+
+    class DummyProcess:
+        pass
+
+    def fake_popen(cmd, **kwargs):
+        launched.append({"cmd": cmd, "kwargs": kwargs})
+        return DummyProcess()
+
+    monkeypatch.setattr(cli_main.subprocess, "Popen", fake_popen)
+
+    code = cli_main.main(["dashboard", "next", "--api-port", "8123", "--ui-port", "3001", "--reload"])
+
+    assert code == 0
+    assert len(launched) == 2
+    assert "uvicorn" in " ".join(launched[0]["cmd"])
+    assert "--reload" in launched[0]["cmd"]
+    assert "next" in " ".join(launched[1]["cmd"])
+    assert "3001" in launched[1]["cmd"]
+    payload = _json_from_stdout(capsys)
+    assert payload["operation"] == "dashboard.next"
+    assert payload["api_url"] == "http://127.0.0.1:8123"
+    assert payload["ui_url"] == "http://localhost:3001"
+
+
 def test_api_launch_outputs_receipt(monkeypatch, capsys):
     launched = {}
 
