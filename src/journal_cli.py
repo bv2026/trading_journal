@@ -60,6 +60,20 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 HEALTH_OK_STATUSES = {"OK", "FALLBACK"}
 
 
+def _preferred_python_exe() -> str:
+    candidates = [
+        REPO_ROOT / ".venv313" / "Scripts" / "python.exe",
+        REPO_ROOT / ".venv" / "Scripts" / "python.exe",
+    ]
+    for path in candidates:
+        if path.exists():
+            return str(path)
+    return sys.executable
+
+
+PY_EXE = _preferred_python_exe()
+
+
 def _money(v) -> str:
     try:
         if pd.isna(v):
@@ -1003,7 +1017,7 @@ def sync_all_ingest_workflow() -> None:
     ok &= _run_best_effort(
         "Webull ingest",
         [
-            sys.executable, "-m", "src.mcp_ingest",
+            PY_EXE, "-m", "src.mcp_ingest",
             "--broker", "webull",
             "--account-list", "data\\tmp\\wb_account_list.txt",
             "--positions-map", "data\\tmp\\wb_positions_map.rebuilt.json",
@@ -1014,7 +1028,7 @@ def sync_all_ingest_workflow() -> None:
     ok &= _run_best_effort(
         "Schwab ingest",
         [
-            sys.executable, "-m", "src.mcp_ingest",
+            PY_EXE, "-m", "src.mcp_ingest",
             "--broker", "schwab",
             "--equity", "data\\tmp\\schwab_equity.json",
             "--futures", "data\\tmp\\schwab_futures.json",
@@ -1024,7 +1038,7 @@ def sync_all_ingest_workflow() -> None:
     ok &= _run_best_effort(
         "Tradier ingest",
         [
-            sys.executable, "-m", "src.mcp_ingest",
+            PY_EXE, "-m", "src.mcp_ingest",
             "--broker", "tradier",
             "--positions", "data\\tmp\\tradier_pos.json",
             "--quotes", "data\\tmp\\tradier_quotes.json",
@@ -1035,7 +1049,7 @@ def sync_all_ingest_workflow() -> None:
     ok &= _run_best_effort(
         "TradeStation ingest",
         [
-            sys.executable, "-m", "src.mcp_ingest",
+            PY_EXE, "-m", "src.mcp_ingest",
             "--broker", "ts",
             "--positions", "data\\tmp\\ts_positions.json",
             "--balances", "data\\tmp\\ts_balances.json",
@@ -1044,7 +1058,7 @@ def sync_all_ingest_workflow() -> None:
     ok &= _run_best_effort(
         "Robinhood RH-BV ingest",
         [
-            sys.executable, "-m", "src.mcp_ingest",
+            PY_EXE, "-m", "src.mcp_ingest",
             "--broker", "robinhood",
             "--account-id", "RH-BV",
             "--positions", "data\\tmp\\rh_pos.json",
@@ -1054,33 +1068,33 @@ def sync_all_ingest_workflow() -> None:
     ok &= _run_best_effort(
         "Robinhood RH-KD ingest",
         [
-            sys.executable, "-m", "src.mcp_ingest",
+            PY_EXE, "-m", "src.mcp_ingest",
             "--broker", "robinhood",
             "--account-id", "RH-KD",
             "--positions", "data\\tmp\\rh_kd_pos.json",
             "--portfolio", "data\\tmp\\rh_kd_port.json",
         ],
     )
-    ok &= _run_best_effort("Coinbase sync", [sys.executable, "scripts/sync_coinbase.py"])
+    ok &= _run_best_effort("Coinbase sync", [PY_EXE, "scripts/sync_coinbase.py"])
     if _csv_files_changed():
-        ok &= _run_best_effort("CSV ingest (changed files detected)", [sys.executable, "-m", "src.ingest"])
+        ok &= _run_best_effort("CSV ingest (changed files detected)", [PY_EXE, "-m", "src.ingest"])
     else:
         print("\nCSV ingest skipped (no tracked CSV file changes detected).")
         _touch_csv_state_skipped()
 
     cash = _prompt_optional_float("CASH update (blank to skip): ")
     if cash is not None:
-        ok &= _run_best_effort("Set CASH", [sys.executable, "-m", "src.cash", str(cash)])
+        ok &= _run_best_effort("Set CASH", [PY_EXE, "-m", "src.cash", str(cash)])
 
     print("\nOptional fidelity margin override (blank = skip):")
     fidelity_margin = _prompt_optional_float("  FIDELITY margin amount: ")
     if fidelity_margin is not None:
         ok &= _run_best_effort(
             "Set margin FIDELITY",
-            [sys.executable, "-m", "src.mcp_ingest", "--set-margin", "FIDELITY", str(fidelity_margin)],
+            [PY_EXE, "-m", "src.mcp_ingest", "--set-margin", "FIDELITY", str(fidelity_margin)],
         )
 
-    ok &= _run_best_effort("Snapshot only", [sys.executable, "-m", "src.ingest", "--snapshot-only"])
+    ok &= _run_best_effort("Snapshot only", [PY_EXE, "-m", "src.ingest", "--snapshot-only"])
     try:
         # Keep dashboard account summary aligned with latest sync by refreshing
         # persisted account_balances immediately after ingest/snapshot.
@@ -1143,7 +1157,7 @@ def _launch_next_dashboard() -> None:
     log_dir = REPO_ROOT / "data" / "tmp"
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    api_cmd = f'"{sys.executable}" -m uvicorn src.api.main:app --host 127.0.0.1 --port {api_port}'
+    api_cmd = f'"{PY_EXE}" -m uvicorn src.api.main:app --host 127.0.0.1 --port {api_port}'
     subprocess.Popen(
         f'cmd /c start /b "" {api_cmd} 2>"{log_dir / "api.log"}"',
         cwd=REPO_ROOT, shell=True,
@@ -1218,23 +1232,23 @@ def housekeeping_menu() -> None:
         if choice in {"0", "q", "Q"}:
             return
         if choice == "1":
-            _run_command("Incremental ingest", [sys.executable, "-m", "src.ingest"])
+            _run_command("Incremental ingest", [PY_EXE, "-m", "src.ingest"])
         elif choice == "2":
             confirm = input("This rebuilds journal.db from source files. Continue? [y/N]: ").strip().lower()
             if confirm == "y":
-                _run_command("Reset ingest", [sys.executable, "-m", "src.ingest", "--reset"])
+                _run_command("Reset ingest", [PY_EXE, "-m", "src.ingest", "--reset"])
         elif choice == "3":
-            _run_command("Snapshot only", [sys.executable, "-m", "src.ingest", "--snapshot-only"])
+            _run_command("Snapshot only", [PY_EXE, "-m", "src.ingest", "--snapshot-only"])
         elif choice == "4":
-            _run_command("Sync Coinbase", [sys.executable, "scripts/sync_coinbase.py"])
+            _run_command("Sync Coinbase", [PY_EXE, "scripts/sync_coinbase.py"])
         elif choice == "5":
-            _run_command("Dry-run Coinbase sync", [sys.executable, "scripts/sync_coinbase.py", "--dry-run"])
+            _run_command("Dry-run Coinbase sync", [PY_EXE, "scripts/sync_coinbase.py", "--dry-run"])
         elif choice == "6":
             _launch_next_dashboard()
         elif choice == "7":
             _stop_dashboard()
         elif choice == "8":
-            _run_command("Run tests", [sys.executable, "-m", "pytest", "tests/", "-q"])
+            _run_command("Run tests", [PY_EXE, "-m", "pytest", "tests/", "-q"])
         elif choice == "9":
             sync_all_ingest_workflow()
         else:
