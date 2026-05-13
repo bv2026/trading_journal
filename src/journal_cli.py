@@ -72,6 +72,7 @@ def _preferred_python_exe() -> str:
 
 
 PY_EXE = _preferred_python_exe()
+_CLI_RELAUNCH_ENV = "TJ_CLI_RELAUNCHED"
 
 
 def _money(v) -> str:
@@ -1367,4 +1368,21 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    try:
+        current = Path(sys.executable).resolve()
+        preferred = Path(PY_EXE).resolve()
+    except Exception:
+        current = Path(sys.executable)
+        preferred = Path(PY_EXE)
+
+    if (
+        os.environ.get(_CLI_RELAUNCH_ENV) != "1"
+        and preferred.exists()
+        and current != preferred
+    ):
+        env = os.environ.copy()
+        env[_CLI_RELAUNCH_ENV] = "1"
+        rc = subprocess.run([str(preferred), "-m", "src.journal_cli"], env=env).returncode
+        raise SystemExit(rc)
+
     raise SystemExit(main())
