@@ -1324,42 +1324,46 @@ def _broker_live_view() -> None:
 
 def main() -> int:
     db.init_db()
-    while True:
-        print("\nTrading Journal CLI")
-        print("1. Account balances")
-        print("2. Positions by account")
-        print("3. All positions")
-        print("4. Set cash balance")
-        print("5. MCP health")
-        print("6. Housekeeping")
-        print("7. Broker Live View")
-        print("8. Transaction history")
-        print("9. Sync all brokers + CSV + snapshot")
-        print("0. Exit")
+    try:
+        while True:
+            print("\nTrading Journal CLI")
+            print("1. Account balances")
+            print("2. Positions by account")
+            print("3. All positions")
+            print("4. Set cash balance")
+            print("5. MCP health")
+            print("6. Housekeeping")
+            print("7. Broker Live View")
+            print("8. Transaction history")
+            print("9. Sync all brokers + CSV + snapshot")
+            print("0. Exit")
 
-        choice = input("Select: ").strip()
-        if choice in {"0", "q", "Q"}:
-            return 0
-        if choice == "1":
-            show_overview()
-        elif choice == "2":
-            show_account_menu()
-        elif choice == "3":
-            show_positions()
-        elif choice == "4":
-            set_cash_balance()
-        elif choice == "5":
-            show_mcp_health(force=True)
-        elif choice == "6":
-            housekeeping_menu()
-        elif choice == "7":
-            _broker_live_view()
-        elif choice == "8":
-            transaction_history_menu()
-        elif choice == "9":
-            sync_all_ingest_workflow()
-        else:
-            print("Choose 0-9.")
+            choice = input("Select: ").strip()
+            if choice in {"0", "q", "Q"}:
+                return 0
+            if choice == "1":
+                show_overview()
+            elif choice == "2":
+                show_account_menu()
+            elif choice == "3":
+                show_positions()
+            elif choice == "4":
+                set_cash_balance()
+            elif choice == "5":
+                show_mcp_health(force=True)
+            elif choice == "6":
+                housekeeping_menu()
+            elif choice == "7":
+                _broker_live_view()
+            elif choice == "8":
+                transaction_history_menu()
+            elif choice == "9":
+                sync_all_ingest_workflow()
+            else:
+                print("Choose 0-9.")
+    except EOFError:
+        print("\nInput stream ended; exiting CLI.")
+        return 0
 
 
 if __name__ == "__main__":
